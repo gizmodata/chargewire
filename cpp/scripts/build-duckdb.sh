@@ -9,7 +9,8 @@ DUCKDB_COMMIT=ffe0b8b7a222114f15577ea05434d14357906416
 DUCKDB_VERSION_NAME=v2.0.0-alpha48624
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEPS="$HERE/.deps"
+# WARPSQL_DEPS_DIR lets another project build these into its own directory.
+DEPS="${WARPSQL_DEPS_DIR:-$HERE/.deps}"
 SRC="$DEPS/duckdb"
 BUILD="$DEPS/duckdb-build"
 PREFIX="$DEPS/duckdb-install"
