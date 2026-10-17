@@ -31,7 +31,7 @@ spec's version is the repository's version.
   `--flag=value` for every flag.
 - `libwarpsql_client`: `Client::SignInWithClientCertificate()`, renewed before expiry like
   the password grant.
-- Conformance: `test_mtls.py` (20 tests, marker `mtls`), with a PKI made by
+- Conformance: `test_mtls.py` (22 tests, marker `mtls`), with a PKI made by
   `cryptography`; `WARP_SQL_TEST_SERVER_MTLS_FLAG` names the server's client-CA flag.
 
 - The C++ client library (`libwarpsql_client`, `cpp/include/warpsql/client.hpp`):
@@ -80,7 +80,12 @@ spec's version is the repository's version.
 
 - TLS servers refuse TLS 1.2 renegotiation (a connection's certificate is fixed at its
   handshake), send the client CA list in the certificate request, and set a session id
-  context, so a client that resumes a session keeps its verified certificate.
+  context. Before, every resumed TLS session failed its handshake when client certificates
+  were verified (OpenSSL needs a session id context then), so clients turned session reuse
+  off. A resumed session keeps the certificate of its first handshake (a bound token checks
+  that one, and another certificate cannot be swapped in by resuming), and sessions don't
+  resume across a CRL reload: each CRL generation has its own session cache and ticket keys.
+  Conformance: two resumption tests, and the revocation test resumes a pre-revocation session.
 
 - `libwarpsql_client` asks for split results by default:
   `StatementOptions::result_partitions` is 8 (was 1). The server decides: a result of

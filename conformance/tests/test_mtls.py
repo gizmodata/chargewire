@@ -9,6 +9,7 @@ them with `-m "not mtls"`, visibly, rather than let them skip.
 """
 
 import concurrent.futures
+import json
 import os
 import socket
 import ssl
@@ -147,6 +148,28 @@ def handshake_refusal(server: ServerUnderTest, context: ssl.SSLContext) -> str |
         return f"{error.reason}: {error}"
     except OSError as error:
         return f"connection failed: {error}"
+
+
+def raw_request(server: ServerUnderTest, context: ssl.SSLContext, method: str, path: str,
+                token: str | None = None, body: bytes = b"", session: ssl.SSLSession | None = None):
+    """One HTTP/1.1 request on a new TLS connection (resuming `session` if given). Returns
+    (status, body, the connection's TLS session, whether it was resumed)."""
+    url = urlparse(server.base_url)
+    with socket.create_connection(address=(url.hostname, url.port), timeout=10) as raw:
+        with context.wrap_socket(sock=raw, server_hostname=url.hostname, session=session) as tls:
+            head = [f"{method} {path} HTTP/1.1", "Host: localhost", "Connection: close",
+                    f"Content-Length: {len(body)}"]
+            if body:
+                head.append("Content-Type: application/json")
+            if token:
+                head.append(f"Authorization: Bearer {token}")
+            tls.sendall("\r\n".join(head).encode() + b"\r\n\r\n" + body)
+            data = b""
+            while chunk := tls.recv(65536):
+                data += chunk
+            status = int(data.split(b" ", 2)[1])
+            # TLS 1.3 sends its session ticket after the handshake: read it with the answer.
+            return status, data.split(b"\r\n\r\n", 1)[1], tls.session, tls.session_reused
 
 
 # ---- Discovery ----
@@ -326,6 +349,42 @@ def test_partitions_need_the_bound_certificate_on_every_connection(pki, strict):
     assert_problem(response=read(index=1, cert=pki.bob), status=401, code="certificate_mismatch")
 
 
+# ---- TLS session resumption ----
+
+def test_a_resumed_session_keeps_its_certificate_and_its_bound_token(pki, strict):
+    context = pki.context(client=pki.alice)
+    status, body, session, _ = raw_request(server=strict, context=context, method="POST", path="/warp/v1/auth/token",
+                                           body=b'{"grant_type":"client_certificate"}')
+    assert status == 200, body
+    token = json.loads(body)["access_token"]
+    status, body, _, reused = raw_request(server=strict, context=context, method="POST", path="/warp/v1/sessions",
+                                          token=token, body=b"{}", session=session)
+    assert reused, "the server did not resume the TLS session"
+    assert status == 201, body
+
+
+def test_resumption_cannot_change_the_certificate(pki, strict):
+    # A resumed session carries the certificate of its first handshake, whatever the
+    # client holds now: resuming alice's session with bob's certificate loaded is still
+    # alice's connection. Bob's bound token is refused on it; alice's works.
+    with client(server=strict, pki=pki, cert=pki.bob) as bob:
+        bob_token = certificate_token(http=bob)
+    context = pki.context(client=pki.alice)
+    status, body, session, _ = raw_request(server=strict, context=context, method="POST", path="/warp/v1/auth/token",
+                                           body=b'{"grant_type":"client_certificate"}')
+    assert status == 200, body
+    alice_token = json.loads(body)["access_token"]
+    context.load_cert_chain(certfile=str(pki.bob.cert_path), keyfile=str(pki.bob.key_path))
+    status, body, session, reused = raw_request(server=strict, context=context, method="POST",
+                                                path="/warp/v1/sessions", token=bob_token, body=b"{}",
+                                                session=session)
+    assert reused, "the server did not resume the TLS session"
+    assert status == 401 and json.loads(body)["code"] == "certificate_mismatch", body
+    status, body, _, reused = raw_request(server=strict, context=context, method="POST", path="/warp/v1/sessions",
+                                          token=alice_token, body=b"{}", session=session)
+    assert reused and status == 201, body
+
+
 # ---- Revocation ----
 
 def test_a_revoked_certificate_is_refused_at_the_handshake(pki, strict):
@@ -341,6 +400,10 @@ def test_revocation_reaches_open_connections_without_a_restart(pki, tmp_path):
     server = started(pki=pki, probe=pki.alice,
                      args=[*tls_args(pki=pki, crl=crl), "--mtls-admin-identities", ",".join(KNOWN)])
     try:
+        # A TLS session dave could resume later (it must not outlive the revocation).
+        dave_context = pki.context(client=pki.dave)
+        status, _, dave_session, _ = raw_request(server=server, context=dave_context, method="GET", path="/warp")
+        assert status == 200
         with client(server=server, pki=pki, cert=pki.dave) as dave:
             token = certificate_token(http=dave)
             session_id = new_session(http=dave, token=token)
@@ -358,6 +421,10 @@ def test_revocation_reaches_open_connections_without_a_restart(pki, tmp_path):
             assert_problem(response=response, status=401, code="certificate_revoked")
         reason = handshake_refusal(server=server, context=pki.context(client=pki.dave))
         assert reason is not None and "CERTIFICATE_REVOKED" in reason, reason
+        # Nor does a session from before the reload resume: each CRL generation has its own
+        # session cache and ticket keys, so dave meets a full handshake and the new CRL.
+        with pytest.raises(ssl.SSLError, match="CERTIFICATE_REVOKED"):
+            raw_request(server=server, context=dave_context, method="GET", path="/warp", session=dave_session)
         # Everyone else is unaffected by the reload.
         with client(server=server, pki=pki, cert=pki.alice) as alice:
             new_session(http=alice, token=certificate_token(http=alice))
