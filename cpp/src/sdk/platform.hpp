@@ -19,7 +19,7 @@ bool PeerClosed(boost::asio::ip::tcp::socket& socket);
 // is needed to rebind past TIME_WAIT.
 void PrepareListener(boost::asio::ip::tcp::acceptor& acceptor);
 
-// Ends a plain connection. On Windows the server first stops sending, then reads and
+// Ends a connection (a TLS one after its close_notify). On Windows the server first stops sending, then reads and
 // drops what the client still sends (for a moment, as nginx's lingering close does):
 // closing a socket with unread bytes resets the connection, and a Windows client
 // discards a response it hasn't read yet when the reset arrives, so a client still

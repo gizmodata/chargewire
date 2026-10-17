@@ -488,6 +488,7 @@ class HttpServer::Impl {
       beast::get_lowest_layer(tls_stream).expires_after(kHandshakeTimeout);
       boost::system::error_code ignored;
       co_await tls_stream.async_shutdown(net::redirect_error(net::use_awaitable, ignored));
+      co_await EndConnection(beast::get_lowest_layer(tls_stream));  // after close_notify
     } catch (const std::exception&) {
       // A connection that fails takes nothing else down.
     }
