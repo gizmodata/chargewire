@@ -28,6 +28,12 @@ at run time. A server that wants more built in lists them in a CMake file of
 `duckdb_extension_load()` calls and names it in `WARPSQL_DUCKDB_EXTENSION_CONFIGS`
 (several: `;`-separated) when it runs `build-duckdb.sh`.
 
+Windows (x64 and arm64) builds with MSVC from a Developer shell's Git Bash, the same
+commands with `-DOPENSSL_ROOT_DIR=<an OpenSSL 3 built with the static C runtime>
+-DOPENSSL_USE_STATIC_LIBS=TRUE -DOPENSSL_MSVC_STATIC_RT=TRUE` (DuckDB always builds with
+/MT on MSVC, so everything linked with it does too). There DuckDB is linked statically.
+Hardcharger's `.github/workflows/windows.yml` builds and tests it this way.
+
 ## Run
 
 ```bash
@@ -37,7 +43,9 @@ WARP_DUCKDB_PASSWORD='…' ./build/warp-duckdb --database my.duckdb --port 31337
 The password is read from the environment so it never shows in process listings. TLS:
 `--tls-cert` and `--tls-key` (PEM), plus `--tls-client-ca` to require client
 certificates. The first SIGTERM drains (running work finishes, new work is refused); a
-second one stops at once.
+second one stops at once. On Windows, Ctrl+C and Ctrl+Break do the same (a parent stops a
+child it started with `CREATE_NEW_PROCESS_GROUP` by sending it Ctrl+Break); closing the
+console stops it at once.
 
 ## Test
 
