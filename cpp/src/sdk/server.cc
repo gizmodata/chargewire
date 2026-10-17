@@ -49,21 +49,19 @@ class Server::Impl {
                {},
                RetainedQuota(options.retained_bytes_per_principal)},
         api_(state_),
-        http_(io_, state_.options,
-              HttpLimits{state_.options.max_header_bytes, state_.options.max_json_body_bytes,
-                         // Bulk ingest streams its body; everything else is read up front.
-                         [](const Request& request) {
-                           return request.method == http::verb::post &&
-                                  request.path.ends_with("/ingest");
-                         },
-                         [](http::status status, std::string_view detail) {
-                           Response response = ProblemResponse(
-                               Error(CodeForStatus(status), std::string(detail)), "");
-                           response.status = status;
-                           response.close = true;
-                           return response;
-                         }},
-              [this](Request& request) { return api_.Handle(request); }),
+        limits_{state_.options.max_header_bytes, state_.options.max_json_body_bytes,
+                // Bulk ingest streams its body; everything else is read up front.
+                [](const Request& request) {
+                  return request.method == http::verb::post && request.path.ends_with("/ingest");
+                },
+                [](http::status status, std::string_view detail) {
+                  Response response =
+                      ProblemResponse(Error(CodeForStatus(status), std::string(detail)), "");
+                  response.status = status;
+                  response.close = true;
+                  return response;
+                }},
+        http_(io_, state_.options, limits_, [this](Request& request) { return api_.Handle(request); }),
         sweep_timer_(io_) {
     if (!state_.tokens) {
       state_.tokens = state_.in_memory_tokens;
@@ -75,6 +73,24 @@ class Server::Impl {
   void Start() {
     port_ = http_.Bind();
     http_.StartAccepting();
+    if (state_.options.health_port != 0) {
+      ServerOptions health_options = state_.options;
+      health_options.port = state_.options.health_port;
+      health_options.tls.reset();
+      health_http_ = std::make_unique<HttpServer>(
+          io_, health_options, limits_,
+          [this](Request& request) -> Task<Response> {
+            if (request.method == http::verb::get &&
+                (request.path == "/warp/v1/health" || request.path == "/health")) {
+              request.path = "/warp/v1/health";
+              co_return co_await api_.Handle(request);
+            }
+            co_return ProblemResponse(Error(ErrorCode::kNotFound, "this port serves /health only"),
+                                      request.request_id);
+          });
+      health_http_->Bind();
+      health_http_->StartAccepting();
+    }
     ScheduleSweep();
     const int threads = ThreadCount(state_.options.http_threads, 1);
     for (int i = 0; i < threads; i++) {
@@ -95,6 +111,9 @@ class Server::Impl {
     }
     state_.draining = true;
     http_.Close();
+    if (health_http_) {
+      health_http_->Close();
+    }
     for (auto& session : state_.sessions.All()) {
       state_.sessions.Remove(session->id());
       session->Close(CancelReason::kServerShutdown);
@@ -172,7 +191,9 @@ class Server::Impl {
   net::thread_pool engine_pool_;
   ServerState state_;
   Api api_;
+  HttpLimits limits_;
   HttpServer http_;
+  std::unique_ptr<HttpServer> health_http_;
   net::steady_timer sweep_timer_;
   std::vector<std::thread> threads_;
   uint16_t port_ = 0;

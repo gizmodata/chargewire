@@ -22,6 +22,9 @@ struct ServerOptions {
   std::string host = "127.0.0.1";
   uint16_t port = 0;  // 0: any free port; see Server::port()
   std::optional<TlsOptions> tls;
+  // A second, plaintext listener that serves only the health check (spec §3.2), for
+  // probes that can't present client certificates or speak TLS. 0: none.
+  uint16_t health_port = 0;
 
   int http_threads = 0;    // 0: one per core
   int engine_threads = 0;  // 0: two per core
@@ -38,6 +41,8 @@ struct ServerOptions {
   std::chrono::seconds default_wait{5};  // submit without Prefer: wait / respond-async
   std::chrono::seconds max_wait{60};     // cap on Prefer: wait
   std::chrono::seconds health_timeout{5};
+  // Applies when a request sets no Warp-Statement-Timeout. 0: none.
+  std::chrono::milliseconds default_statement_timeout{0};
   std::size_t retained_bytes_per_principal = std::size_t{1} << 30;
 
   std::vector<std::string> cors_allowed_origins;  // empty: no cross-origin access

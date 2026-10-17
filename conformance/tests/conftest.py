@@ -4,10 +4,12 @@ Either point the suite at a running server:
 
     WARP_SQL_TEST_URL=https://host:port  WARP_SQL_TEST_USERNAME=…  WARP_SQL_TEST_PASSWORD=…
 
-or let it start one, given a binary that takes the reference server's interface
-(`--host`, `--port`, password in WARP_DUCKDB_PASSWORD), such as `warp-duckdb`:
+or let it start one, given a binary that takes `--host` and `--port` and reads its
+password from an environment variable, such as `warp-duckdb`:
 
     WARP_SQL_TEST_SERVER_BINARY=/path/to/warp-duckdb
+    WARP_SQL_TEST_SERVER_PASSWORD_ENV=WARP_DUCKDB_PASSWORD   (the default)
+    WARP_SQL_TEST_SERVER_USERNAME=warp                       (the default)
 
 The suite fails, never skips, when it has no reachable server.
 """
@@ -59,11 +61,13 @@ def start_server(binary: str, extra_args: list[str] | None = None) -> ServerUnde
     # A password with ':' and '@' in it: credentials travel as JSON fields, so nothing
     # may split them (spec §4.1).
     password = secrets.token_urlsafe(nbytes=12) + ":p@ss:word"
+    password_env = os.environ.get("WARP_SQL_TEST_SERVER_PASSWORD_ENV", "WARP_DUCKDB_PASSWORD")
+    username = os.environ.get("WARP_SQL_TEST_SERVER_USERNAME", "warp")
     process = subprocess.Popen(
         args=[binary, "--host", "127.0.0.1", "--port", str(port), *(extra_args or [])],
-        env={**os.environ, "WARP_DUCKDB_PASSWORD": password},
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    server = ServerUnderTest(base_url=f"http://127.0.0.1:{port}", username="warp",
+        env={**os.environ, password_env: password},
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    server = ServerUnderTest(base_url=f"http://127.0.0.1:{port}", username=username,
                              password=password, process=process)
     try:
         wait_until_up(base_url=server.base_url)

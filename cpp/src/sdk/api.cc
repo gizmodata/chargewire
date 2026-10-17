@@ -551,6 +551,9 @@ Task<Response> Api::Launch(Request& request, std::shared_ptr<Session> session, S
     retain = header == "true";
   }
   std::optional<std::chrono::milliseconds> timeout;
+  if (state_.options.default_statement_timeout.count() > 0) {
+    timeout = state_.options.default_statement_timeout;
+  }
   if (const auto header = request.Header("Warp-Statement-Timeout"); !header.empty()) {
     const int64_t ms = ParseInt(header, "Warp-Statement-Timeout");
     if (ms <= 0) {
