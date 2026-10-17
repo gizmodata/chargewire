@@ -36,7 +36,7 @@ curl -s https://db.example.com/warp/v1/sessions/$SESSION/statements \
 python -c "import pyarrow.ipc as ipc; print(ipc.open_stream(source='result.arrows').read_all())"
 ```
 
-*(Illustrative: no server implements this draft yet, so this example has not been run.)*
+*(Runs against `warp-duckdb`, the reference server in [`cpp/`](cpp/README.md).)*
 
 ## Status
 
@@ -50,6 +50,8 @@ every GizmoSQL 1.x test over Warp SQL alone ([parity plan](docs/gizmosql-parity.
 |---|---|
 | [`spec/warp-sql.md`](spec/warp-sql.md) | The protocol specification |
 | [`docs/server-sdk.md`](docs/server-sdk.md) | Design of the reference C++ server library (engines override "bare" methods, as with Flight SQL's server base class) |
+| [`cpp/`](cpp/README.md) | The C++ server SDK (`libwarpsql`) and the DuckDB reference server (`warp-duckdb`) |
+| [`conformance/`](conformance/tests) | Black-box conformance tests any Warp SQL server can run |
 | [`docs/gizmosql-parity.md`](docs/gizmosql-parity.md) | How GizmoSQL 1.x's Flight SQL surface and tests map onto Warp SQL |
 | [`CHANGELOG.md`](CHANGELOG.md) | Changes by version |
 
@@ -58,7 +60,10 @@ every GizmoSQL 1.x test over Warp SQL alone ([parity plan](docs/gizmosql-parity.
 1. Spec draft (this).
 2. ~~Spike: which Arrow library does the IPC, checked value by value for every DuckDB
    type.~~ Done: Arrow C++ with IPC only ([results](spikes/duckdb-arrow-ipc/README.md)).
-3. Reference server SDK (C++) and a conformance test suite.
+3. Reference server SDK (C++) and a conformance test suite. **In progress**: sessions,
+   statements, bind parameters, async results, retention, resumption, cancellation,
+   timeouts and idempotency work and pass the suite; prepared statements with Arrow
+   parameters, ingest and metadata are next.
 4. Clients: [`warp-sql-adbc`](https://github.com/gizmodata/warp-sql-adbc) (generic Go
    ADBC driver) and a JavaScript client.
 5. GizmoSQL 2.0 on the SDK, passing the 1.x test suite.

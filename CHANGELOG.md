@@ -26,7 +26,22 @@ spec's version is the repository's version.
   passes 1,221 cases and fails none of its own; nanoarrow passes 1,144 (no view layouts
   or run-end encoding). The DuckDB and Arrow JS issues found are listed in its README.
 
+- C++ server SDK (`cpp/`, `libwarpsql`): HTTP/1.1 and TLS on Boost.Beast with C++20
+  coroutines; discovery, health, password sign-in, sessions and options, transactions,
+  statements on the streamed and status-document paths, positional and named bind
+  parameters, long-poll, retained and resumable results, unretained single reads,
+  incomplete-stream signalling, ZSTD results, cancellation, timeouts, idempotent
+  submission, CORS allow-list, header limits and graceful drain.
+- Reference server `warp-duckdb`: DuckDB 2.0 through its v2 C API only.
+- Conformance suite (`conformance/`): 46 black-box tests; fails, never skips, without a
+  server.
+
 ### Changed
+
+- Spec: bind parameters spelled out (§6.1: values never spliced into SQL; positional or
+  named; how `null` is typed); response headers (§2.6); `result_not_ready`; more error
+  codes (`not_found`, `method_not_allowed`, `payload_too_large`, `headers_too_large`,
+  `statement_cancelled`, option errors).
 
 - Server SDK design: GizmoSQL 2.0 targets DuckDB 2.0's v2 C API only (the RBAC plan
   inspector is the one module allowed DuckDB internals), runs as a standalone server,

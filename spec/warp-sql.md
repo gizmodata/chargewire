@@ -98,7 +98,15 @@ name (`timeout_ms`, `idle_timeout_s`).
 
 Servers MUST accept request headers totalling at least 16 KiB (identity tokens can
 be large) and MUST answer a larger header block with `431 Request Header Fields Too
-Large`. The limit SHOULD be configurable.
+Large` (code `headers_too_large`). The limit SHOULD be configurable.
+
+### 2.6 Response headers defined by this protocol
+
+| Header | On | Meaning |
+|---|---|---|
+| `Warp-Request-Id` | every response | The `request_id` of this request (§11), also in the server's logs |
+| `Warp-Statement-Id` | statement responses | The statement the response belongs to |
+| `Warp-IPC-Compression` | Arrow responses | The Arrow buffer compression used: `zstd` or `none` (§8.2) |
 
 ## 3. Discovery and health
 
@@ -294,9 +302,22 @@ Idempotency-Key: 7c1e0a52-…
  "parameters": [2026]}
 ```
 
-`parameters` (optional) binds positional `?` parameters from JSON values: numbers,
-strings, booleans and `null`, typed as the engine infers. For exact types (decimals,
-timestamps, binary) use a prepared statement with Arrow parameters (§7).
+`parameters` (optional) holds **bind parameters**, which are values, never SQL text:
+servers MUST bind them through the engine's parameter mechanism and MUST NOT splice them
+into the statement. It is either an array, binding positionally (`?`, or `$1`, `$2`, … in
+engines that number them), or an object, binding by name (`$name` in engines that support
+named parameters):
+
+```json
+{"sql": "SELECT * FROM sales WHERE region = ? AND year = ?", "parameters": ["EU", 2026]}
+{"sql": "SELECT * FROM sales WHERE region = $region", "parameters": {"region": "EU"}}
+```
+
+Values are JSON scalars: numbers, strings, booleans and `null`, each typed as the engine
+infers for that parameter. A `null` takes the type the engine infers for its parameter;
+where the statement doesn't fix one (`? + 1`), the client casts in SQL
+(`CAST(? AS INTEGER)`), as in other SQL databases. For exact types (decimals, timestamps,
+binary, nested values) use a prepared statement with Arrow parameters (§7).
 
 How the server answers depends on `Accept` and `Prefer`:
 
@@ -334,7 +355,8 @@ three are terminal. `progress` is optional and every field in it is optional;
 
 A failed or cancelled statement carries `error`, a problem document (§11), and a
 cancelled one also carries `cancel_reason`: `client`, `timeout`, `session_closed`,
-`killed`, `privilege_revoked` or `server_shutdown`.
+`killed`, `privilege_revoked` or `server_shutdown`. A cancelled statement's error code
+is `statement_timeout` when its timeout ran out and `statement_cancelled` otherwise.
 
 A succeeded statement carries `result`:
 
@@ -378,7 +400,11 @@ Query parameters: `partition` (default 0) and `from_batch` (default 0).
 Returns `200` with an Arrow stream of that partition's record batches, starting at
 batch number `from_batch` (counting from 0). The stream always begins with the
 schema message. A client MAY request the result while the statement is still
-running; the server streams batches as they are produced.
+running; the server streams batches as they are produced. If the statement has not
+produced its result's schema within the server's wait limit, the answer is `409` with
+code `result_not_ready`, and the client retries. A failed or cancelled statement's
+result request gets the statement's own error; a statement that returns no rows gets
+`400`, `bad_request`.
 
 ### 6.5 Retention and resumption
 
@@ -615,6 +641,7 @@ Every error response is a problem document:
 | Code | Status | Meaning |
 |---|---|---|
 | `bad_request` | 400 | Malformed request |
+| `unknown_option`, `invalid_option_value` | 400 | A session option the server doesn't have, or a bad value (§5.3) |
 | `sql_error` | 400 | The engine rejected the SQL (syntax, binding, missing object) |
 | `invalid_credentials` | 401 | §4.1 |
 | `invalid_token` | 401 | §4.2 |
@@ -622,13 +649,18 @@ Every error response is a problem document:
 | `permission_denied` | 403 | The principal lacks a privilege |
 | `read_only` | 403 | The server or session is read-only |
 | `session_not_found`, `statement_not_found`, `prepared_not_found` | 404 | No such handle, or not the caller's |
+| `not_found` | 404 | No such endpoint |
+| `method_not_allowed` | 405 | The endpoint exists but not for this method |
+| `result_not_ready` | 409 | The statement has no result schema yet (§6.4) |
 | `result_not_resumable` | 409 | §6.5 |
 | `result_expired` | 410 | §6.5 |
+| `payload_too_large` | 413 | A JSON request body over the server's limit |
 | `unsupported_arrow_type` | 415 | §8.1 |
 | `session_elsewhere` | 421 | §5.6 |
 | `idempotency_key_reused` | 422 | §6.7 |
+| `headers_too_large` | 431 | §2.5 |
 | `too_many_sessions`, `result_quota_exceeded`, `rate_limited` | 429 | A limit was reached (with `Retry-After` when retrying can help) |
-| `statement_timeout` | — | Error inside a statement document (§6.9) |
+| `statement_timeout`, `statement_cancelled` | — | Errors inside a statement document (§6.2, §6.9) |
 | `execution_error` | 500 | The statement failed while running |
 | `server_draining` | 503 | The server is shutting down; with `Retry-After` |
 | `not_implemented` | 501 | The server does not implement this operation |
