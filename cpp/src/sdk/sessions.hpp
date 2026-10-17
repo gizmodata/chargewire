@@ -33,6 +33,7 @@ class Session {
   // Safe from any thread while the engine is busy.
   void Interrupt();
   std::optional<double> Progress();
+  std::optional<std::chrono::milliseconds> DefaultStatementTimeout();
 
   json::object options() const;
   void set_options(json::object options);

@@ -568,6 +568,10 @@ Task<Response> Api::Launch(Request& request, std::shared_ptr<Session> session, S
   if (state_.options.default_statement_timeout.count() > 0) {
     timeout = state_.options.default_statement_timeout;
   }
+  // A timeout the session chose beats the server's; a request's own beats both.
+  if (auto session_default = session->DefaultStatementTimeout()) {
+    timeout = session_default->count() > 0 ? session_default : std::nullopt;
+  }
   if (const auto header = request.Header("Warp-Statement-Timeout"); !header.empty()) {
     const int64_t ms = ParseInt(header, "Warp-Statement-Timeout");
     if (ms <= 0) {

@@ -174,7 +174,8 @@ bool HasNull(const json::value& parameters) {
 
 }  // namespace
 
-DuckDBSession::DuckDBSession(duckdb_v2_instance_handle instance) {
+DuckDBSession::DuckDBSession(duckdb_v2_instance_handle instance, std::size_t batch_rows)
+    : batch_rows_(batch_rows) {
   Call([&](auto* err) { return duckdb_v2_connection_create(instance, connection_.out(), err); });
   Call([&](auto* err) { return duckdb_v2_connection_get_factory(connection_.get(), &factory_, err); });
   values_ = std::make_unique<ValueFactory>(factory_);
@@ -226,7 +227,7 @@ warpsql::StatementOutcome DuckDBSession::Execute(std::string_view sql,
     return duckdb_v2_statement_execute_arrow(connection_.get(), last->get(),
                                              names.empty() ? nullptr : names.data(),
                                              handles.empty() ? nullptr : handles.data(),
-                                             handles.size(), 0, result.out(), err);
+                                             handles.size(), batch_rows_, result.out(), err);
   });
   return Outcome(result, last);
 }
@@ -259,7 +260,7 @@ warpsql::StatementOutcome DuckDBSession::ExecutePrepared(warpsql::PreparedStatem
     Call([&](auto* err) {
       return duckdb_v2_prepared_statement_execute_arrow(
           prepared.prepared(), names.empty() ? nullptr : names.data(),
-          handles.empty() ? nullptr : handles.data(), handles.size(), 0, result.out(), err);
+          handles.empty() ? nullptr : handles.data(), handles.size(), batch_rows_, result.out(), err);
     });
     // The prepared statement outlives its executions: the SDK destroys it on the
     // session's strand, after any statement that uses it.

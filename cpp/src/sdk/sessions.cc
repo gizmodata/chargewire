@@ -32,6 +32,10 @@ void EngineSession::Interrupt() {}
 
 std::optional<double> EngineSession::Progress() { return std::nullopt; }
 
+std::optional<std::chrono::milliseconds> EngineSession::DefaultStatementTimeout() {
+  return std::nullopt;
+}
+
 OptionErrors EngineSession::SetOptions(const boost::json::object& options) {
   OptionErrors errors;
   for (const auto& option : options) {
@@ -99,6 +103,11 @@ void Session::Interrupt() {
 std::optional<double> Session::Progress() {
   std::lock_guard lock(engine_mutex_);
   return engine_ ? engine_->Progress() : std::nullopt;
+}
+
+std::optional<std::chrono::milliseconds> Session::DefaultStatementTimeout() {
+  std::lock_guard lock(engine_mutex_);
+  return engine_ ? engine_->DefaultStatementTimeout() : std::nullopt;
 }
 
 json::object Session::options() const {

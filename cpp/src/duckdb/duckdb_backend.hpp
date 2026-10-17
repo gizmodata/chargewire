@@ -22,6 +22,8 @@ class DuckDBBackend : public warpsql::Backend {
     std::vector<std::pair<std::string, std::string>> instance_options;
     // Options for attaching the database, e.g. {"STORAGE_VERSION", "v1.4.0"}.
     std::vector<std::pair<std::string, std::string>> attach_options;
+    // Most rows per Arrow batch in statement results; 0: DuckDB's default (131072).
+    std::size_t result_batch_rows = 0;
   };
 
   explicit DuckDBBackend(Options options);
@@ -34,6 +36,7 @@ class DuckDBBackend : public warpsql::Backend {
   boost::json::object ServerInfo() override;
 
   duckdb_v2_instance_handle instance() const { return instance_.get(); }
+  std::size_t result_batch_rows() const { return result_batch_rows_; }
   const std::string& duckdb_version() const { return version_; }
 
  protected:
@@ -45,6 +48,7 @@ class DuckDBBackend : public warpsql::Backend {
   Environment environment_;
   Instance instance_;
   std::string version_;
+  std::size_t result_batch_rows_ = 0;
   std::mutex health_mutex_;
   Connection health_connection_;
 };

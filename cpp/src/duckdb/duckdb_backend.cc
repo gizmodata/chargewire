@@ -16,7 +16,7 @@ namespace json = boost::json;
 using warpsql::Error;
 using warpsql::ErrorCode;
 
-DuckDBBackend::DuckDBBackend(Options options) {
+DuckDBBackend::DuckDBBackend(Options options) : result_batch_rows_(options.result_batch_rows) {
   Call([&](auto* err) { return duckdb_v2_environment_create(environment_.out(), err); });
   std::vector<std::pair<std::string, std::string>> settings = options.instance_options;
   if (options.read_only) {
@@ -75,7 +75,7 @@ warpsql::ServerIdentity DuckDBBackend::Identity() {
 }
 
 std::unique_ptr<warpsql::EngineSession> DuckDBBackend::NewSession(const warpsql::Principal&) {
-  return std::make_unique<DuckDBSession>(instance_.get());
+  return std::make_unique<DuckDBSession>(instance_.get(), result_batch_rows_);
 }
 
 std::unique_ptr<warpsql::EngineSession> DuckDBBackend::OpenSession(

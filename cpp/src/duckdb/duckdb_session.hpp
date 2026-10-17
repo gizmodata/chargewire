@@ -13,7 +13,8 @@ namespace warpduckdb {
 
 class DuckDBSession : public warpsql::EngineSession {
  public:
-  explicit DuckDBSession(duckdb_v2_instance_handle instance);
+  // `batch_rows`: most rows per Arrow batch in results (0: DuckDB's default).
+  explicit DuckDBSession(duckdb_v2_instance_handle instance, std::size_t batch_rows = 0);
   ~DuckDBSession() override;
 
   warpsql::StatementOutcome Execute(std::string_view sql,
@@ -43,6 +44,7 @@ class DuckDBSession : public warpsql::EngineSession {
       std::shared_ptr<arrow::RecordBatchReader> tables);
 
   Connection connection_;
+  idx_t batch_rows_ = 0;
   duckdb_v2_factory_handle factory_ = nullptr;
   std::unique_ptr<ValueFactory> values_;
   bool autocommit_ = true;

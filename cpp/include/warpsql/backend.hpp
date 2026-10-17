@@ -140,6 +140,11 @@ class EngineSession {
   // Fraction of the running statement done, in [0, 1], when the engine knows.
   virtual std::optional<double> Progress();
 
+  // The timeout for this session's statements that set none (Warp-Statement-Timeout),
+  // e.g. one the session chose with SQL. nullopt: the server's default applies; zero:
+  // no timeout. Safe from any thread.
+  virtual std::optional<std::chrono::milliseconds> DefaultStatementTimeout();
+
   // Applies session options; returns the ones that failed, by name.
   virtual OptionErrors SetOptions(const boost::json::object& options);
   // The session's current options.
