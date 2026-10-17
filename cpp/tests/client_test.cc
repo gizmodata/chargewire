@@ -15,6 +15,10 @@
 #include <arrow/io/memory.h>
 #include <arrow/ipc/writer.h>
 #include <boost/asio/ip/tcp.hpp>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
 
 #include "warpsql/client.hpp"
 
@@ -69,19 +73,54 @@ uint16_t FreePort() {
 }
 
 #ifndef _WIN32
-std::string Run(const std::string& command) {
-  std::string out;
-  FILE* pipe = popen((command + " 2>&1").c_str(), "r");
-  if (pipe == nullptr) return "popen failed";
-  char buffer[4096];
-  while (size_t n = fread(buffer, 1, sizeof(buffer), pipe)) out.append(buffer, n);
-  const int status = pclose(pipe);
-  if (status != 0) ADD_FAILURE() << command << " failed:\n" << out;
-  return out;
+// A certificate signed by `issuer_cert`/`issuer_key` (self-signed when they are null),
+// with the extensions TLS libraries expect, written to `cert_path` and `key_path`.
+struct Issued {
+  X509* cert;
+  EVP_PKEY* key;
+};
+
+Issued Issue(const std::string& common_name, const Issued* issuer, const std::vector<std::string>& extensions,
+             const fs::path& cert_path, const fs::path& key_path) {
+  EVP_PKEY* key = EVP_RSA_gen(2048);
+  X509* cert = X509_new();
+  X509_set_version(cert, 2);
+  static long serial = 1;
+  ASN1_INTEGER_set(X509_get_serialNumber(cert), serial++ + (std::rand() & 0xFFFF) * 1000);
+  X509_gmtime_adj(X509_getm_notBefore(cert), -60);
+  X509_gmtime_adj(X509_getm_notAfter(cert), 2 * 24 * 3600);
+  X509_set_pubkey(cert, key);
+  X509_NAME* name = X509_get_subject_name(cert);
+  X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(common_name.c_str()),
+                             -1, -1, 0);
+  X509* issuer_cert = issuer != nullptr ? issuer->cert : cert;
+  EVP_PKEY* issuer_key = issuer != nullptr ? issuer->key : key;
+  X509_set_issuer_name(cert, X509_get_subject_name(issuer_cert));
+  X509V3_CTX ctx;
+  X509V3_set_ctx_nodb(&ctx);
+  X509V3_set_ctx(&ctx, issuer_cert, cert, nullptr, nullptr, 0);
+  for (const auto& extension : extensions) {
+    const auto eq = extension.find('=');
+    X509_EXTENSION* ext = X509V3_EXT_conf(nullptr, &ctx, extension.substr(0, eq).c_str(), extension.substr(eq + 1).c_str());
+    EXPECT_NE(ext, nullptr) << extension;
+    if (ext != nullptr) {
+      X509_add_ext(cert, ext, -1);
+      X509_EXTENSION_free(ext);
+    }
+  }
+  EXPECT_GT(X509_sign(cert, issuer_key, EVP_sha256()), 0);
+  FILE* out = std::fopen(cert_path.c_str(), "w");
+  PEM_write_X509(out, cert);
+  std::fclose(out);
+  out = std::fopen(key_path.c_str(), "w");
+  PEM_write_PrivateKey(out, key, nullptr, nullptr, 0, nullptr, nullptr);
+  std::fclose(out);
+  return {cert, key};
 }
 
-// A CA, a server certificate it signs (for `names`, a subjectAltName list), and a client
-// certificate it signs, made with the openssl command.
+// A CA, a server certificate it signs (for `names`, a subjectAltName list), a client
+// certificate it signs, and an unrelated CA, made with OpenSSL's library (the openssl
+// command differs between machines: LibreSSL on macOS).
 struct Certificates {
   fs::path dir;
   fs::path ca, server_cert, server_key, client_cert, client_key, other_ca;
@@ -91,26 +130,30 @@ struct Certificates {
     c.dir = fs::temp_directory_path() / ("warpsql-client-certs-" + std::to_string(::getpid()) + "-" +
                                          std::to_string(std::rand()));
     fs::create_directories(c.dir);
-    const std::string d = c.dir.string();
     c.ca = c.dir / "ca.pem";
     c.server_cert = c.dir / "server.pem";
     c.server_key = c.dir / "server.key";
     c.client_cert = c.dir / "client.pem";
     c.client_key = c.dir / "client.key";
     c.other_ca = c.dir / "other-ca.pem";
-    const std::string req = "openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=";
-    Run(req + "test-ca -keyout " + d + "/ca.key -out " + d + "/ca.pem -addext basicConstraints=critical,CA:TRUE");
-    Run(req + "other-ca -keyout " + d + "/other-ca.key -out " + d + "/other-ca.pem");
-    {
-      std::ofstream ext(c.dir / "server.ext");
-      ext << "subjectAltName=" << names << "\n";
+    const std::vector<std::string> ca_extensions{"basicConstraints=critical,CA:TRUE",
+                                                 "keyUsage=critical,keyCertSign,cRLSign",
+                                                 "subjectKeyIdentifier=hash"};
+    Issued ca = Issue("test-ca", nullptr, ca_extensions, c.ca, c.dir / "ca.key");
+    Issued other = Issue("other-ca", nullptr, ca_extensions, c.other_ca, c.dir / "other-ca.key");
+    Issued server = Issue("server", &ca,
+                          {"basicConstraints=CA:FALSE", "keyUsage=critical,digitalSignature,keyEncipherment",
+                           "extendedKeyUsage=serverAuth", "subjectAltName=" + names,
+                           "authorityKeyIdentifier=keyid"},
+                          c.server_cert, c.server_key);
+    Issued client = Issue("client", &ca,
+                          {"basicConstraints=CA:FALSE", "keyUsage=critical,digitalSignature,keyEncipherment",
+                           "extendedKeyUsage=clientAuth", "authorityKeyIdentifier=keyid"},
+                          c.client_cert, c.client_key);
+    for (Issued* issued : {&ca, &other, &server, &client}) {
+      X509_free(issued->cert);
+      EVP_PKEY_free(issued->key);
     }
-    Run("openssl req -newkey rsa:2048 -nodes -subj /CN=server -keyout " + d + "/server.key -out " + d + "/server.csr");
-    Run("openssl x509 -req -in " + d + "/server.csr -CA " + d + "/ca.pem -CAkey " + d + "/ca.key -CAcreateserial -days 2 -out " +
-        d + "/server.pem -extfile " + d + "/server.ext");
-    Run("openssl req -newkey rsa:2048 -nodes -subj /CN=client -keyout " + d + "/client.key -out " + d + "/client.csr");
-    Run("openssl x509 -req -in " + d + "/client.csr -CA " + d + "/ca.pem -CAkey " + d + "/ca.key -CAcreateserial -days 2 -out " +
-        d + "/client.pem");
     return c;
   }
 };
