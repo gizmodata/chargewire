@@ -7,6 +7,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(FetchContent)
 
+# MSVC: the static C runtime (/MT), as DuckDB always builds with it (a project that
+# includes this one sets the same before it does).
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 # Warnings, as each compiler spells them.
 if(MSVC)
   set(WARPSQL_WARNINGS /W3)

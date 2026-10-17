@@ -18,6 +18,14 @@ if [ ! -d "$SRC/.git" ]; then
   git clone --quiet --depth 1 --branch "$ARROW_TAG" https://github.com/apache/arrow.git "$SRC"
 fi
 
+# MSVC: DuckDB always builds with the static C runtime (/MT), and everything linked
+# with it must too.
+PLATFORM_ARGS=()
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN*)
+    PLATFORM_ARGS+=(-DARROW_USE_STATIC_CRT=ON "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded") ;;
+esac
+
 cmake -S "$SRC/cpp" -B "$BUILD" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$PREFIX" \
@@ -38,7 +46,8 @@ cmake -S "$SRC/cpp" -B "$BUILD" -G Ninja \
   -DARROW_JEMALLOC=OFF \
   -DARROW_MIMALLOC=OFF \
   -DARROW_BUILD_UTILITIES=OFF \
-  -DARROW_BUILD_TESTS=OFF
+  -DARROW_BUILD_TESTS=OFF \
+  ${PLATFORM_ARGS[@]+"${PLATFORM_ARGS[@]}"}
 cmake --build "$BUILD"
 cmake --install "$BUILD"
 
