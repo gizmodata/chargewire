@@ -27,6 +27,10 @@ class ParameterTypes {
   bool named() const;
   // An Arrow schema describing the parameters, for clients building Arrow parameters.
   std::shared_ptr<arrow::Schema> ArrowSchema() const;
+  // The same, with each type as DuckDB itself exports it to Arrow (extension types such
+  // as VARIANT, GEOMETRY or UUID included): DuckDB exports a NULL of every parameter's
+  // type, and that schema is kept. Falls back to ArrowSchema() if that fails.
+  std::shared_ptr<arrow::Schema> ArrowSchema(duckdb_v2_connection_handle connection) const;
 
  private:
   std::vector<std::string> names_;

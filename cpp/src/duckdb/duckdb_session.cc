@@ -29,13 +29,14 @@ struct Described {
 class DuckDBPrepared : public warpsql::PreparedStatement {
  public:
   DuckDBPrepared(SqlStatement statement, PreparedHandle prepared, ParameterTypes types,
-                 Described described)
+                 Described described, std::shared_ptr<arrow::Schema> parameter_schema)
       : statement_(std::move(statement)),
         prepared_(std::move(prepared)),
         types_(std::move(types)),
-        described_(std::move(described)) {}
+        described_(std::move(described)),
+        parameter_schema_(std::move(parameter_schema)) {}
 
-  std::shared_ptr<arrow::Schema> ParameterSchema() override { return types_.ArrowSchema(); }
+  std::shared_ptr<arrow::Schema> ParameterSchema() override { return parameter_schema_; }
   std::shared_ptr<arrow::Schema> ResultSchema() override { return described_.schema; }
   std::optional<bool> ReturnsRows() override { return described_.returns_rows; }
 
@@ -48,6 +49,7 @@ class DuckDBPrepared : public warpsql::PreparedStatement {
   PreparedHandle prepared_;
   ParameterTypes types_;
   Described described_;
+  std::shared_ptr<arrow::Schema> parameter_schema_;
 };
 
 DUCKDB_V2_STATEMENT_TYPE StatementType(duckdb_v2_sql_statement_handle statement) {
@@ -245,8 +247,10 @@ std::unique_ptr<warpsql::PreparedStatement> DuckDBSession::Prepare(std::string_v
   ParameterTypes types = ParameterTypes::Load(connection_.get(), statements[0].get());
   Described described =
       Describe(*values_, connection_.get(), statements[0].get(), prepared.get(), types);
+  auto parameter_schema = types.ArrowSchema(connection_.get());
   return std::make_unique<DuckDBPrepared>(std::move(statements[0]), std::move(prepared),
-                                          std::move(types), std::move(described));
+                                          std::move(types), std::move(described),
+                                          std::move(parameter_schema));
 }
 
 

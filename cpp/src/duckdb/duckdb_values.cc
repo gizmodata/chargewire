@@ -1,5 +1,7 @@
 #include "duckdb_values.hpp"
 
+#include "duckdb_sql.hpp"
+
 #include <arrow/array.h>
 #include <arrow/extension_type.h>
 #include <arrow/record_batch.h>
@@ -143,6 +145,40 @@ std::shared_ptr<arrow::Schema> ParameterTypes::ArrowSchema() const {
     fields.push_back(arrow::field(std::move(name), ArrowTypeFor(types_[i].get())));
   }
   return arrow::schema(std::move(fields));
+}
+
+std::shared_ptr<arrow::Schema> ParameterTypes::ArrowSchema(duckdb_v2_connection_handle connection) const {
+  auto fallback = ArrowSchema();
+  if (types_.empty()) return fallback;
+  std::string sql = "SELECT ";
+  for (std::size_t i = 0; i < types_.size(); i++) {
+    if (i > 0) sql += ", ";
+    if (!types_[i]) {
+      sql += "NULL";
+      continue;
+    }
+    idx_t length = 0;
+    if (duckdb_v2_logical_type_to_text(types_[i].get(), nullptr, 0, &length, nullptr) != DUCKDB_V2_ERROR_NONE) {
+      return fallback;
+    }
+    std::string text(length + 1, '\0');
+    if (duckdb_v2_logical_type_to_text(types_[i].get(), text.data(), text.size(), &length, nullptr) !=
+        DUCKDB_V2_ERROR_NONE) {
+      return fallback;
+    }
+    text.resize(length);
+    sql += "CAST(NULL AS " + text + ")";
+  }
+  try {
+    auto exported = QueryArrow(connection, sql + " LIMIT 0")->schema();
+    arrow::FieldVector fields;
+    for (int i = 0; i < exported->num_fields(); i++) {
+      fields.push_back(exported->field(i)->WithName(fallback->field(i)->name()));
+    }
+    return arrow::schema(std::move(fields));
+  } catch (const std::exception&) {
+    return fallback;
+  }
 }
 
 std::vector<duckdb_v2_value_handle> BoundValues::Handles() const {
