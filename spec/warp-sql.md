@@ -437,7 +437,9 @@ lives.
 - If the client disconnects while reading an **unretained** result, the server
   SHOULD cancel the statement (`cancel_reason: client`), including while the stream
   is waiting for the statement's next batch. A retained result's statement keeps
-  running.
+  running, and so does one that changes data (`INSERT … RETURNING`, …): the server
+  MUST NOT undo a write because its reader went away; it runs to the end with its
+  rows discarded.
 - A finished statement is not kept forever. A server MAY forget one once at least 5
   minutes have passed since it finished and its retained result, if any, has expired,
   or sooner when the session holds more than 1,000 finished statements (oldest first);

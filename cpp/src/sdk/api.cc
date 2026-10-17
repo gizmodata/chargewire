@@ -481,7 +481,7 @@ void Api::Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> state
     try {
       StatementOutcome outcome = work(session->engine());
       if (outcome.rows) {
-        statement->SetRows(outcome.rows->schema());
+        statement->SetRows(outcome.rows->schema(), outcome.finish_if_abandoned);
         for (;;) {
           auto next = outcome.rows->Next();
           if (!next.ok()) {
@@ -984,7 +984,7 @@ Response Api::ResultStream(std::shared_ptr<Session> session, std::shared_ptr<Sta
       bool complete = false;
       ~ReadGuard() {
         statement->EndRead();
-        if (!complete && !statement->retained()) {
+        if (!complete && !statement->retained() && !statement->AbandonRead()) {
           api->Cancel(*session, *statement, CancelReason::kClient);
         }
       }

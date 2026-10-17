@@ -42,6 +42,9 @@ struct Principal {
 struct StatementOutcome {
   std::shared_ptr<arrow::RecordBatchReader> rows;  // null when the statement returns no rows
   std::optional<int64_t> rows_affected;            // for statements without rows, when known
+  // The statement changes data (INSERT … RETURNING, …): when its reader goes away it runs
+  // to the end with its rows discarded, rather than being cancelled (spec §6.5).
+  bool finish_if_abandoned = false;
 };
 
 // Per-option failures from EngineSession::SetOptions (spec §5.3).

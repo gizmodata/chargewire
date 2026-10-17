@@ -156,3 +156,21 @@ def test_streamed_result_sends_its_schema_before_the_query_finishes(warp, sessio
     doc = warp.wait_done(session_id=session_id, statement_id=statement_id, timeout=30)
     assert doc["state"] == "cancelled", doc
     assert doc["cancel_reason"] == "client"
+
+
+def test_abandoned_write_runs_to_the_end(warp, session_id):
+    # A client that stops reading an INSERT … RETURNING doesn't undo the INSERT.
+    warp.execute(session_id=session_id, sql="CREATE TABLE abandoned_write (i BIGINT)")
+    request = warp.http.build_request(
+        method="POST", url=f"{warp.session_url(session_id)}/statements",
+        headers=warp.headers(Accept=ARROW_STREAM),
+        json={"sql": "INSERT INTO abandoned_write SELECT * FROM range(3000000) RETURNING i"})
+    response = warp.http.send(request=request, stream=True)
+    assert response.status_code == 200, response.read()
+    statement_id = response.headers["warp-statement-id"]
+    next(response.iter_raw())  # the schema, then hang up
+    response.close()
+    doc = warp.wait_done(session_id=session_id, statement_id=statement_id, timeout=60)
+    assert doc["state"] == "succeeded", doc
+    count = warp.query(session_id=session_id, sql="SELECT count(*) AS n FROM abandoned_write")
+    assert count.to_pylist() == [{"n": 3000000}]

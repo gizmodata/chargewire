@@ -70,6 +70,12 @@ warpsql::StatementOutcome Outcome(ArrowResult& result, std::shared_ptr<void> kee
   DUCKDB_V2_RESULT_TYPE type{};
   Call([&](auto* err) { return duckdb_v2_arrow_result_get_result_type(result.get(), &type, err); });
   warpsql::StatementOutcome outcome;
+  DUCKDB_V2_STATEMENT_TYPE statement{};
+  Call([&](auto* err) { return duckdb_v2_arrow_result_get_statement_type(result.get(), &statement, err); });
+  // Only reads are cancelled when their reader goes away; a write finishes what it began.
+  outcome.finish_if_abandoned = statement != DUCKDB_V2_STATEMENT_TYPE_SELECT &&
+                                statement != DUCKDB_V2_STATEMENT_TYPE_EXPLAIN &&
+                                statement != DUCKDB_V2_STATEMENT_TYPE_PRAGMA;
   if (type == DUCKDB_V2_RESULT_TYPE_QUERY_RESULT) {
     ArrowArrayStream stream{};
     duckdb_v2_arrow_result_handle handle = result.get();

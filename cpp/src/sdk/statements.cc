@@ -73,11 +73,12 @@ bool Statement::BeginRunning() {
   return true;
 }
 
-void Statement::SetRows(std::shared_ptr<arrow::Schema> schema) {
+void Statement::SetRows(std::shared_ptr<arrow::Schema> schema, bool finish_if_abandoned) {
   std::string encoded = SchemaBase64(schema);
   {
     std::lock_guard lock(mutex_);
     kind_ = Kind::kRows;
+    finish_if_abandoned_ = finish_if_abandoned;
     schema_ = std::move(schema);
     schema_base64_ = std::move(encoded);
   }
@@ -111,13 +112,18 @@ bool Statement::AddBatch(std::shared_ptr<arrow::RecordBatch> batch) {
       // Backpressure: wait for the reader, unless the statement ends meanwhile.
       waiting_for_reader_ = true;
       room_.wait(lock, [this] {
-        return batches_.size() < config_.unretained_buffer_batches ||
+        return batches_.size() < config_.unretained_buffer_batches || abandoned_ ||
                cancel_reason_ != CancelReason::kNone || IsTerminalLocked();
       });
       waiting_for_reader_ = false;
     }
     if (cancel_reason_ != CancelReason::kNone || state_ != StatementState::kRunning) {
       return false;
+    }
+    if (abandoned_) {
+      row_count_ += batch->num_rows();
+      batch_count_ += 1;
+      return true;  // nobody will read it; the statement still runs to the end
     }
     row_count_ += batch->num_rows();
     batch_count_ += 1;
@@ -178,6 +184,19 @@ bool Statement::RequestCancel(CancelReason reason) {
   room_.notify_all();
   changed_.Notify();
   return running;
+}
+
+bool Statement::AbandonRead() {
+  {
+    std::lock_guard lock(mutex_);
+    if (!finish_if_abandoned_ || config_.retain) {
+      return false;
+    }
+    abandoned_ = true;
+    batches_.clear();
+  }
+  room_.notify_all();
+  return true;
 }
 
 void Statement::Terminate(StatementState state, std::optional<Error> error) {

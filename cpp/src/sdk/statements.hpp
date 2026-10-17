@@ -50,7 +50,7 @@ class Statement {
   // ---- Engine side ----
   // Moves queued -> running. False if the statement was cancelled while queued.
   bool BeginRunning();
-  void SetRows(std::shared_ptr<arrow::Schema> schema);
+  void SetRows(std::shared_ptr<arrow::Schema> schema, bool finish_if_abandoned = false);
   void SetUpdate(std::optional<int64_t> rows_affected);
   // Adds a result batch. For an unretained result, waits for the reader to make room.
   // False means stop producing: the statement was cancelled or exceeded its quota.
@@ -62,6 +62,10 @@ class Statement {
   // Requests cancellation. Returns true when the statement is running, so the caller
   // must interrupt the engine.
   bool RequestCancel(CancelReason reason);
+  // The one reader of an unretained result went away. A statement that changes data
+  // then runs on with its batches discarded (returns true); any other must be cancelled
+  // by the caller (returns false).
+  bool AbandonRead();
 
   // ---- Readers (HTTP) ----
   json::object Document(std::optional<double> progress) const;
@@ -128,6 +132,8 @@ class Statement {
   int64_t reserved_bytes_ = 0;
   bool produced_all_ = false;
 
+  bool finish_if_abandoned_ = false;
+  bool abandoned_ = false;  // unretained, reader gone: batches are counted, not kept
   bool waiting_for_reader_ = false;
   bool read_claimed_ = false;  // unretained: the one read has started
   bool reader_active_ = false;
