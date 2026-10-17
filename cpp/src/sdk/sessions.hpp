@@ -32,6 +32,11 @@ class Session {
 
   // Safe from any thread while the engine is busy.
   void Interrupt();
+  // Interrupts the engine only while `statement` is the one running on it, so a late
+  // interrupt never reaches the session's next statement. Safe from any thread.
+  void InterruptIfRunning(const Statement* statement);
+  // The statement the engine is running (nullptr when idle). Set on strand().
+  void SetRunning(const Statement* statement);
   std::optional<double> Progress();
   std::optional<std::chrono::milliseconds> DefaultStatementTimeout();
 
@@ -69,6 +74,7 @@ class Session {
 
   mutable std::mutex engine_mutex_;  // guards engine_ lifetime against Interrupt/Progress
   std::unique_ptr<EngineSession> engine_;
+  const Statement* running_ = nullptr;  // guarded by engine_mutex_
 
   mutable std::mutex mutex_;
   json::object options_;

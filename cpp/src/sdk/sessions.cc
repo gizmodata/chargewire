@@ -100,6 +100,18 @@ void Session::Interrupt() {
   }
 }
 
+void Session::InterruptIfRunning(const Statement* statement) {
+  std::lock_guard lock(engine_mutex_);
+  if (engine_ && running_ == statement) {
+    engine_->Interrupt();
+  }
+}
+
+void Session::SetRunning(const Statement* statement) {
+  std::lock_guard lock(engine_mutex_);
+  running_ = statement;
+}
+
 std::optional<double> Session::Progress() {
   std::lock_guard lock(engine_mutex_);
   return engine_ ? engine_->Progress() : std::nullopt;

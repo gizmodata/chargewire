@@ -469,7 +469,7 @@ json::object Api::StatementDocument(Session& session, Statement& statement) cons
 void Api::Cancel(const std::shared_ptr<Session>& session, const std::shared_ptr<Statement>& statement,
                  CancelReason reason) {
   if (statement->RequestCancel(reason)) {
-    session->Interrupt();
+    session->InterruptIfRunning(statement.get());
     // A running statement may not have reached the engine yet (the backend is still
     // checking or queueing it), and an engine forgets an interrupt that comes before
     // its query starts (DuckDB clears it then): keep interrupting until it ends.
@@ -484,7 +484,7 @@ void Api::KeepInterrupting(std::shared_ptr<Session> session, std::shared_ptr<Sta
     if (ec || statement->IsTerminal()) {
       return;
     }
-    session->Interrupt();
+    session->InterruptIfRunning(statement.get());
     KeepInterrupting(std::move(session), std::move(statement));
   });
 }
@@ -492,6 +492,13 @@ void Api::KeepInterrupting(std::shared_ptr<Session> session, std::shared_ptr<Sta
 void Api::Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> statement,
               StatementWork work) {
   net::post(session->strand(), [session, statement, work = std::move(work)] {
+    // Marked before it may start, cleared once it is over: interrupts meant for this
+    // statement reach the engine only while it runs.
+    struct Running {
+      Session& session;
+      Running(Session& s, const Statement* st) : session(s) { session.SetRunning(st); }
+      ~Running() { session.SetRunning(nullptr); }
+    } running{*session, statement.get()};
     if (!statement->BeginRunning()) {
       return;  // cancelled while queued
     }

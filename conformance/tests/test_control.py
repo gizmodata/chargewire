@@ -22,6 +22,21 @@ def test_cancel_stops_a_running_statement(warp, session_id):
     assert warp.query(session_id=session_id, sql="SELECT 1 AS v").to_pylist() == [{"v": 1}]
 
 
+def test_a_cancel_never_reaches_the_sessions_next_statement(warp, session_id):
+    # A server may repeat its interrupt until a cancelled statement ends; none of it may
+    # land on the statement the client runs right after (long enough to span a repeat).
+    for _ in range(5):
+        response = warp.submit(session_id=session_id, sql=SLOW, headers={"Prefer": "respond-async"})
+        statement_id = response.json()["statement_id"]
+        warp.http.post(url=f"{warp.statement_url(session_id, statement_id)}/cancel",
+                       headers=warp.headers())
+        doc = warp.wait_done(session_id=session_id, statement_id=statement_id, timeout=20)
+        assert doc["state"] == "cancelled", doc
+        next_doc = warp.execute(session_id=session_id,
+                                sql="SELECT sum(i) AS s FROM range(300000000) t(i)")
+        assert next_doc["state"] == "succeeded", next_doc
+
+
 def test_cancel_a_finished_statement_is_harmless(warp, session_id):
     doc = warp.execute(session_id=session_id, sql="SELECT 1")
     cancel = warp.http.post(url=f"{warp.statement_url(session_id, doc['statement_id'])}/cancel",
