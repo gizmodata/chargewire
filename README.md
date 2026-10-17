@@ -33,6 +33,9 @@ any language's standard HTTP library. No gRPC, no protobuf, no generated code.
   streams (`application/vnd.apache.arrow.stream`), so every Arrow library reads them
   directly. Control messages are small JSON documents.
 - 🚀 **Short queries stay one round trip.** One `POST` runs a query and streams its result.
+- 🔀 **Big results go wide.** A client can ask for a large result as several partitions and
+  read them over separate connections at once, past what one TCP stream can carry, with the
+  order kept when the query has one.
 - 🌐 **Long queries survive real networks.** Submit a query, get a handle, poll it and fetch
   the result later. A dropped download resumes from the batch where it stopped, and no
   request has to outlive a proxy timeout.
@@ -111,6 +114,7 @@ sequenceDiagram
 | ▶️ Statements: streamed or submit/poll/fetch, positional and named bind parameters | [§6](spec/warp-sql.md#6-statements) |
 | ♻️ Retained, resumable results; errors mid-stream; idempotent submission | [§6.5–6.7](spec/warp-sql.md#65-retention-and-resumption) |
 | 🛑 Cancellation (statement and session) and timeouts | [§6.8–6.9](spec/warp-sql.md#68-cancel-and-close) |
+| 🔀 Partitioned results, read concurrently over several connections, in order or not | [§6.10](spec/warp-sql.md#610-partitioned-results) |
 | 🧪 Prepared statements with JSON or Arrow parameter batches | [§7](spec/warp-sql.md#7-prepared-statements) |
 | 📥 Streaming bulk ingest, with zstd | [§8](spec/warp-sql.md#8-bulk-ingest) |
 | 🔐 Security model: principals, bound handles, governed results | [§9](spec/warp-sql.md#9-security) |
@@ -118,9 +122,10 @@ sequenceDiagram
 | ⚠️ Problem-document errors and graceful shutdown | [§11](spec/warp-sql.md#11-errors) |
 | 🧭 Versioning rules | [§12](spec/warp-sql.md#12-versioning) |
 
-Results are described as **partitions**, each with a location, so a distributed engine can
-hand a client several streams to fetch in parallel without changing the protocol
-([docs/distributed.md](docs/distributed.md)).
+Results are described as **partitions**, each with a location. Today a server splits a large
+result into partitions on itself, so a client reads it over several connections at once
+(§6.10). Tomorrow a distributed engine can point partitions at other machines, without changing
+the protocol ([docs/distributed.md](docs/distributed.md)).
 
 ## 🌍 Implementations
 
@@ -128,7 +133,7 @@ hand a client several streams to fetch in parallel without changing the protocol
 |---|---|
 | Server | [**Hardcharger**](https://github.com/gizmodata/hardcharger): GizmoData's DuckDB 2.0 server |
 | Reference server | [`warp-duckdb`](cpp/README.md) (this repo): DuckDB 2.0 through its v2 C API |
-| Server SDK | [`libwarpsql`](cpp/README.md) (C++20, this repo): engines implement a `Backend`; the SDK owns authentication, handle binding, streaming, retention, cancellation and draining |
+| Server SDK | [`libwarpsql`](cpp/README.md) (C++20, this repo): engines implement a `Backend`; the SDK owns authentication, handle binding, retention, cancellation and draining, and streams every result through an asynchronous pipeline (produce, compress on a worker pool, encrypt and send, each stage overlapped) |
 | ADBC driver | [`warp-sql-adbc`](https://github.com/gizmodata/warp-sql-adbc): Go, with Python bindings, loadable by any ADBC driver manager |
 | JDBC driver | [`warp-sql-jdbc`](https://github.com/gizmodata/warp-sql-jdbc): one jar for Java 17+, no gRPC or Netty |
 
@@ -172,8 +177,9 @@ See [cpp/README.md](cpp/README.md) for TLS, mTLS and the other options.
 4. ~~ADBC (Go, Python) and JDBC drivers.~~
 5. ~~A production server on the SDK~~: [Hardcharger](https://github.com/gizmodata/hardcharger),
    which runs GizmoSQL 1.x's test battery over Warp SQL alone.
-6. Parallel multi-partition results and a JavaScript client. **In progress.**
-7. Spec 1.0.0: [Appendix A](spec/warp-sql.md#appendix-a-open-items-before-10) lists the open items.
+6. ~~Parallel multi-partition results~~ (§6.10, with the SDK's pipelined streaming).
+7. A JavaScript client and partitioned uploads. **In progress.**
+8. Spec 1.0.0: [Appendix A](spec/warp-sql.md#appendix-a-open-items-before-10) lists the open items.
 
 ## 📂 In this repo
 
