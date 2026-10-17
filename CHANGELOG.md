@@ -21,6 +21,27 @@ spec's version is the repository's version.
   Tested by `cpp/tests/client_test.cc`: unit tests and live tests against warp-duckdb.
 - The server-info document carries `server_arrow_version` (Flight SQL's
   `FLIGHT_SQL_SERVER_ARROW_VERSION`).
+- Partitioned results on one server (spec §6.10, capability `result_partitions`): a
+  client sends `Warp-Result-Partitions: n` (and `Warp-Result-Order: any`) and reads the
+  partitions at once over separate connections; `interleaved` partitions rebuild the
+  result's order round robin. Without the header a result has one partition, as before.
+  `ServerOptions::max_result_partitions` (default 32). Conformance: `test_partitions.py`.
+- `WARPSQL_STREAM_STATS=1`: the SDK logs each result stream's and statement's stage times.
+
+### Changed
+
+- TLS: the SDK's own TLS stream (`TlsStream`) encrypts whole gathered writes (up to
+  1 MiB) at once and sends them while it encrypts the next, instead of Asio's
+  record-at-a-time `ssl::stream`. A TLS result stream went from about a third of
+  plaintext to the same speed on one AWS connection (the flow's 9.5 Gbit/s).
+- Result streams are a pipeline: batches are encoded (and zstd-compressed) on an encode
+  pool, several at once, and written in order in about 1 MiB writes; an unretained
+  result's buffer is bounded by bytes (32 MiB) rather than batch count.
+- Uploads are read straight from the connection in 1 MiB pieces (Content-Length or
+  chunked framing decoded by the SDK), not through Beast's 64 KB parser reads.
+- The DuckDB backend ingests in parallel: `warp_upload()` is a parallel table function
+  over the SDK's thread-safe `IngestBatches` reader, with batch indexes, so DuckDB's
+  batch insert runs on many threads and keeps the upload's order, in one transaction.
 
 - Draft 0.1.0 of the protocol spec (`spec/warp-sql.md`): discovery and health,
   token authentication (password, token exchange, browser sign-in), sessions,
