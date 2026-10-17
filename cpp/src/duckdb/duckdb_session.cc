@@ -1,6 +1,7 @@
 #include "duckdb_session.hpp"
 
 #include <arrow/api.h>
+#include <arrow/c/bridge.h>
 #include <arrow/ipc/writer.h>
 
 #include <map>
@@ -19,15 +20,24 @@ namespace {
 using PreparedHandle =
     Owned<duckdb_v2_prepared_statement_handle, duckdb_v2_prepared_statement_destroy>;
 
+// What executing a prepared statement returns, learned before it ever runs.
+struct Described {
+  std::optional<bool> returns_rows;
+  std::shared_ptr<arrow::Schema> schema;  // when it returns rows
+};
+
 class DuckDBPrepared : public warpsql::PreparedStatement {
  public:
-  DuckDBPrepared(SqlStatement statement, PreparedHandle prepared, ParameterTypes types)
+  DuckDBPrepared(SqlStatement statement, PreparedHandle prepared, ParameterTypes types,
+                 Described described)
       : statement_(std::move(statement)),
         prepared_(std::move(prepared)),
-        types_(std::move(types)) {}
+        types_(std::move(types)),
+        described_(std::move(described)) {}
 
   std::shared_ptr<arrow::Schema> ParameterSchema() override { return types_.ArrowSchema(); }
-  std::shared_ptr<arrow::Schema> ResultSchema() override { return nullptr; }
+  std::shared_ptr<arrow::Schema> ResultSchema() override { return described_.schema; }
+  std::optional<bool> ReturnsRows() override { return described_.returns_rows; }
 
   duckdb_v2_sql_statement_handle statement() const { return statement_.get(); }
   duckdb_v2_prepared_statement_handle prepared() const { return prepared_.get(); }
@@ -37,7 +47,86 @@ class DuckDBPrepared : public warpsql::PreparedStatement {
   SqlStatement statement_;
   PreparedHandle prepared_;
   ParameterTypes types_;
+  Described described_;
 };
+
+DUCKDB_V2_STATEMENT_TYPE StatementType(duckdb_v2_sql_statement_handle statement) {
+  DUCKDB_V2_STATEMENT_TYPE type = DUCKDB_V2_STATEMENT_TYPE_INVALID;
+  Call([&](auto* err) { return duckdb_v2_sql_statement_get_type(statement, &type, err); });
+  return type;
+}
+
+// Executing returns a handle whose result type and schema are known before its first
+// step, and destroying it unstepped runs nothing, so a prepared statement describes
+// itself by executing with typed NULL parameters. Only kinds of statement that run
+// lazily are executed; DDL and the like return no rows, and the rest (PRAGMA, a
+// statement whose parameter types DuckDB can't tell, ...) stay unknown.
+Described Describe(ValueFactory& values, duckdb_v2_sql_statement_handle statement,
+                   duckdb_v2_prepared_statement_handle prepared, const ParameterTypes& types) {
+  switch (StatementType(statement)) {
+    case DUCKDB_V2_STATEMENT_TYPE_SELECT:
+    case DUCKDB_V2_STATEMENT_TYPE_INSERT:
+    case DUCKDB_V2_STATEMENT_TYPE_UPDATE:
+    case DUCKDB_V2_STATEMENT_TYPE_DELETE:
+    case DUCKDB_V2_STATEMENT_TYPE_MERGE_INTO:
+    case DUCKDB_V2_STATEMENT_TYPE_EXPLAIN:
+      break;
+    case DUCKDB_V2_STATEMENT_TYPE_CREATE:
+    case DUCKDB_V2_STATEMENT_TYPE_DROP:
+    case DUCKDB_V2_STATEMENT_TYPE_ALTER:
+    case DUCKDB_V2_STATEMENT_TYPE_TRANSACTION:
+    case DUCKDB_V2_STATEMENT_TYPE_SET:
+    case DUCKDB_V2_STATEMENT_TYPE_VARIABLE_SET:
+    case DUCKDB_V2_STATEMENT_TYPE_CREATE_FUNC:
+    case DUCKDB_V2_STATEMENT_TYPE_ATTACH:
+    case DUCKDB_V2_STATEMENT_TYPE_DETACH:
+    case DUCKDB_V2_STATEMENT_TYPE_LOAD:
+    case DUCKDB_V2_STATEMENT_TYPE_VACUUM:
+    case DUCKDB_V2_STATEMENT_TYPE_ANALYZE:
+      return Described{false, nullptr};
+    default:
+      return {};
+  }
+  json::value nulls;
+  if (types.named()) {
+    json::object by_name;
+    for (std::size_t i = 0; i < types.size(); i++) {
+      if (types.For(i, types.name(i)) == nullptr) return {};
+      by_name[types.name(i)] = nullptr;
+    }
+    nulls = std::move(by_name);
+  } else {
+    for (std::size_t i = 0; i < types.size(); i++) {
+      if (types.For(i, "") == nullptr) return {};
+    }
+    nulls = json::array(types.size(), nullptr);
+  }
+  try {
+    const BoundValues bound = values.FromJson(nulls, types);
+    const auto handles = bound.Handles();
+    const auto names = bound.NameHandles();
+    ArrowResult result;
+    Call([&](auto* err) {
+      return duckdb_v2_prepared_statement_execute_arrow(
+          prepared, names.empty() ? nullptr : names.data(),
+          handles.empty() ? nullptr : handles.data(), handles.size(), 0, result.out(), err);
+    });
+    DUCKDB_V2_RESULT_TYPE type{};
+    Call([&](auto* err) { return duckdb_v2_arrow_result_get_result_type(result.get(), &type, err); });
+    if (type != DUCKDB_V2_RESULT_TYPE_QUERY_RESULT) {
+      return Described{false, nullptr};
+    }
+    ArrowSchema c_schema{};
+    Call([&](auto* err) { return duckdb_v2_arrow_result_get_schema(result.get(), &c_schema, err); });
+    auto schema = arrow::ImportSchema(&c_schema);
+    if (!schema.ok()) {
+      return {};
+    }
+    return Described{true, std::move(*schema)};
+  } catch (const Error&) {
+    return {};  // e.g. a statement that expands into a group: known only at execution
+  }
+}
 
 bool HasNull(const json::value& parameters) {
   if (parameters.is_array()) {
@@ -111,9 +200,11 @@ std::unique_ptr<warpsql::PreparedStatement> DuckDBSession::Prepare(std::string_v
                                                prepared.out(), err);
   });
   ParameterTypes types = ParameterTypes::Load(connection_.get(), statements[0].get());
+  Described described = Describe(*values_, statements[0].get(), prepared.get(), types);
   return std::make_unique<DuckDBPrepared>(std::move(statements[0]), std::move(prepared),
-                                          std::move(types));
+                                          std::move(types), std::move(described));
 }
+
 
 warpsql::StatementOutcome DuckDBSession::ExecutePrepared(warpsql::PreparedStatement& statement,
                                                          const warpsql::Parameters& parameters) {
@@ -162,6 +253,9 @@ warpsql::StatementOutcome DuckDBSession::ExecutePrepared(warpsql::PreparedStatem
         changed = changed.value_or(0) + *outcome.rows_affected;
       }
     }
+  }
+  if (!schema) {
+    schema = prepared.ResultSchema();  // a query run for no parameter rows: no rows, not a count
   }
   warpsql::StatementOutcome outcome;
   if (schema) {

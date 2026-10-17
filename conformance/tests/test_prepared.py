@@ -108,3 +108,47 @@ def test_prepare_errors_are_sql_errors(warp, session_id):
     response = warp.http.post(url=f"{warp.session_url(session_id)}/prepared", headers=warp.headers(),
                               json={"sql": "SELEC 1"})
     assert_problem(response=response, status=400, code="sql_error")
+
+
+def schema_of(encoded: str) -> pa.Schema:
+    return ipc.open_stream(source=io.BytesIO(initial_bytes=base64.b64decode(encoded))).schema
+
+
+def test_prepared_query_describes_its_result(warp, session_id):
+    doc = prepare(warp=warp, session_id=session_id,
+                  sql="SELECT CAST(? AS INTEGER) + 1 AS a, CAST(? AS VARCHAR) AS b")
+    assert doc["result_kind"] == "rows"
+    schema = schema_of(encoded=doc["result_schema"])
+    assert schema.names == ["a", "b"]
+    assert schema.field("b").type == pa.string()
+
+
+def test_preparing_runs_nothing(warp, session_id):
+    warp.execute(session_id=session_id, sql="CREATE TABLE prepared_side (x INTEGER)")
+    warp.execute(session_id=session_id, sql="INSERT INTO prepared_side VALUES (1)")
+    insert = prepare(warp=warp, session_id=session_id, sql="INSERT INTO prepared_side VALUES (?)")
+    assert insert["result_kind"] in ("update", None)
+    assert insert["result_schema"] is None
+    returning = prepare(warp=warp, session_id=session_id,
+                        sql="INSERT INTO prepared_side VALUES (?) RETURNING x")
+    assert returning["result_kind"] in ("rows", None)
+    prepare(warp=warp, session_id=session_id, sql="DELETE FROM prepared_side")
+    ddl = prepare(warp=warp, session_id=session_id, sql="CREATE TABLE prepared_never (x INTEGER)")
+    assert ddl["result_kind"] in ("update", None)
+    assert warp.query(session_id=session_id, sql="SELECT x FROM prepared_side").to_pylist() == [{"x": 1}]
+    tables = warp.query(session_id=session_id,
+                        sql="SELECT count(*) AS n FROM information_schema.tables "
+                            "WHERE table_name = 'prepared_never'")
+    assert tables.to_pylist() == [{"n": 0}]
+
+
+def test_query_for_no_parameter_rows_returns_no_rows(warp, session_id):
+    doc = prepare(warp=warp, session_id=session_id, sql="SELECT CAST(? AS INTEGER) * 2 AS v")
+    empty = pa.table({"p": pa.array([], type=pa.int32())})
+    response = execute(warp=warp, session_id=session_id, prepared_id=doc["prepared_id"], arrow=empty,
+                       accept_arrow=True)
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith(ARROW_STREAM), response.text
+    table = read_table(content=response.content)
+    assert table.num_rows == 0
+    assert table.schema.names == ["v"]

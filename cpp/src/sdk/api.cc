@@ -653,21 +653,26 @@ Task<Response> Api::PrepareStatement(Request& request, const std::string& sessio
     std::shared_ptr<PreparedStatement> statement;
     json::value parameter_schema;
     json::value result_schema;
+    json::value result_kind;
   };
   auto prepared = co_await OnEngine(*session, [session, sql = std::move(sql)] {
     Prepared out;
     out.statement = session->engine().Prepare(sql);
     out.parameter_schema = SchemaBase64(out.statement->ParameterSchema());
+    std::optional<bool> rows = out.statement->ReturnsRows();
     if (auto result = out.statement->ResultSchema()) {
       out.result_schema = SchemaBase64(result);
+      rows = true;
     }
+    out.result_kind = rows ? json::value(*rows ? "rows" : "update") : json::value(nullptr);
     return out;
   });
   const std::string id = session->AddPrepared(prepared.statement);
   Response response = JsonResponse(http::status::created,
                                    json::object{{"prepared_id", id},
                                                 {"parameter_schema", prepared.parameter_schema},
-                                                {"result_schema", prepared.result_schema}});
+                                                {"result_schema", prepared.result_schema},
+                                                {"result_kind", prepared.result_kind}});
   response.headers.emplace_back(
       "Location", std::format("/warp/v1/sessions/{}/prepared/{}", session_id, id));
   co_return response;

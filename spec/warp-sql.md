@@ -480,9 +480,15 @@ Body `{"sql": "INSERT INTO t VALUES (?, ?)"}`. `201` with:
 {
   "prepared_id": "p_77a…",
   "parameter_schema": "<base64 Arrow schema>",
-  "result_schema": "<base64 Arrow schema, or null when the statement returns no rows or the schema is not known until execution>"
+  "result_schema": "<base64 Arrow schema, or null>",
+  "result_kind": "rows"
 }
 ```
+
+`result_kind` says what executing returns: `"rows"` (with `result_schema`, the rows'
+schema, when the server can tell it before running), `"update"` (a count, no rows;
+`result_schema` is null), or `null` when the server can only tell at execution.
+Preparing MUST NOT run the statement.
 
 ### 7.2 `POST …/prepared/{prepared_id}/execute`
 
@@ -490,7 +496,8 @@ The body is either JSON `{"parameters": [...]}` (as in §6.1) or an Arrow stream
 (`Content-Type: application/vnd.apache.arrow.stream`) whose schema matches
 `parameter_schema`. **Each row of the Arrow body is one execution**, so a client can
 run a batch of inserts in one request. A query with more than one parameter row
-returns the concatenation of each execution's rows, in order.
+returns the concatenation of each execution's rows, in order. A query run for an Arrow
+body with no rows returns no rows (its schema, no batches), not a count.
 
 The response is exactly as for §6.1, with the same headers (`Accept`, `Prefer`,
 `Idempotency-Key`, …). Each execution creates a statement.

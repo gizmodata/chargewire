@@ -56,6 +56,9 @@ class PreparedStatement {
   // The rows' schema, or null when the statement returns no rows or the schema is only
   // known at execution.
   virtual std::shared_ptr<arrow::Schema> ResultSchema() = 0;
+  // Whether executing returns rows (true) or only a count (false); nullopt when it is
+  // only known at execution. A non-null ResultSchema() means rows.
+  virtual std::optional<bool> ReturnsRows() { return std::nullopt; }
 };
 
 // Bind parameters for one request: JSON (spec §6.1), or Arrow rows, one execution per

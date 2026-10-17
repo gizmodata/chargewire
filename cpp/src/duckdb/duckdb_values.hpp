@@ -23,6 +23,7 @@ class ParameterTypes {
   // can't tell.
   duckdb_v2_logical_type_handle For(std::size_t index, std::string_view name) const;
   std::size_t size() const { return types_.size(); }
+  const std::string& name(std::size_t index) const { return names_[index]; }
   bool named() const;
   // An Arrow schema describing the parameters, for clients building Arrow parameters.
   std::shared_ptr<arrow::Schema> ArrowSchema() const;
