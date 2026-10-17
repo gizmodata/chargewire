@@ -504,6 +504,11 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::TablesWithSchemas(
           for (int64_t i = 0; i < (*flat)->num_rows(); i++) {
             Column& column = columns[text(0, i)];
             column.type_name = text(1, i);
+            // The base type, as Flight SQL drivers report it: DECIMAL(10,2) -> DECIMAL (the
+            // digits are PRECISION and SCALE).
+            if (const auto paren = column.type_name.find('('); paren != std::string::npos) {
+              column.type_name.resize(paren);
+            }
             column.nullable = text(2, i) != "NO";
             column.scale = text(4, i);
             if (text(6, i) == "10") {
@@ -525,7 +530,7 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::TablesWithSchemas(
         }
       }
     }
-    const std::string default_key = ColumnDefaultMetadataKey();
+    const std::vector<std::string> default_keys = ColumnDefaultMetadataKeys();
     arrow::FieldVector fields;
     for (const auto& field : table_schema->fields()) {
       auto it = columns.find(field->name());
@@ -548,9 +553,11 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::TablesWithSchemas(
         keys.push_back("ARROW:FLIGHT:SQL:REMARKS");
         values.push_back(column.remarks);
       }
-      if (!column.default_sql.empty() && !default_key.empty()) {
-        keys.push_back(default_key);  // Flight SQL has no key for it (spec §10)
-        values.push_back(column.default_sql);
+      if (!column.default_sql.empty()) {
+        for (const auto& key : default_keys) {  // Flight SQL has no key for it (spec §10)
+          keys.push_back(key);
+          values.push_back(column.default_sql);
+        }
       }
       fields.push_back(field->WithNullable(column.nullable)
                            ->WithMetadata(arrow::key_value_metadata(keys, values)));
