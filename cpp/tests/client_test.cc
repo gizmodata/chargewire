@@ -24,7 +24,11 @@
 
 #include "warpsql/client.hpp"
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <process.h>
+#include <windows.h>
+#else
+#include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -68,13 +72,20 @@ std::string SchemaStream(const std::shared_ptr<arrow::Schema>& schema) {
   return sink->Finish().ValueOrDie()->ToString();
 }
 
+int ProcessId() {
+#ifdef _WIN32
+  return _getpid();
+#else
+  return ::getpid();
+#endif
+}
+
 uint16_t FreePort() {
   boost::asio::io_context io;
   boost::asio::ip::tcp::acceptor acceptor(io, {boost::asio::ip::make_address("127.0.0.1"), 0});
   return acceptor.local_endpoint().port();
 }
 
-#ifndef _WIN32
 // A certificate signed by `issuer_cert`/`issuer_key` (self-signed when they are null),
 // with the extensions TLS libraries expect, written to `cert_path` and `key_path`.
 struct Issued {
@@ -129,7 +140,7 @@ struct Certificates {
 
   static Certificates Make(const std::string& names) {
     Certificates c;
-    c.dir = fs::temp_directory_path() / ("warpsql-client-certs-" + std::to_string(::getpid()) + "-" +
+    c.dir = fs::temp_directory_path() / ("warpsql-client-certs-" + std::to_string(ProcessId()) + "-" +
                                          std::to_string(std::rand()));
     fs::create_directories(c.dir);
     c.ca = c.dir / "ca.pem";
@@ -169,6 +180,40 @@ class Server {
     port_ = FreePort();
     std::vector<std::string> args{binary_, "--host", "127.0.0.1", "--port", std::to_string(port_)};
     args.insert(args.end(), extra.begin(), extra.end());
+    log_ = fs::temp_directory_path() / ("warpsql-client-test-" + std::to_string(port_) + ".log");
+#ifdef _WIN32
+    // The command line, each argument quoted (none here holds a quote or ends in '\\').
+    std::wstring command;
+    for (const auto& a : args) command += L"\"" + std::wstring(a.begin(), a.end()) + L"\" ";
+    // This process's environment without WARP_DUCKDB_*, plus the password.
+    std::wstring block = L"WARP_DUCKDB_PASSWORD=" + std::wstring(password_.begin(), password_.end());
+    block.push_back(L'\0');
+    if (wchar_t* env = GetEnvironmentStringsW()) {
+      for (const wchar_t* e = env; *e != L'\0'; e += wcslen(e) + 1) {
+        if (std::wstring_view(e).starts_with(L"WARP_DUCKDB_")) continue;
+        block.append(e);
+        block.push_back(L'\0');
+      }
+      FreeEnvironmentStringsW(env);
+    }
+    block.push_back(L'\0');
+    SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
+    HANDLE log = CreateFileW(log_.wstring().c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit,
+                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = log;
+    startup.hStdError = log;
+    PROCESS_INFORMATION info{};
+    if (CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE, CREATE_UNICODE_ENVIRONMENT, block.data(),
+                       nullptr, &startup, &info)) {
+      CloseHandle(info.hThread);
+      process_ = info.hProcess;
+    }
+    if (log != INVALID_HANDLE_VALUE) CloseHandle(log);
+#else
     std::vector<char*> argv;
     for (auto& a : args) argv.push_back(a.data());
     argv.push_back(nullptr);
@@ -180,30 +225,59 @@ class Server {
     std::vector<char*> envp;
     for (auto& e : env_strings) envp.push_back(e.data());
     envp.push_back(nullptr);
-    log_ = fs::temp_directory_path() / ("warpsql-client-test-" + std::to_string(port_) + ".log");
     posix_spawn_file_actions_t actions;
     posix_spawn_file_actions_init(&actions);
     posix_spawn_file_actions_addopen(&actions, 1, log_.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     posix_spawn_file_actions_adddup2(&actions, 1, 2);
     if (posix_spawn(&pid_, binary_.c_str(), &actions, nullptr, argv.data(), envp.data()) != 0) pid_ = -1;
     posix_spawn_file_actions_destroy(&actions);
+#endif
   }
 
   ~Server() {
+#ifdef _WIN32
+    if (process_ != nullptr) {
+      TerminateProcess(process_, 1);
+      WaitForSingleObject(process_, INFINITE);
+      CloseHandle(process_);
+    }
+#else
     if (pid_ > 0) {
       kill(pid_, SIGKILL);
       waitpid(pid_, nullptr, 0);
     }
+#endif
+  }
+
+  bool Started() const {
+#ifdef _WIN32
+    return process_ != nullptr;
+#else
+    return pid_ > 0;
+#endif
+  }
+
+  // Whether the process started and hasn't exited.
+  bool Running() {
+#ifdef _WIN32
+    return process_ != nullptr && WaitForSingleObject(process_, 0) == WAIT_TIMEOUT;
+#else
+    if (pid_ <= 0) return false;
+    int status = 0;
+    if (waitpid(pid_, &status, WNOHANG) == pid_) {
+      pid_ = -1;
+      return false;
+    }
+    return true;
+#endif
   }
 
   // Waits until the server answers GET /warp.
   ::testing::AssertionResult WaitReady(const wc::TlsOptions& tls = {}) {
-    if (pid_ <= 0) return ::testing::AssertionFailure() << "cannot start " << binary_;
+    if (!Started()) return ::testing::AssertionFailure() << "cannot start " << binary_;
     const auto deadline = std::chrono::steady_clock::now() + 30s;
     while (std::chrono::steady_clock::now() < deadline) {
-      int status = 0;
-      if (waitpid(pid_, &status, WNOHANG) == pid_) {
-        pid_ = -1;
+      if (!Running()) {
         return ::testing::AssertionFailure() << "server exited:\n" << Log();
       }
       try {
@@ -247,11 +321,15 @@ class Server {
  private:
   std::string binary_;
   uint16_t port_ = 0;
+#ifdef _WIN32
+  HANDLE process_ = nullptr;
+#else
   pid_t pid_ = -1;
+#endif
   bool tls_;
   fs::path log_;
   std::string username_ = "warp";
-  std::string password_ = "p:ss@word;" + std::to_string(::getpid());
+  std::string password_ = "p:ss@word;" + std::to_string(ProcessId());
 };
 
 int64_t Scalar(wc::Session& session, const std::string& sql) {
@@ -282,7 +360,6 @@ class Live : public ::testing::Test {
 };
 
 Server* Live::server_ = nullptr;
-#endif
 
 }  // namespace
 
@@ -383,8 +460,6 @@ TEST(ClientUnit, ConnectionRefusedIsATransportError) {
     EXPECT_NE(std::string(e.what()).find("could not connect to http://127.0.0.1:"), std::string::npos) << e.what();
   }
 }
-
-#ifndef _WIN32
 
 // ---- Live tests ----
 
@@ -913,5 +988,3 @@ TEST_F(LiveTls, MutualTls) {
   skipping.SignInWithPassword(server.username(), server.password());
   EXPECT_EQ(Scalar(*skipping.CreateSession(), "SELECT 2"), 2);
 }
-
-#endif

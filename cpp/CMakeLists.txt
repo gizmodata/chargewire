@@ -11,6 +11,16 @@ include(FetchContent)
 # includes this one sets the same before it does).
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+# Windows 10 and later; no min/max macros; Beast's and DuckDB's objects outgrow the
+# default section count; sources are UTF-8. For each library, and so its users.
+function(warpsql_windows_settings target)
+  if(WIN32)
+    target_compile_definitions(${target} PUBLIC _WIN32_WINNT=0x0A00 NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_options(${target} PUBLIC $<$<CXX_COMPILER_ID:MSVC>:/bigobj /utf-8 /Zc:__cplusplus>)
+    target_link_libraries(${target} PUBLIC ws2_32 mswsock crypt32)
+  endif()
+endfunction()
+
 # Warnings, as each compiler spells them.
 if(MSVC)
   set(WARPSQL_WARNINGS /W3)
@@ -90,13 +100,7 @@ target_include_directories(warpsql PUBLIC include PRIVATE src/sdk)
 target_link_libraries(warpsql PUBLIC Boost::beast Boost::json Boost::url Arrow::arrow_static
                                      OpenSSL::SSL OpenSSL::Crypto)
 target_compile_options(warpsql PRIVATE ${WARPSQL_WARNINGS})
-if(WIN32)
-  # Windows 10 and later; no min/max macros; Beast's and DuckDB's objects outgrow the
-  # default section count; sources are UTF-8.
-  target_compile_definitions(warpsql PUBLIC _WIN32_WINNT=0x0A00 NOMINMAX WIN32_LEAN_AND_MEAN)
-  target_compile_options(warpsql PUBLIC $<$<CXX_COMPILER_ID:MSVC>:/bigobj /utf-8 /Zc:__cplusplus>)
-  target_link_libraries(warpsql PUBLIC ws2_32 mswsock)
-endif()
+warpsql_windows_settings(warpsql)
 
 # The client library: the protocol's client side (sign-in, sessions, statements on the
 # streamed and status-document paths, prepared statements, ingest, metadata, cancel,
@@ -108,6 +112,7 @@ target_include_directories(warpsql_client PUBLIC include PRIVATE src/client)
 target_link_libraries(warpsql_client PUBLIC Boost::beast Boost::json Boost::url Arrow::arrow_static
                                             OpenSSL::SSL OpenSSL::Crypto)
 target_compile_options(warpsql_client PRIVATE ${WARPSQL_WARNINGS})
+warpsql_windows_settings(warpsql_client)
 
 # The DuckDB backend: DuckDB 2.0 behind the SDK, through its v2 C API only. Servers
 # built on it extend DuckDBBackend and DuckDBSession.
