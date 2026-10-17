@@ -100,3 +100,15 @@ def test_metadata_filters_are_values_not_sql(warp, keyed):
     table = metadata(warp=warp, session_id=keyed, kind="tables",
                      table_name_filter_pattern="x' OR '1'='1")
     assert table.num_rows == 0
+
+
+def test_table_schema_reports_nullability_and_decimal_precision(warp, session_id):
+    warp.execute(session_id=session_id,
+                 sql="CREATE TABLE meta_columns (a INTEGER PRIMARY KEY, b VARCHAR NOT NULL, "
+                     "c DECIMAL(10, 3))")
+    table = metadata(warp=warp, session_id=session_id, kind="tables",
+                     table_name_filter_pattern="meta\\_columns", include_schema="true")
+    schema = ipc.read_schema(pa.py_buffer(table.column("table_schema")[0].as_py()))
+    assert [(field.name, field.nullable) for field in schema] == [("a", False), ("b", False), ("c", True)]
+    c = schema.field("c").metadata
+    assert (c[b"ARROW:FLIGHT:SQL:PRECISION"], c[b"ARROW:FLIGHT:SQL:SCALE"]) == (b"10", b"3")

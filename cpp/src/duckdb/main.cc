@@ -2,7 +2,8 @@
 //
 //   WARP_DUCKDB_PASSWORD=… warp-duckdb [--database PATH] [--read-only] [--host HOST]
 //       [--port PORT] [--username NAME] [--tls-cert PEM --tls-key PEM [--tls-client-ca PEM]]
-//       [--cors-origin ORIGIN]... [--drain-seconds N]
+//       [--cors-origin ORIGIN]... [--drain-seconds N] [--token-lifetime-seconds N]
+//       [--session-idle-timeout-seconds N] [--finished-statement-ttl-seconds N]
 //
 // The password comes from the environment, never the command line, so it doesn't show
 // in process listings.
@@ -30,7 +31,8 @@ struct Flags {
             << "usage: WARP_DUCKDB_PASSWORD=... warp-duckdb [--database PATH] [--read-only]\n"
             << "       [--host HOST] [--port PORT] [--username NAME]\n"
             << "       [--tls-cert PEM --tls-key PEM [--tls-client-ca PEM]]\n"
-            << "       [--cors-origin ORIGIN]... [--drain-seconds N]\n";
+            << "       [--cors-origin ORIGIN]... [--drain-seconds N] [--token-lifetime-seconds N]\n"
+            << "       [--session-idle-timeout-seconds N] [--finished-statement-ttl-seconds N]\n";
   std::exit(2);
 }
 
@@ -54,6 +56,13 @@ Flags ParseFlags(int argc, char** argv) {
     else if (flag == "--tls-client-ca") tls.client_ca_file = value();
     else if (flag == "--cors-origin") flags.server.cors_allowed_origins.push_back(value());
     else if (flag == "--drain-seconds") flags.drain_seconds = std::stoi(value());
+    // Short lifetimes let clients test token renewal, session eviction and statement expiry.
+    else if (flag == "--token-lifetime-seconds")
+      flags.server.token_lifetime = std::chrono::seconds(std::stoi(value()));
+    else if (flag == "--session-idle-timeout-seconds")
+      flags.server.session_idle_timeout = std::chrono::seconds(std::stoi(value()));
+    else if (flag == "--finished-statement-ttl-seconds")
+      flags.server.finished_statement_ttl = std::chrono::seconds(std::stoi(value()));
     else Usage("unknown flag " + flag);
   }
   if (!tls.certificate_chain_file.empty() || !tls.private_key_file.empty()) {

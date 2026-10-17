@@ -168,6 +168,17 @@ warpsql::StatementOutcome DuckDBSession::Execute(std::string_view sql,
   if (!parameters.is_null() && statements.size() > 1) {
     throw Error(ErrorCode::kSqlError, "bind parameters need a single SQL statement");
   }
+  for (const auto& statement : statements) {
+    switch (StatementType(statement.get())) {
+      case DUCKDB_V2_STATEMENT_TYPE_SET:  // USE, SET schema/search_path
+      case DUCKDB_V2_STATEMENT_TYPE_ATTACH:
+      case DUCKDB_V2_STATEMENT_TYPE_DETACH:
+        options_changed_ = true;
+        break;
+      default:
+        break;
+    }
+  }
   // Every statement but the last runs to completion; the last one's result is returned.
   for (std::size_t i = 0; i + 1 < statements.size(); i++) {
     RunToEnd(connection_.get(), statements[i].get());
@@ -416,7 +427,14 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::TablesWithSchemas(
                                                           QualifiedName({catalog, schema, table}) +
                                                           " LIMIT 0")
                             ->schema();
-    std::map<std::string, std::string> type_names;
+    // What the catalog says about each column, beyond its Arrow type.
+    struct Column {
+      std::string type_name;
+      bool nullable = true;
+      std::string precision, scale;  // empty when not numeric
+      bool auto_increment = false;
+    };
+    std::map<std::string, Column> columns;
     {
       std::vector<Value> bound;
       for (const auto& part : {catalog, schema, table}) {
@@ -426,30 +444,50 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::TablesWithSchemas(
       for (const auto& value : bound) handles.push_back(value.get());
       auto described = QueryArrow(
           connection_.get(),
-          "SELECT column_name, data_type FROM information_schema.columns WHERE table_catalog = $c "
+          "SELECT column_name, data_type, is_nullable, numeric_precision, numeric_scale, "
+          "column_default FROM information_schema.columns WHERE table_catalog = $c "
           "AND table_schema = $s AND table_name = $t ORDER BY ordinal_position",
           {"c", "s", "t"}, handles);
       auto rows = described->ToTable();
       described.reset();
       if (rows.ok()) {
         auto flat = (*rows)->CombineChunksToBatch();
-        if (flat.ok() && (*flat)->num_rows() > 0) {
-          auto col_names = std::static_pointer_cast<arrow::StringArray>((*flat)->column(0));
-          auto col_types = std::static_pointer_cast<arrow::StringArray>((*flat)->column(1));
+        if (flat.ok()) {
+          auto text = [&](int column, int64_t row) -> std::string {
+            auto scalar = (*flat)->column(column)->GetScalar(row);
+            return scalar.ok() && (*scalar)->is_valid ? (*scalar)->ToString() : std::string();
+          };
           for (int64_t i = 0; i < (*flat)->num_rows(); i++) {
-            type_names[col_names->GetString(i)] = col_types->GetString(i);
+            Column& column = columns[text(0, i)];
+            column.type_name = text(1, i);
+            column.nullable = text(2, i) != "NO";
+            column.precision = text(3, i);
+            column.scale = text(4, i);
+            column.auto_increment = text(5, i).starts_with("nextval(");
           }
         }
       }
     }
     arrow::FieldVector fields;
     for (const auto& field : table_schema->fields()) {
-      auto it = type_names.find(field->name());
-      auto metadata = arrow::key_value_metadata(
-          {"ARROW:FLIGHT:SQL:CATALOG_NAME", "ARROW:FLIGHT:SQL:DB_SCHEMA_NAME",
-           "ARROW:FLIGHT:SQL:TABLE_NAME", "ARROW:FLIGHT:SQL:TYPE_NAME"},
-          {catalog, schema, table, it == type_names.end() ? field->type()->ToString() : it->second});
-      fields.push_back(field->WithMetadata(metadata));
+      auto it = columns.find(field->name());
+      const Column column =
+          it == columns.end() ? Column{field->type()->ToString(), true, {}, {}, false} : it->second;
+      std::vector<std::string> keys{"ARROW:FLIGHT:SQL:CATALOG_NAME", "ARROW:FLIGHT:SQL:DB_SCHEMA_NAME",
+                                    "ARROW:FLIGHT:SQL:TABLE_NAME", "ARROW:FLIGHT:SQL:TYPE_NAME",
+                                    "ARROW:FLIGHT:SQL:IS_AUTO_INCREMENT"};
+      std::vector<std::string> values{catalog, schema, table, column.type_name,
+                                      column.auto_increment ? "1" : "0"};
+      if (!column.precision.empty()) {
+        keys.push_back("ARROW:FLIGHT:SQL:PRECISION");
+        values.push_back(column.precision);
+      }
+      if (!column.scale.empty()) {
+        keys.push_back("ARROW:FLIGHT:SQL:SCALE");
+        values.push_back(column.scale);
+      }
+      fields.push_back(field->WithNullable(column.nullable)
+                           ->WithMetadata(arrow::key_value_metadata(keys, values)));
     }
     auto serialized = arrow::ipc::SerializeSchema(*arrow::schema(fields));
     if (!serialized.ok()) {

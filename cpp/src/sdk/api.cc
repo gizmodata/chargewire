@@ -497,6 +497,14 @@ void Api::Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> state
       } else {
         statement->SetUpdate(outcome.rows_affected);
       }
+      outcome.rows.reset();  // the engine runs one result at a time
+      if (session->engine().TakeOptionsChanged()) {
+        try {
+          session->set_options(session->engine().Options());
+        } catch (const std::exception&) {
+          // the document keeps the options it had; the statement itself succeeded
+        }
+      }
       statement->Finish();
     } catch (const Error& error) {
       statement->Fail(error);

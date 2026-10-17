@@ -25,10 +25,21 @@ inline warpsql::Error Translate(DUCKDB_V2_ERROR code, std::string message) {
     case DUCKDB_V2_ERROR_QUERY_PARSER:
     case DUCKDB_V2_ERROR_QUERY_SYNTAX:
       return warpsql::Error(ErrorCode::kSqlError, std::move(message), "42601");
+    case DUCKDB_V2_ERROR_DATABASE_CATALOG:
+      // DuckDB has one code for every catalog error; the two a client acts on most
+      // (create an existing table, write to a missing one) get the standard SQLSTATEs.
+      if (message.find("Table with name") != std::string::npos) {
+        if (message.find("already exists") != std::string::npos) {
+          return warpsql::Error(ErrorCode::kSqlError, std::move(message), "42P07");
+        }
+        if (message.find("does not exist") != std::string::npos) {
+          return warpsql::Error(ErrorCode::kSqlError, std::move(message), "42P01");
+        }
+      }
+      return warpsql::Error(ErrorCode::kSqlError, std::move(message));
     case DUCKDB_V2_ERROR_QUERY_BINDER:
     case DUCKDB_V2_ERROR_QUERY_PARAMETER_NOT_RESOLVED:
     case DUCKDB_V2_ERROR_QUERY_PARAMETER_NOT_ALLOWED:
-    case DUCKDB_V2_ERROR_DATABASE_CATALOG:
     case DUCKDB_V2_ERROR_INPUT_INVALID:
     case DUCKDB_V2_ERROR_INPUT_PARAMETER_INVALID:
     case DUCKDB_V2_ERROR_TYPE_MISMATCH:

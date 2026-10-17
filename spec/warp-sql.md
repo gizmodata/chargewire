@@ -219,7 +219,9 @@ whole life.
 
 ### 5.2 `GET /warp/v1/sessions/{session_id}`
 
-Returns the session document above. Clients MAY use it as a cheap liveness probe.
+Returns the session document above, with the session's current options: a change
+made through SQL (`USE other_schema`) shows here too. Clients MAY use it as a cheap
+liveness probe.
 
 ### 5.3 `PATCH /warp/v1/sessions/{session_id}`
 
@@ -625,8 +627,9 @@ SQL `LIKE` syntax (`%`, `_`, `\` escape), as in Flight SQL.
 
 `table_schema` (when `include_schema=true`) is the table's Arrow schema serialized as
 an IPC message, with the same per-field metadata keys Flight SQL defines
-(`ARROW:FLIGHT:SQL:TYPE_NAME`, `…:PRECISION`, `…:SCALE`, `…:REMARKS`, …). Ordering
-follows the Flight SQL definitions.
+(`ARROW:FLIGHT:SQL:TYPE_NAME`, `…:PRECISION`, `…:SCALE`, `…:REMARKS`, …). A field is
+nullable unless the column can't hold NULL (`NOT NULL`, primary key), and decimal
+columns carry `…:PRECISION` and `…:SCALE`. Ordering follows the Flight SQL definitions.
 
 `GET /warp/v1/sessions/{session_id}/metadata/server-info` returns JSON rather than
 Flight SQL's `SqlInfo` union: one object whose keys are the Flight SQL `SqlInfo`
@@ -651,7 +654,10 @@ Every error response is a problem document:
 ```
 
 `code` is the stable, machine-readable part; `detail` is for people and may change.
-`sqlstate` (optional) is the SQL standard's five-character class and subclass.
+`sqlstate` (optional) is the SQL standard's five-character class and subclass. Where
+the standard has one, servers SHOULD send it, in particular `42P07` (the table already
+exists) and `42P01` (the table doesn't exist), which bulk ingest's `create` and `append`
+modes meet (§8.1) and which clients map to "already exists" and "not found".
 `request_id` SHOULD also appear in the server's logs.
 
 | Code | Status | Meaning |

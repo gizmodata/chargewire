@@ -2,6 +2,7 @@
 #pragma once
 
 #include <memory>
+#include <utility>
 
 #include "duckdb_upload.hpp"
 #include "duckdb_v2.hpp"
@@ -29,6 +30,7 @@ class DuckDBSession : public warpsql::EngineSession {
   std::optional<double> Progress() override;
   warpsql::OptionErrors SetOptions(const boost::json::object& options) override;
   boost::json::object Options() override;
+  bool TakeOptionsChanged() override { return std::exchange(options_changed_, false); }
   void Commit() override;
   void Rollback() override;
 
@@ -46,6 +48,7 @@ class DuckDBSession : public warpsql::EngineSession {
   bool autocommit_ = true;
   bool lossless_ = false;
   boost::json::value session_tag_ = nullptr;
+  bool options_changed_ = false;  // a statement ran that can move the current catalog/schema
 };
 
 }  // namespace warpduckdb

@@ -141,6 +141,9 @@ class EngineSession {
   virtual OptionErrors SetOptions(const boost::json::object& options);
   // The session's current options.
   virtual boost::json::object Options();
+  // True (once) after a statement that may have changed Options() itself, such as SQL
+  // USE moving the current schema; the SDK then reads Options() again (spec §5.2).
+  virtual bool TakeOptionsChanged() { return false; }
 
   virtual void Commit();
   virtual void Rollback();

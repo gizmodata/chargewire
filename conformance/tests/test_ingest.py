@@ -47,8 +47,16 @@ def test_create_fails_when_the_table_exists(warp, session_id):
                   mode="create").status_code == 200
     response = ingest(warp=warp, session_id=session_id, body=ipc_bytes(table=table), table="ing_once",
                       mode="create")
-    assert response.status_code >= 400
+    problem = assert_problem(response=response, status=400, code="sql_error")
+    assert problem.get("sqlstate") == "42P07", problem  # duplicate_table
     assert count(warp=warp, session_id=session_id, table="ing_once") == 1
+
+
+def test_append_fails_when_the_table_is_missing(warp, session_id):
+    response = ingest(warp=warp, session_id=session_id, body=ipc_bytes(table=pa.table({"k": [1]})),
+                      table="ing_never_created", mode="append")
+    problem = assert_problem(response=response, status=400, code="sql_error")
+    assert problem.get("sqlstate") == "42P01", problem  # undefined_table
 
 
 def test_large_compressed_upload_in_many_batches(warp, session_id):

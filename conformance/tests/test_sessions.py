@@ -78,3 +78,13 @@ def test_statement_ids_are_not_shared_between_sessions(warp, session_id):
     response = warp.http.get(url=warp.statement_url(other, doc["statement_id"]),
                              headers=warp.headers())
     assert_problem(response=response, status=404, code="statement_not_found")
+
+
+def test_session_document_follows_sql_use(warp, session_id):
+    warp.execute(session_id=session_id, sql="CREATE SCHEMA IF NOT EXISTS moved_here")
+    before = warp.http.get(url=warp.session_url(session_id), headers=warp.headers()).json()["options"]
+    assert before["schema"] != "moved_here"
+    warp.execute(session_id=session_id, sql="USE moved_here")
+    after = warp.http.get(url=warp.session_url(session_id), headers=warp.headers()).json()["options"]
+    assert after["schema"] == "moved_here"
+    assert after["catalog"] == before["catalog"]
