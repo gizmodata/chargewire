@@ -84,8 +84,9 @@ std::unique_ptr<warpsql::EngineSession> DuckDBBackend::OpenSession(
   if (!options.empty()) {
     auto errors = session->SetOptions(options);
     if (!errors.empty()) {
-      throw Error(ErrorCode::kInvalidOptionValue,
-                  errors.begin()->first + ": " + errors.begin()->second.what());
+      // The first failure, with its own code (unknown_option or invalid_option_value).
+      const auto& [name, error] = *errors.begin();
+      throw Error(error.code(), name + ": " + error.what());
     }
   }
   return session;

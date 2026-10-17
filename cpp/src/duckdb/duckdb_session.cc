@@ -465,8 +465,9 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::TablesWithSchemas(
     struct Column {
       std::string type_name;
       bool nullable = true;
-      std::string precision, scale;  // empty when not numeric
+      std::string precision, scale;  // decimal digits; empty when not numeric
       bool auto_increment = false;
+      std::string remarks, default_sql;
     };
     std::map<std::string, Column> columns;
     {
@@ -479,7 +480,8 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::TablesWithSchemas(
       auto described = QueryArrow(
           connection_.get(),
           "SELECT column_name, data_type, is_nullable, numeric_precision, numeric_scale, "
-          "column_default FROM information_schema.columns WHERE table_catalog = $c "
+          "column_default, numeric_precision_radix, COLUMN_COMMENT "
+          "FROM information_schema.columns WHERE table_catalog = $c "
           "AND table_schema = $s AND table_name = $t ORDER BY ordinal_position",
           {"c", "s", "t"}, handles);
       auto rows = described->ToTable();
@@ -495,9 +497,22 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::TablesWithSchemas(
             Column& column = columns[text(0, i)];
             column.type_name = text(1, i);
             column.nullable = text(2, i) != "NO";
-            column.precision = text(3, i);
             column.scale = text(4, i);
-            column.auto_increment = text(5, i).starts_with("nextval(");
+            if (text(6, i) == "10") {
+              column.precision = text(3, i);  // DECIMAL: already digits
+            } else {
+              // Binary precision (bits) as the decimal digits JDBC and ODBC report.
+              static const std::map<std::string, std::string, std::less<>> kDigits{
+                  {"TINYINT", "3"},   {"SMALLINT", "5"},   {"INTEGER", "10"},  {"BIGINT", "19"},
+                  {"HUGEINT", "39"},  {"UTINYINT", "3"},   {"USMALLINT", "5"}, {"UINTEGER", "10"},
+                  {"UBIGINT", "20"},  {"UHUGEINT", "39"},  {"FLOAT", "7"},     {"DOUBLE", "15"}};
+              auto digits = kDigits.find(column.type_name);
+              column.precision = digits == kDigits.end() ? std::string() : digits->second;
+              if (digits == kDigits.end()) column.scale.clear();
+            }
+            column.default_sql = text(5, i);
+            column.auto_increment = column.default_sql.starts_with("nextval(");
+            column.remarks = text(7, i);
           }
         }
       }
@@ -506,7 +521,7 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::TablesWithSchemas(
     for (const auto& field : table_schema->fields()) {
       auto it = columns.find(field->name());
       const Column column =
-          it == columns.end() ? Column{field->type()->ToString(), true, {}, {}, false} : it->second;
+          it == columns.end() ? Column{field->type()->ToString(), true, {}, {}, false, {}, {}} : it->second;
       std::vector<std::string> keys{"ARROW:FLIGHT:SQL:CATALOG_NAME", "ARROW:FLIGHT:SQL:DB_SCHEMA_NAME",
                                     "ARROW:FLIGHT:SQL:TABLE_NAME", "ARROW:FLIGHT:SQL:TYPE_NAME",
                                     "ARROW:FLIGHT:SQL:IS_AUTO_INCREMENT"};
@@ -519,6 +534,14 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::TablesWithSchemas(
       if (!column.scale.empty()) {
         keys.push_back("ARROW:FLIGHT:SQL:SCALE");
         values.push_back(column.scale);
+      }
+      if (!column.remarks.empty()) {
+        keys.push_back("ARROW:FLIGHT:SQL:REMARKS");
+        values.push_back(column.remarks);
+      }
+      if (!column.default_sql.empty()) {
+        keys.push_back("WARP:SQL:COLUMN_DEFAULT");  // Flight SQL has no key for it (spec §10)
+        values.push_back(column.default_sql);
       }
       fields.push_back(field->WithNullable(column.nullable)
                            ->WithMetadata(arrow::key_value_metadata(keys, values)));

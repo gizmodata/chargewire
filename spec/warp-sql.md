@@ -647,7 +647,10 @@ SQL `LIKE` syntax (`%`, `_`, `\` escape), as in Flight SQL.
 an IPC message, with the same per-field metadata keys Flight SQL defines
 (`ARROW:FLIGHT:SQL:TYPE_NAME`, `…:PRECISION`, `…:SCALE`, `…:REMARKS`, …). A field is
 nullable unless the column can't hold NULL (`NOT NULL`, primary key), and decimal
-columns carry `…:PRECISION` and `…:SCALE`. Ordering follows the Flight SQL definitions.
+columns carry `…:PRECISION` and `…:SCALE`. `…:PRECISION` counts decimal digits for every
+numeric type (10 for a 32-bit integer), as JDBC's and ODBC's column size does; a column's
+comment is `…:REMARKS`. Flight SQL has no key for a column's default, so Warp SQL adds
+`WARP:SQL:COLUMN_DEFAULT`: the default's SQL text. Ordering follows the Flight SQL definitions.
 
 `GET /warp/v1/sessions/{session_id}/metadata/server-info` returns JSON rather than
 Flight SQL's `SqlInfo` union: one object whose keys are the Flight SQL `SqlInfo`

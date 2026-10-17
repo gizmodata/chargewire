@@ -88,3 +88,12 @@ def test_session_document_follows_sql_use(warp, session_id):
     after = warp.http.get(url=warp.session_url(session_id), headers=warp.headers()).json()["options"]
     assert after["schema"] == "moved_here"
     assert after["catalog"] == before["catalog"]
+
+
+def test_session_create_reports_the_option_failure_by_kind(warp):
+    unknown = warp.http.post(url="/warp/v1/sessions", headers=warp.headers(),
+                             json={"options": {"no_such_option": 1}})
+    assert_problem(response=unknown, status=400, code="unknown_option")
+    invalid = warp.http.post(url="/warp/v1/sessions", headers=warp.headers(),
+                             json={"options": {"autocommit": "maybe"}})
+    assert_problem(response=invalid, status=400, code="invalid_option_value")

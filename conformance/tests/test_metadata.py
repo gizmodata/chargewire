@@ -121,3 +121,17 @@ def test_keys_of_every_table_in_one_request(warp, keyed):
     imported = metadata(warp=warp, session_id=keyed, kind="imported-keys")
     assert {("meta_parent", "meta_child")} <= set(
         zip(imported.column("pk_table_name").to_pylist(), imported.column("fk_table_name").to_pylist()))
+
+
+def test_table_schema_reports_digits_comments_and_defaults(warp, session_id):
+    warp.execute(session_id=session_id,
+                 sql="CREATE TABLE meta_described (a INTEGER, b BIGINT, c VARCHAR DEFAULT 'x')")
+    warp.execute(session_id=session_id, sql="COMMENT ON COLUMN meta_described.a IS 'the a'")
+    table = metadata(warp=warp, session_id=session_id, kind="tables",
+                     table_name_filter_pattern="meta\\_described", include_schema="true")
+    schema = ipc.read_schema(pa.py_buffer(table.column("table_schema")[0].as_py()))
+    a, b, c = (schema.field(name).metadata for name in ("a", "b", "c"))
+    # PRECISION is in decimal digits, as JDBC's COLUMN_SIZE (not DuckDB's 32 bits).
+    assert (a[b"ARROW:FLIGHT:SQL:PRECISION"], b[b"ARROW:FLIGHT:SQL:PRECISION"]) == (b"10", b"19")
+    assert a[b"ARROW:FLIGHT:SQL:REMARKS"] == b"the a"
+    assert c[b"WARP:SQL:COLUMN_DEFAULT"] == b"'x'"
