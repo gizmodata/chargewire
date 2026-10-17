@@ -97,6 +97,11 @@ void Statement::SetUpdate(std::optional<int64_t> rows_affected) {
 bool Statement::AddBatch(std::shared_ptr<arrow::RecordBatch> batch) {
   {
     std::unique_lock lock(mutex_);
+    if (abandoned_ && cancel_reason_ == CancelReason::kNone && state_ == StatementState::kRunning) {
+      row_count_ += batch->num_rows();
+      batch_count_ += 1;
+      return true;  // nobody will read it; the statement still runs to the end
+    }
     if (config_.retain) {
       const int64_t bytes = BatchBytes(*batch);
       if (config_.reserve_bytes && !config_.reserve_bytes(bytes)) {
@@ -189,11 +194,11 @@ bool Statement::RequestCancel(CancelReason reason) {
 bool Statement::AbandonRead() {
   {
     std::lock_guard lock(mutex_);
-    if (!finish_if_abandoned_ || config_.retain) {
+    if (!finish_if_abandoned_) {
       return false;
     }
     abandoned_ = true;
-    batches_.clear();
+    DropBatches();
   }
   room_.notify_all();
   return true;

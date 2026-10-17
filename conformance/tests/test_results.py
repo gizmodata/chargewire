@@ -174,3 +174,13 @@ def test_abandoned_write_runs_to_the_end(warp, session_id):
     assert doc["state"] == "succeeded", doc
     count = warp.query(session_id=session_id, sql="SELECT count(*) AS n FROM abandoned_write")
     assert count.to_pylist() == [{"n": 3000000}]
+
+
+def test_deleting_a_running_write_lets_it_finish(warp, session_id):
+    warp.execute(session_id=session_id, sql="CREATE TABLE deleted_write (i BIGINT)")
+    doc = submit_async(warp=warp, session_id=session_id,
+                       sql="INSERT INTO deleted_write SELECT * FROM range(3000000) RETURNING i")
+    deleted = warp.http.delete(url=warp.statement_url(session_id, doc["statement_id"]), headers=warp.headers())
+    assert deleted.status_code == 204, deleted.text
+    count = warp.query(session_id=session_id, sql="SELECT count(*) AS n FROM deleted_write")
+    assert count.to_pylist() == [{"n": 3000000}]

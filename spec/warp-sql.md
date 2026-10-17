@@ -471,8 +471,10 @@ whose response was lost, including DML.
 - `POST …/statements/{statement_id}/cancel`: `202`. Cancelling a queued statement
   removes it from the queue; it never starts. Cancelling a finished statement is a
   no-op (`202`).
-- `DELETE …/statements/{statement_id}`: cancels it if running and frees its result.
-  `204`.
+- `DELETE …/statements/{statement_id}`: the client is done with the statement. Its
+  result is freed and its id forgotten (`204`). A query still running is cancelled; a
+  statement that changes data runs to the end with its rows discarded, as when its
+  reader goes away (§6.5). To stop a write, cancel it.
 - `POST /warp/v1/sessions/{session_id}/cancel`: cancels every statement of the session
   that is queued or running when the request arrives; `202` with
   `{"cancelled": ["q_…", …]}` (possibly empty). This is for a client that has no

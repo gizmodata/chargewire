@@ -62,9 +62,10 @@ class Statement {
   // Requests cancellation. Returns true when the statement is running, so the caller
   // must interrupt the engine.
   bool RequestCancel(CancelReason reason);
-  // The one reader of an unretained result went away. A statement that changes data
-  // then runs on with its batches discarded (returns true); any other must be cancelled
-  // by the caller (returns false).
+  // Nobody will read the result (its unretained reader went away, or the client
+  // deleted the statement). A statement that changes data then runs on with its
+  // batches discarded (returns true); any other must be cancelled by the caller
+  // (returns false).
   bool AbandonRead();
 
   // ---- Readers (HTTP) ----

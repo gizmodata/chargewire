@@ -1043,7 +1043,9 @@ Task<Response> Api::DeleteStatement(Request& request, const std::string& session
                                     const std::string& statement_id) {
   auto session = OwnSession(request, session_id);
   auto statement = session->FindStatement(statement_id);
-  Cancel(*session, *statement, CancelReason::kClient);
+  if (!statement->AbandonRead()) {
+    Cancel(*session, *statement, CancelReason::kClient);  // a write runs on (spec §6.8)
+  }
   statement->Release();
   session->RemoveStatement(statement_id);
   co_return NoContent();
