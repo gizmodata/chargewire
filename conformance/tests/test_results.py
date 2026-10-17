@@ -84,10 +84,18 @@ def test_failure_mid_stream_leaves_the_stream_incomplete(warp, session_id):
     assert response.status_code == 200, response.read()
     statement_id = response.headers["warp-statement-id"]
     body = bytearray()
-    with pytest.raises(httpx.RemoteProtocolError):
+    try:
         for chunk in response.iter_raw():
             body.extend(chunk)
-    response.close()
+    except httpx.RemoteProtocolError:
+        pass
+    else:
+        # Say what the server thought happened: a clean end here would hand a client a
+        # truncated result as if it were whole.
+        doc = warp.status(session_id=session_id, statement_id=statement_id)
+        pytest.fail(reason=f"the stream ended cleanly after {len(body)} bytes; statement: {doc}")
+    finally:
+        response.close()
     # Whatever arrived (the schema, perhaps some batches) is never a complete stream: it
     # lacks the end-of-stream marker (continuation token, then a zero length).
     assert not bytes(body).endswith(b"\xff\xff\xff\xff\x00\x00\x00\x00")
