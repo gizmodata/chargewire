@@ -466,10 +466,27 @@ json::object Api::StatementDocument(Session& session, Statement& statement) cons
   return statement.Document(progress);
 }
 
-void Api::Cancel(Session& session, Statement& statement, CancelReason reason) {
-  if (statement.RequestCancel(reason)) {
-    session.Interrupt();
+void Api::Cancel(const std::shared_ptr<Session>& session, const std::shared_ptr<Statement>& statement,
+                 CancelReason reason) {
+  if (statement->RequestCancel(reason)) {
+    session->Interrupt();
+    // A running statement may not have reached the engine yet (the backend is still
+    // checking or queueing it), and an engine forgets an interrupt that comes before
+    // its query starts (DuckDB clears it then): keep interrupting until it ends.
+    KeepInterrupting(session, statement);
   }
+}
+
+void Api::KeepInterrupting(std::shared_ptr<Session> session, std::shared_ptr<Statement> statement) {
+  auto timer = std::make_shared<net::steady_timer>(state_.io, std::chrono::milliseconds(100));
+  timer->async_wait([this, timer, session = std::move(session),
+                     statement = std::move(statement)](boost::system::error_code ec) mutable {
+    if (ec || statement->IsTerminal()) {
+      return;
+    }
+    session->Interrupt();
+    KeepInterrupting(std::move(session), std::move(statement));
+  });
 }
 
 void Api::Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> statement,
@@ -524,7 +541,7 @@ void Api::ScheduleTimeout(std::shared_ptr<Session> session, std::shared_ptr<Stat
   auto timer = std::make_shared<net::steady_timer>(state_.io, timeout);
   timer->async_wait([this, timer, session, statement](boost::system::error_code ec) {
     if (!ec) {
-      Cancel(*session, *statement, CancelReason::kTimeout);
+      Cancel(session, statement, CancelReason::kTimeout);
     }
   });
 }
@@ -988,16 +1005,16 @@ Response Api::ResultStream(std::shared_ptr<Session> session, std::shared_ptr<Sta
     // end can never be read again, so its statement is cancelled (spec §6.5).
     struct ReadGuard {
       Api* api;
-      Session* session;
-      Statement* statement;
+      std::shared_ptr<Session> session;
+      std::shared_ptr<Statement> statement;
       bool complete = false;
       ~ReadGuard() {
         statement->EndRead();
         if (!complete && !statement->retained() && !statement->AbandonRead()) {
-          api->Cancel(*session, *statement, CancelReason::kClient);
+          api->Cancel(session, statement, CancelReason::kClient);
         }
       }
-    } guard{this, session.get(), statement.get()};
+    } guard{this, session, statement};
 
     IpcStreamEncoder encoder(statement->schema(), compression);
     co_await out.Write(encoder.Begin());
@@ -1032,7 +1049,7 @@ Task<Response> Api::CancelStatement(Request& request, const std::string& session
                                     const std::string& statement_id) {
   auto session = OwnSession(request, session_id);
   auto statement = session->FindStatement(statement_id);
-  Cancel(*session, *statement, CancelReason::kClient);
+  Cancel(session, statement, CancelReason::kClient);
   co_return JsonResponse(http::status::accepted, StatementDocument(*session, *statement));
 }
 
@@ -1041,7 +1058,7 @@ Task<Response> Api::CancelSession(Request& request, const std::string& session_i
   json::array cancelled;
   for (const auto& statement : session->Statements()) {
     if (!statement->IsTerminal()) {
-      Cancel(*session, *statement, CancelReason::kClient);
+      Cancel(session, statement, CancelReason::kClient);
       cancelled.push_back(json::value(statement->id()));
     }
   }
@@ -1053,7 +1070,7 @@ Task<Response> Api::DeleteStatement(Request& request, const std::string& session
   auto session = OwnSession(request, session_id);
   auto statement = session->FindStatement(statement_id);
   if (!statement->AbandonRead()) {
-    Cancel(*session, *statement, CancelReason::kClient);  // a write runs on (spec §6.8)
+    Cancel(session, statement, CancelReason::kClient);  // a write runs on (spec §6.8)
   }
   statement->Release();
   session->RemoveStatement(statement_id);
