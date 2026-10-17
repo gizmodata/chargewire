@@ -45,6 +45,11 @@ CodeInfo Info(ErrorCode code) {
     case ErrorCode::kIngestIncomplete: return {"ingest_incomplete", 409};
     case ErrorCode::kIngestPartExists: return {"ingest_part_exists", 409};
     case ErrorCode::kIngestExpired: return {"ingest_expired", 410};
+    case ErrorCode::kClientCertificateRequired: return {"client_certificate_required", 401};
+    case ErrorCode::kUnknownCertificateIdentity: return {"unknown_certificate_identity", 401};
+    case ErrorCode::kCertificateRevoked: return {"certificate_revoked", 401};
+    case ErrorCode::kCertificateMismatch: return {"certificate_mismatch", 401};
+    case ErrorCode::kCertificateIdentityMismatch: return {"certificate_identity_mismatch", 401};
   }
   return {"execution_error", 500};
 }

@@ -70,12 +70,12 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
-def wait_until_up(base_url: str, timeout: float = 20) -> None:
+def wait_until_up(base_url: str, timeout: float = 20, verify=True) -> None:
     deadline = time.monotonic() + timeout
     last_error = None
     while time.monotonic() < deadline:
         try:
-            if httpx.get(url=f"{base_url}/warp", timeout=2).status_code == 200:
+            if httpx.get(url=f"{base_url}/warp", timeout=2, verify=verify).status_code == 200:
                 return
         except httpx.HTTPError as error:
             last_error = error
@@ -83,8 +83,10 @@ def wait_until_up(base_url: str, timeout: float = 20) -> None:
     pytest.fail(reason=f"no Warp SQL server answered at {base_url}/warp ({last_error})")
 
 
-def start_server(binary: str, extra_args: list[str] | None = None) -> ServerUnderTest:
-    """Starts a reference-compatible server on a free port with a fresh password."""
+def start_server(binary: str, extra_args: list[str] | None = None,
+                 scheme: str = "http", verify=True) -> ServerUnderTest:
+    """Starts a reference-compatible server on a free port with a fresh password.
+    `scheme` "https" (with `verify`, httpx's TLS setting) for a server started with TLS."""
     port = free_port()
     # A password with ':' and '@' in it: credentials travel as JSON fields, so nothing
     # may split them (spec §4.1).
@@ -98,10 +100,10 @@ def start_server(binary: str, extra_args: list[str] | None = None) -> ServerUnde
             args=[binary, "--host", "127.0.0.1", "--port", str(port), *(extra_args or [])],
             env={**os.environ, password_env: password}, stdout=out, stderr=subprocess.STDOUT,
             **POPEN_FLAGS)
-    server = ServerUnderTest(base_url=f"http://127.0.0.1:{port}", username=username,
+    server = ServerUnderTest(base_url=f"{scheme}://127.0.0.1:{port}", username=username,
                              password=password, process=process, log=log)
     try:
-        wait_until_up(base_url=server.base_url)
+        wait_until_up(base_url=server.base_url, verify=verify)
     except BaseException:
         stop_server(server=server)
         raise

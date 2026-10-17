@@ -20,11 +20,15 @@ def read_batches(content: bytes) -> list[pa.RecordBatch]:
 
 
 class Warp:
-    def __init__(self, base_url: str, username: str, password: str):
-        self.http = httpx.Client(base_url=base_url, timeout=120)
+    def __init__(self, base_url: str, username: str, password: str, verify=True,
+                 grant: str = "password"):
+        """`verify`: httpx's TLS setting (an ssl.SSLContext for mutual TLS). `grant`:
+        "password", or "client_certificate" (spec §4.4) to sign in with the context's
+        client certificate."""
+        self.http = httpx.Client(base_url=base_url, timeout=120, verify=verify)
         self.username = username
         self.password = password
-        self.token = self.login()
+        self.token = self.login() if grant == "password" else self.login_with_certificate()
 
     def close(self) -> None:
         self.http.close()
@@ -37,6 +41,11 @@ class Warp:
             json={"grant_type": "password",
                   "username": self.username if username is None else username,
                   "password": self.password if password is None else password})
+        assert response.status_code == 200, response.text
+        return response.json()["access_token"]
+
+    def login_with_certificate(self) -> str:
+        response = self.http.post(url="/warp/v1/auth/token", json={"grant_type": "client_certificate"})
         assert response.status_code == 200, response.text
         return response.json()["access_token"]
 

@@ -31,6 +31,11 @@ struct Request {
   std::string body;                         // when the body is read up front
   std::shared_ptr<BodySource> body_source;  // when it streams (see HttpLimits::streams_body)
   std::string request_id;
+  // The connection's verified client certificate (TLS with client CAs), or null.
+  std::shared_ptr<const ClientCertificate> client_certificate;
+  // Why that certificate no longer stands (revoked by a CRL loaded since the handshake,
+  // expired), or empty. Checked before each request on the connection.
+  std::string client_certificate_problem;
 
   std::string_view Header(std::string_view name) const;
 };

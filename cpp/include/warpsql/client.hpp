@@ -309,15 +309,22 @@ class Client {
   Discovery Discover();
   json::object Health();
 
-  // Sign-in (§4.1). The password grant is repeated by itself shortly before its token
-  // expires, so a long-lived session keeps working.
+  // Sign-in (§4.1). The password and client_certificate grants are repeated by themselves
+  // shortly before their token expires, so a long-lived session keeps working.
   void SignInWithPassword(const std::string& username, const std::string& password);
   // The token_exchange grant: a token from an identity provider the server trusts.
   void SignInWithToken(const std::string& subject_token);
+  // The client_certificate grant (§4.4, servers with capability mtls_identity): the TLS
+  // client certificate (TlsOptions::cert_file and key_file) is the credential, with no
+  // password. The server binds the token to the certificate, so it works only on
+  // connections presenting it (every connection this client opens does). Repeated by
+  // itself before the token expires, as the password grant is.
+  void SignInWithClientCertificate();
   // Uses an access token obtained elsewhere.
   void SetAccessToken(const std::string& access_token);
   bool SignedIn() const;
-  // The current access token (renewed first when a password sign-in is about to expire).
+  // The current access token (renewed first when a password or certificate sign-in is
+  // about to expire).
   std::string access_token();
 
   // A new session (§5.1) with these options (catalog, schema, autocommit, ...).

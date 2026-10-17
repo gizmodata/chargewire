@@ -54,18 +54,31 @@ class DuckDBBackend : public warpsql::Backend {
 };
 
 // The single-user authenticator the reference server uses.
+// One user with a password, plus (with mutual TLS) the certificate identities allowed to
+// sign in as themselves with the client_certificate grant (spec §4.4).
 class StaticPasswordAuthenticator : public warpsql::Authenticator {
  public:
-  StaticPasswordAuthenticator(std::string username, std::string password)
-      : username_(std::move(username)), password_(std::move(password)) {}
+  StaticPasswordAuthenticator(std::string username, std::string password,
+                              std::vector<std::string> certificate_identities = {})
+      : username_(std::move(username)),
+        password_(std::move(password)),
+        certificate_identities_(std::move(certificate_identities)) {}
 
   warpsql::Principal AuthenticatePassword(std::string_view username,
                                           std::string_view password) override;
-  boost::json::array GrantTypes() override { return {"password"}; }
+  // An identity on the list (ignoring ASCII case) signs in as itself.
+  warpsql::Principal AuthenticateCertificate(std::string_view identity,
+                                             const warpsql::ClientCertificate& certificate) override;
+  boost::json::array GrantTypes() override {
+    boost::json::array grants{"password"};
+    if (!certificate_identities_.empty()) grants.emplace_back("client_certificate");
+    return grants;
+  }
 
  private:
   std::string username_;
   std::string password_;
+  std::vector<std::string> certificate_identities_;
 };
 
 }  // namespace warpduckdb

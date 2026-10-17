@@ -102,6 +102,8 @@ class Api {
                                  const std::string& statement_id);
 
   Principal Authenticate(const Request& request) const;
+  // Whether the client_certificate grant is offered (spec §4.4).
+  bool OffersCertificateSignIn() const;
   std::shared_ptr<Session> OwnSession(const Request& request, const std::string& session_id);
   void RejectIfDraining() const;
   json::object SessionDocument(Session& session) const;

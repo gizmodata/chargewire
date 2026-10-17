@@ -43,6 +43,12 @@ enum class ErrorCode {
   kIngestIncomplete,
   kIngestPartExists,
   kIngestExpired,
+  // Client certificates (spec §4.4).
+  kClientCertificateRequired,
+  kUnknownCertificateIdentity,
+  kCertificateRevoked,
+  kCertificateMismatch,
+  kCertificateIdentityMismatch,
 };
 
 // Why a session ended (spec §5.6), the `reason` of a session_ended error.

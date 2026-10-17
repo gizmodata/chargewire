@@ -371,8 +371,8 @@ class ClientCore {
       std::lock_guard lock(token_mutex);
       const bool expiring = expires_at != std::chrono::steady_clock::time_point{} &&
                             expires_at - std::chrono::steady_clock::now() < std::chrono::seconds(60);
-      if (!expiring || !password_grant) return token;
-      again = password_grant;
+      if (!expiring || !renew_grant) return token;
+      again = renew_grant;
     }
     try {
       SignIn(*again);
@@ -390,7 +390,7 @@ class ClientCore {
   std::mutex token_mutex;
   std::string token;
   std::chrono::steady_clock::time_point expires_at{};
-  std::optional<json::object> password_grant;  // to sign in again before the token expires
+  std::optional<json::object> renew_grant;  // a grant to repeat before the token expires
 
   std::mutex auth_mutex;
   std::unique_ptr<Transport> auth_transport;
@@ -1496,20 +1496,27 @@ void Client::SignInWithPassword(const std::string& username, const std::string& 
   json::object grant{{"grant_type", "password"}, {"username", username}, {"password", password}};
   core_->SignIn(grant);
   std::lock_guard lock(core_->token_mutex);
-  core_->password_grant = std::move(grant);
+  core_->renew_grant = std::move(grant);
 }
 
 void Client::SignInWithToken(const std::string& subject_token) {
   core_->SignIn(json::object{{"grant_type", "token_exchange"}, {"subject_token", subject_token}});
   std::lock_guard lock(core_->token_mutex);
-  core_->password_grant.reset();
+  core_->renew_grant.reset();
+}
+
+void Client::SignInWithClientCertificate() {
+  json::object grant{{"grant_type", "client_certificate"}};
+  core_->SignIn(grant);
+  std::lock_guard lock(core_->token_mutex);
+  core_->renew_grant = std::move(grant);
 }
 
 void Client::SetAccessToken(const std::string& access_token) {
   std::lock_guard lock(core_->token_mutex);
   core_->token = access_token;
   core_->expires_at = {};
-  core_->password_grant.reset();
+  core_->renew_grant.reset();
 }
 
 bool Client::SignedIn() const {

@@ -9,6 +9,7 @@
 
 #include "ids.hpp"
 #include "platform.hpp"
+#include "tls_context.hpp"
 #include "tls_stream.hpp"
 
 namespace warpsql::detail {
@@ -311,8 +312,10 @@ class StreamingBodySource : public BodySource {
   bool stream_ready_ = false;
 };
 
+// `tls` and `peer`: the TLS configuration and the connection's client certificate, or null.
 template <class Stream>
-Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler& handler) {
+Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler& handler,
+                         TlsContext* tls = nullptr, PeerCertificate* peer = nullptr) {
   beast::flat_buffer buffer;
   for (;;) {
     http::request_parser<http::buffer_body> parser;
@@ -349,6 +352,10 @@ Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler
       request.method = message.method();
       request.headers = static_cast<const http::fields&>(message.base());
       request.request_id = NewId("r");
+      if (peer != nullptr) {
+        request.client_certificate = peer->info();
+        request.client_certificate_problem = tls->Recheck(*peer);
+      }
       const bool target_ok = ParseTarget(message.target(), request);
 
       std::optional<Response> early;
@@ -416,16 +423,7 @@ class HttpServer::Impl {
         handler_(std::move(handler)),
         acceptor_(net::make_strand(io)) {
     if (options.tls) {
-      tls_.emplace(ssl::context::tls_server);
-      tls_->set_options(ssl::context::default_workarounds | ssl::context::no_sslv2 |
-                        ssl::context::no_sslv3 | ssl::context::no_tlsv1 |
-                        ssl::context::no_tlsv1_1);
-      tls_->use_certificate_chain_file(options.tls->certificate_chain_file);
-      tls_->use_private_key_file(options.tls->private_key_file, ssl::context::pem);
-      if (!options.tls->client_ca_file.empty()) {
-        tls_->load_verify_file(options.tls->client_ca_file);
-        tls_->set_verify_mode(ssl::verify_peer | ssl::verify_fail_if_no_peer_cert);
-      }
+      tls_ = std::make_unique<TlsContext>(*options.tls);
     }
   }
 
@@ -476,11 +474,15 @@ class HttpServer::Impl {
         co_await EndConnection(stream);
         co_return;
       }
-      TlsStream tls_stream(std::move(stream), tls_->native_handle());
+      // The context of the moment (it changes when the CRL file does), held for the
+      // connection's life.
+      const TlsContext::Current context = tls_->Get();
+      TlsStream tls_stream(std::move(stream), context.context->native_handle());
       try {
         beast::get_lowest_layer(tls_stream).expires_after(kHandshakeTimeout);
         co_await tls_stream.async_handshake(net::use_awaitable);
-        co_await ServeRequests(tls_stream, limits_, handler_);
+        auto peer = tls_->PeerOf(tls_stream.native_handle(), context.generation);
+        co_await ServeRequests(tls_stream, limits_, handler_, tls_.get(), peer.get());
       } catch (const std::exception&) {
         // the connection failed; it still ends below
       }
@@ -499,7 +501,7 @@ class HttpServer::Impl {
   HttpLimits limits_;
   Handler handler_;
   tcp::acceptor acceptor_;
-  std::optional<ssl::context> tls_;
+  std::unique_ptr<TlsContext> tls_;
 };
 
 HttpServer::HttpServer(net::io_context& io, const ServerOptions& options, HttpLimits limits,

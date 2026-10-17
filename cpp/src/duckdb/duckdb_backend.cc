@@ -120,7 +120,26 @@ warpsql::Principal StaticPasswordAuthenticator::AuthenticatePassword(std::string
   if (!user_ok || !password_ok) {
     throw Error(ErrorCode::kInvalidCredentials, "the user name or password is not correct");
   }
-  return warpsql::Principal{std::string(username), "admin", "password", {}};
+  return warpsql::Principal{std::string(username), "admin", "password", {}, {}};
+}
+
+warpsql::Principal StaticPasswordAuthenticator::AuthenticateCertificate(
+    std::string_view identity, const warpsql::ClientCertificate&) {
+  auto lower = [](std::string_view text) {
+    std::string out(text);
+    for (char& c : out) {
+      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return out;
+  };
+  for (const auto& allowed : certificate_identities_) {
+    if (lower(allowed) == lower(identity)) {
+      return warpsql::Principal{allowed, "admin", "client_certificate", {}, {}};
+    }
+  }
+  throw Error(ErrorCode::kUnknownCertificateIdentity,
+              "the client certificate's identity '" + std::string(identity) +
+                  "' may not sign in on this server");
 }
 
 }  // namespace warpduckdb

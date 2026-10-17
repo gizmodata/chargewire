@@ -137,6 +137,8 @@ Issued Issue(const std::string& common_name, const Issued* issuer, const std::ve
 struct Certificates {
   fs::path dir;
   fs::path ca, server_cert, server_key, client_cert, client_key, other_ca;
+  // A second client certificate from the same CA, for another identity.
+  fs::path other_client_cert, other_client_key;
 
   static Certificates Make(const std::string& names) {
     Certificates c;
@@ -149,6 +151,8 @@ struct Certificates {
     c.client_cert = c.dir / "client.pem";
     c.client_key = c.dir / "client.key";
     c.other_ca = c.dir / "other-ca.pem";
+    c.other_client_cert = c.dir / "other-client.pem";
+    c.other_client_key = c.dir / "other-client.key";
     const std::vector<std::string> ca_extensions{"basicConstraints=critical,CA:TRUE",
                                                  "keyUsage=critical,keyCertSign,cRLSign",
                                                  "subjectKeyIdentifier=hash"};
@@ -161,9 +165,15 @@ struct Certificates {
                           c.server_cert, c.server_key);
     Issued client = Issue("client", &ca,
                           {"basicConstraints=CA:FALSE", "keyUsage=critical,digitalSignature,keyEncipherment",
-                           "extendedKeyUsage=clientAuth", "authorityKeyIdentifier=keyid"},
+                           "extendedKeyUsage=clientAuth", "subjectAltName=email:client@example.com",
+                           "authorityKeyIdentifier=keyid"},
                           c.client_cert, c.client_key);
-    for (Issued* issued : {&ca, &other, &server, &client}) {
+    Issued other_client = Issue("other-client", &ca,
+                                {"basicConstraints=CA:FALSE", "keyUsage=critical,digitalSignature,keyEncipherment",
+                                 "extendedKeyUsage=clientAuth", "subjectAltName=email:other@example.com",
+                                 "authorityKeyIdentifier=keyid"},
+                                c.other_client_cert, c.other_client_key);
+    for (Issued* issued : {&ca, &other, &server, &client, &other_client}) {
       X509_free(issued->cert);
       EVP_PKEY_free(issued->key);
     }
@@ -988,3 +998,58 @@ TEST_F(LiveTls, MutualTls) {
   skipping.SignInWithPassword(server.username(), server.password());
   EXPECT_EQ(Scalar(*skipping.CreateSession(), "SELECT 2"), 2);
 }
+
+TEST_F(LiveTls, SignsInWithTheClientCertificate) {
+  Server server({"--tls-cert", certs_->server_cert.string(), "--tls-key", certs_->server_key.string(),
+                 "--tls-client-ca", certs_->ca.string(), "--mtls-admin-identities", "client@example.com",
+                 "--token-lifetime-seconds", "62"},
+                true);
+  wc::TlsOptions with_cert{.enabled = true,
+                           .root_certs_file = certs_->ca.string(),
+                           .cert_file = certs_->client_cert.string(),
+                           .key_file = certs_->client_key.string()};
+  ASSERT_TRUE(server.WaitReady(with_cert));
+  wc::Client client(server.Options(with_cert));
+  const wc::Discovery discovery = client.Discover();
+  EXPECT_TRUE(discovery.Has("mtls_identity"));
+  EXPECT_NE(std::ranges::find(discovery.grant_types, "client_certificate"), discovery.grant_types.end());
+  client.SignInWithClientCertificate();
+  auto session = client.CreateSession();
+  EXPECT_EQ(Scalar(*session, "SELECT 7"), 7);
+  // A split result: every partition is read on a connection of its own, each presenting
+  // the certificate the token is bound to.
+  wc::StatementOptions split;
+  split.result_partitions = 4;
+  auto result = session->Execute("SELECT i FROM range(1000000) t(i)", split);
+  ASSERT_TRUE(result.HasRows());
+  EXPECT_EQ(result.reader->ToTable()->num_rows(), 1000000);
+
+  // The token is bound: over another certificate it is refused.
+  wc::TlsOptions other_cert = with_cert;
+  other_cert.cert_file = certs_->other_client_cert.string();
+  other_cert.key_file = certs_->other_client_key.string();
+  wc::Client thief(server.Options(other_cert));
+  thief.SetAccessToken(client.access_token());
+  try {
+    thief.CreateSession();
+    FAIL() << "a bound token worked over another certificate";
+  } catch (const wc::Error& e) {
+    EXPECT_EQ(e.status(), 401);
+    EXPECT_EQ(e.code(), "certificate_mismatch");
+  }
+  // That certificate's own identity is not allowed to sign in.
+  try {
+    thief.SignInWithClientCertificate();
+    FAIL() << "an unknown identity signed in";
+  } catch (const wc::Error& e) {
+    EXPECT_EQ(e.status(), 401);
+    EXPECT_EQ(e.code(), "unknown_certificate_identity");
+  }
+  // The token (62 s, renewed in its last minute) is renewed by signing in again with the
+  // certificate: the renewed token differs.
+  const std::string first = client.access_token();
+  std::this_thread::sleep_for(3s);
+  EXPECT_NE(client.access_token(), first);
+  EXPECT_EQ(Scalar(*client.CreateSession(), "SELECT 8"), 8);
+}
+

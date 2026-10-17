@@ -7,7 +7,9 @@ dependencies = [
   "httpx>=0.28.1",
   "pyarrow>=26.0.0",
   "pytest>=9.1.1",
+  "cryptography>=50.0.2",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["mtls: starts servers of its own with mutual TLS (needs WARP_SQL_TEST_SERVER_BINARY)"]

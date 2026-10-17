@@ -3,19 +3,51 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "warpsql/backend.hpp"
 
 namespace warpsql {
 
+// Where the client_certificate grant (spec §4.4) takes a certificate's identity from.
+enum class ClientIdentitySource {
+  kSanEmail,   // "san_email": the rfc822Name subject alternative name
+  kSanUri,     // "san_uri": the uniformResourceIdentifier SAN (e.g. a SPIFFE ID)
+  kSubjectCn,  // "subject_cn": the subject's common name
+};
+// "san_email", "san_uri" or "subject_cn"; throws std::invalid_argument for anything else.
+ClientIdentitySource ParseClientIdentitySource(std::string_view name);
+std::string_view ClientIdentitySourceName(ClientIdentitySource source);
+
 struct TlsOptions {
   std::string certificate_chain_file;  // PEM
   std::string private_key_file;        // PEM
-  std::string client_ca_file;          // PEM; when set, clients must present a certificate
+  // PEM CAs that client certificates are verified against (mutual TLS). A certificate a
+  // client presents is always verified; one that does not verify fails the handshake.
+  std::string client_ca_file;
+  // With client_ca_file: a connection without a client certificate is refused at the
+  // handshake (true), or may connect and sign in another way (false).
+  bool require_client_certificate = true;
+  // PEM certificate revocation lists (X509_V_FLAG_CRL_CHECK on the leaf). The handshake
+  // refuses a certificate they revoke. Every CA that issues client certificates needs its
+  // CRL here: a certificate whose issuer has no CRL, or an expired one, is refused too.
+  // The file is checked for changes at most every crl_check_interval (on new connections
+  // and requests) and reloaded; each open connection's certificate is then verified again
+  // at its next request (certificate_revoked). A file that fails to load keeps the last
+  // good one in force.
+  std::string client_crl_file;
+  std::chrono::seconds crl_check_interval{5};
+  ClientIdentitySource client_identity_source = ClientIdentitySource::kSanEmail;
+  // A password or token_exchange sign-in on a connection with a client certificate must
+  // be for the identity the certificate maps to (certificate_identity_mismatch).
+  bool require_identity_match = false;
+  // Told about each CRL (re)load: whether it worked and what happened, for the log.
+  std::function<void(bool ok, const std::string& message)> on_crl_reload;
 };
 
 struct ServerOptions {

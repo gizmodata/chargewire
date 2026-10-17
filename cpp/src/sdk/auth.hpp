@@ -20,6 +20,8 @@ class TokenStore : public TokenService {
 
   Issued Issue(const Principal& principal) override;
   Principal Validate(std::string_view token) override;
+  // The whole Principal is kept, its certificate thumbprint included.
+  bool BindsCertificates() const override { return true; }
 
   // Drops expired tokens.
   void Sweep();

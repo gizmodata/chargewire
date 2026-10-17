@@ -13,6 +13,11 @@ Principal Authenticator::ExchangeToken(std::string_view) {
   throw Error(ErrorCode::kInvalidCredentials, "token exchange is not enabled on this server");
 }
 
+Principal Authenticator::AuthenticateCertificate(std::string_view, const ClientCertificate&) {
+  throw Error(ErrorCode::kUnknownCertificateIdentity,
+              "certificate sign-in is not enabled on this server");
+}
+
 }  // namespace warpsql
 
 namespace warpsql::detail {

@@ -15,6 +15,7 @@
 #include "ipc.hpp"
 #include "json.hpp"
 #include "metadata.hpp"
+#include "tls_context.hpp"
 #include "upload.hpp"
 
 namespace warpsql::detail {
@@ -183,9 +184,17 @@ Task<std::invoke_result_t<Fn>> Api::OnEngine(Session& session, Fn work) {
 Task<Response> Api::Handle(Request& request) {
   Response response;
   try {
+    // A connection whose client certificate was revoked (or expired) after its handshake
+    // gets nothing more, and is closed (spec §4.4).
+    if (!request.client_certificate_problem.empty()) {
+      response.close = true;
+      throw Error(ErrorCode::kCertificateRevoked, request.client_certificate_problem);
+    }
     response = co_await Route(request);
   } catch (const Error& error) {
+    const bool close = response.close;
     response = ProblemResponse(error, request.request_id);
+    response.close = close;
   } catch (const std::exception&) {
     response = ProblemResponse(Error(ErrorCode::kExecutionError, "internal server error"),
                                request.request_id);
@@ -345,17 +354,38 @@ Task<Response> Api::Route(Request& request) {
 
 // ---- Discovery, health, authentication ----
 
+bool Api::OffersCertificateSignIn() const {
+  if (!state_.options.tls || state_.options.tls->client_ca_file.empty() ||
+      !state_.tokens->BindsCertificates()) {
+    return false;
+  }
+  const json::array grants = state_.authenticator->GrantTypes();
+  return std::ranges::find(grants, json::value("client_certificate")) != grants.end();
+}
+
 Task<Response> Api::Discovery(Request&) {
   const ServerIdentity identity = state_.backend->Identity();
+  json::array capabilities{"prepared_statements", "transactions", "ingest", "result_retention",
+                           "long_poll", "ipc_compression_zstd", "result_partitions",
+                           "partitioned_ingest"};
+  // client_certificate only where the server verifies client certificates and its tokens
+  // can be bound to them (spec §4.4).
+  json::array grants;
+  for (const auto& grant : state_.authenticator->GrantTypes()) {
+    if (grant != json::value("client_certificate") || OffersCertificateSignIn()) {
+      grants.push_back(grant);
+    }
+  }
+  if (OffersCertificateSignIn()) {
+    capabilities.emplace_back("mtls_identity");
+  }
   json::object doc{
       {"protocol", "warp-sql"},
       {"protocol_versions", json::array{"1"}},
       {"draft", "0.1.0"},
       {"server", {{"name", identity.name}, {"version", identity.version}}},
-      {"capabilities",
-       json::array{"prepared_statements", "transactions", "ingest", "result_retention",
-                   "long_poll", "ipc_compression_zstd", "result_partitions", "partitioned_ingest"}},
-      {"auth", {{"grant_types", state_.authenticator->GrantTypes()}}},
+      {"capabilities", std::move(capabilities)},
+      {"auth", {{"grant_types", std::move(grants)}}},
   };
   co_return JsonResponse(http::status::ok, doc);
 }
@@ -414,9 +444,24 @@ Task<Response> Api::IssueToken(Request& request) {
   const std::string grant_type = RequiredString(body, "grant_type");
   auto authenticator = state_.authenticator;
   Principal principal;
+  const auto& tls = state_.options.tls;
+  const auto& certificate = request.client_certificate;
+  // Identity match (spec §4.4): with it on, a password or token_exchange sign-in on a
+  // connection with a client certificate must be for the certificate's identity.
+  std::optional<std::string> must_be;
+  if (certificate && tls && tls->require_identity_match && grant_type != "client_certificate") {
+    must_be = CertificateIdentity(*certificate, tls->client_identity_source);
+  }
+  auto mismatch = [&](std::string_view name) {
+    return Error(ErrorCode::kCertificateIdentityMismatch,
+                 std::format("this connection's client certificate is for '{}', not '{}'", *must_be,
+                             name));
+  };
   if (grant_type == "password") {
     const std::string username = RequiredString(body, "username");
     const std::string password = RequiredString(body, "password");
+    // Before the password is checked, so the refusal says nothing about it.
+    if (must_be && !SameIdentityName(*must_be, username)) throw mismatch(username);
     principal = co_await net::co_spawn(
         state_.engine_pool,
         [=]() -> Task<Principal> {
@@ -429,9 +474,25 @@ Task<Response> Api::IssueToken(Request& request) {
         state_.engine_pool,
         [=]() -> Task<Principal> { co_return authenticator->ExchangeToken(subject_token); },
         net::use_awaitable);
+  } else if (grant_type == "client_certificate" && OffersCertificateSignIn()) {
+    if (!certificate) {
+      throw Error(ErrorCode::kClientCertificateRequired,
+                  "the client_certificate grant needs a TLS client certificate on this connection");
+    }
+    const std::string identity = CertificateIdentity(*certificate, tls->client_identity_source);
+    principal = co_await net::co_spawn(
+        state_.engine_pool,
+        [=]() -> Task<Principal> {
+          co_return authenticator->AuthenticateCertificate(identity, *certificate);
+        },
+        net::use_awaitable);
+    principal.auth_method = "client_certificate";
+    // Always bound: the token works only on connections presenting this certificate.
+    principal.certificate_thumbprint = certificate->thumbprint;
   } else {
     throw Error(ErrorCode::kBadRequest, std::format("unsupported grant_type '{}'", grant_type));
   }
+  if (must_be && !SameIdentityName(*must_be, principal.name)) throw mismatch(principal.name);
   const auto issued = state_.tokens->Issue(principal);
   co_return JsonResponse(http::status::ok,
                          json::object{{"access_token", issued.token},
@@ -440,7 +501,17 @@ Task<Response> Api::IssueToken(Request& request) {
 }
 
 Principal Api::Authenticate(const Request& request) const {
-  return state_.tokens->Validate(BearerToken(request.Header("Authorization")));
+  Principal principal = state_.tokens->Validate(BearerToken(request.Header("Authorization")));
+  // A certificate-bound token works only on a connection presenting that certificate
+  // (spec §4.4), on every request: keep-alive connections and partition reads included.
+  if (!principal.certificate_thumbprint.empty() &&
+      (!request.client_certificate ||
+       !ConstantTimeEquals(principal.certificate_thumbprint, request.client_certificate->thumbprint))) {
+    throw Error(ErrorCode::kCertificateMismatch,
+                "this access token is bound to a client certificate that this connection did "
+                "not present");
+  }
+  return principal;
 }
 
 std::shared_ptr<Session> Api::OwnSession(const Request& request, const std::string& session_id) {

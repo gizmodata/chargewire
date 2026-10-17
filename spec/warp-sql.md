@@ -48,8 +48,12 @@ in [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
   MUST work over HTTP/1.1 through an ordinary reverse proxy. Nothing in the protocol
   relies on HTTP/2 streams, trailers or server push.
 - Servers MUST offer TLS, and SHOULD refuse plain HTTP except on a loopback address.
-  Servers MAY require client certificates (mutual TLS) in addition to the
-  authentication in §4.
+  Servers MAY require client certificates (mutual TLS), either in addition to the
+  authentication in §4 or as the credential itself (the `client_certificate` grant,
+  §4.4). A server MUST verify a client certificate against the certificate authorities
+  it trusts for clients, and MUST NOT take an identity from a certificate it has not
+  verified. A server that checks revocation and finds a client certificate revoked
+  refuses the handshake (TLS alert `certificate_revoked`).
 - All endpoints live under a base path. This document writes it as `/warp`; a
   server MAY mount the protocol under another prefix and MUST say so in its
   documentation. Version 1 operations are under `/warp/v1`.
@@ -166,6 +170,9 @@ Grant types:
   trusts (for example an OpenID Connect ID token). The server validates it and
   issues its own access token.
 - `oauth_browser` (optional capability): see §4.3.
+- `client_certificate` (optional capability `mtls_identity`): no fields. The verified
+  client certificate of the TLS connection the request arrives on is the credential;
+  see §4.4.
 
 The access token's format is the server's choice; clients MUST treat it as opaque.
 A token MAY be valid only on the server instance that issued it or across a cluster;
@@ -195,6 +202,67 @@ drivers):
    "expires_in"}` once, or `{"state": "failed", "error"}`.
 
 A completed flow's token is returned exactly once; later polls get `404`.
+
+### 4.4 Client certificate sign-in (optional capability `mtls_identity`)
+
+A server with this capability lists `mtls_identity` in `capabilities` and
+`client_certificate` in `auth.grant_types` (§3.1). The client connects with TLS,
+presents its certificate, and asks for a token with no password:
+
+```http
+POST /warp/v1/auth/token
+Content-Type: application/json
+
+{"grant_type": "client_certificate"}
+```
+
+The server maps the certificate it verified during the handshake to a principal and
+answers as for any grant (§4.1), or refuses:
+
+| Code | Status | When |
+|---|---|---|
+| `client_certificate_required` | 401 | The connection presented no client certificate (a server where certificates are optional) |
+| `unknown_certificate_identity` | 401 | The certificate has no identity of the kind the server maps, has more than one (ambiguous), or names no principal allowed to sign in this way |
+| `certificate_revoked` | 401 | The certificate was revoked, or no longer verifies, after the connection was set up (see below) |
+
+**Mapping.** The server takes the identity from one configured part of the verified
+leaf certificate: an `rfc822Name` subject alternative name (an e-mail address; the
+recommended default), a `uniformResourceIdentifier` subject alternative name (for
+example a SPIFFE ID, `spiffe://example.org/ns/etl/sa/loader`), or the subject's common
+name. A certificate with no value of that kind, or with more than one, MUST be refused
+(`unknown_certificate_identity`); a server MUST NOT pick one of several. Values with
+control characters (NUL included) MUST be refused. The certificate proves the identity
+only: what the principal may do is decided by the server's authorization (§9.1), exactly
+as for any other grant. A server MAY refuse identities it does not know, and SHOULD
+document how it compares them (for example, ignoring ASCII case).
+
+**Certificate-bound tokens.** A token issued for a `client_certificate` sign-in MUST be
+bound to the certificate, as in [RFC 8705](https://www.rfc-editor.org/rfc/rfc8705) §3:
+the server records the SHA-256 thumbprint of the certificate's DER encoding (in a JWT,
+the `cnf` claim's `x5t#S256` member, base64url without padding; in an opaque token, its
+equivalent). Every request that uses a bound token MUST arrive on a TLS connection whose
+verified client certificate has the same thumbprint; otherwise the server answers `401`
+with code `certificate_mismatch` and a `WWW-Authenticate: Bearer` header, whatever the
+endpoint. This covers every connection a client opens: the partitions of a split result
+(§6.10) are read on connections of their own, and each MUST present the same
+certificate. Keep-alive connections are checked per request, not once per connection.
+
+**Revocation.** A server that checks revocation (for example against certificate
+revocation lists) refuses a revoked certificate at the handshake. It SHOULD pick up new
+revocation data without a restart and SHOULD then re-check the certificates of
+connections already open, answering their next request with `certificate_revoked`.
+
+**Proxies.** The certificate is only seen by whoever ends TLS. Deployments MUST end TLS
+at the Warp SQL server (a TCP or TLS-passthrough load balancer) for this grant, or have
+the proxy verify the client certificate and pass it on in a way the server is configured
+to trust. A server MUST NOT trust a forwarded-certificate header unless it is explicitly
+configured to, and then only from the proxies it names.
+
+**Identity match.** A server MAY require that a `password` or `token_exchange` sign-in
+on a connection with a client certificate be for the identity the certificate maps to,
+and refuses one that is not with `401` and code `certificate_identity_mismatch`. A server
+that compares a password sign-in's `username` SHOULD do so before checking the password,
+so the refusal says nothing about the password.
 
 ## 5. Sessions
 
@@ -732,7 +800,26 @@ applying the same rules as SQL.
 - Because credentials are bearer tokens in a header (never cookies), the protocol is
   not exposed to cross-site request forgery.
 
-### 9.6 Error messages
+### 9.6 Client certificates
+
+- **Verified chain only.** An identity comes from the leaf certificate of a chain the
+  server verified during the handshake against the CAs it trusts for clients, never from
+  a certificate it merely received. Every CA trusted for clients can sign in any identity
+  of the mapped kind: trust only CAs that issue client certificates for this purpose.
+- **Bound tokens** (§4.4) make a stolen access token useless without the certificate's
+  private key. A token from another grant is not bound, even when it was obtained over an
+  mTLS connection.
+- **Revocation** takes effect for new connections at the handshake and, where the server
+  re-checks open connections, on the next request of each. A server that requires CRLs
+  refuses every certificate whose issuer's CRL is missing or out of date.
+- **Renegotiation.** A server MUST NOT let a client change its certificate on an open
+  connection (TLS 1.2 renegotiation): the identity a connection presents is fixed at its
+  handshake.
+- **Identity match** (§4.4) keeps a password from being used on a connection that
+  presents another user's certificate, when a deployment wants the certificate to be a
+  second factor rather than an alternative.
+
+### 9.7 Error messages
 
 Errors SHOULD help the user fix the problem without revealing what they may not see:
 a denied query names the privilege missing on objects the user named, not the
@@ -805,6 +892,9 @@ modes meet (§8.1) and which clients map to "already exists" and "not found".
 | `invalid_credentials` | 401 | §4.1 |
 | `invalid_token` | 401 | §4.2 |
 | `session_ended` | 401 | §5.6 |
+| `client_certificate_required`, `unknown_certificate_identity`, `certificate_revoked` | 401 | §4.4 |
+| `certificate_mismatch` | 401 | A certificate-bound token on a connection without that certificate (§4.4) |
+| `certificate_identity_mismatch` | 401 | A sign-in for another identity than the connection's certificate (§4.4) |
 | `permission_denied` | 403 | The principal lacks a privilege |
 | `read_only` | 403 | The server or session is read-only |
 | `session_not_found`, `statement_not_found`, `prepared_not_found`, `ingest_not_found` | 404 | No such handle, or not the caller's |

@@ -101,7 +101,8 @@ Response ProblemResponse(const Error& error, std::string_view request_id) {
   response.content_type = kProblemJson;
   response.body = json::serialize(Problem(error, request_id));
   AddSecurityHeaders(response);
-  if (error.code() == ErrorCode::kInvalidToken || error.code() == ErrorCode::kSessionEnded) {
+  if (error.code() == ErrorCode::kInvalidToken || error.code() == ErrorCode::kSessionEnded ||
+      error.code() == ErrorCode::kCertificateMismatch) {
     response.headers.emplace_back("WWW-Authenticate", "Bearer");
   }
   if (error.code() == ErrorCode::kServerDraining) {

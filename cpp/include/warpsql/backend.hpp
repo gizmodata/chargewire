@@ -34,8 +34,29 @@ struct Principal {
   std::string role;               // e.g. "admin", "user", "readonly"; empty if unused
   std::string auth_method;        // how the principal signed in, e.g. "password"
   boost::json::object claims;     // anything else the server carries (e.g. catalog access)
+  // The client certificate a token is bound to (spec §4.4, RFC 8705 "x5t#S256": base64url
+  // SHA-256 of its DER, no padding); empty: the token is not bound. A TokenService must
+  // carry it from Issue() to Validate() (see TokenService::BindsCertificates); the SDK then
+  // refuses every request with the token on a connection without that certificate.
+  std::string certificate_thumbprint;
 
   bool SameIdentity(const Principal& other) const { return name == other.name; }
+};
+
+// A client certificate the TLS handshake verified against the server's client CAs (spec
+// §4.4): its leaf, described. Only verified certificates are ever described.
+struct ClientCertificate {
+  std::string thumbprint;  // base64url SHA-256 of the DER encoding, no padding (x5t#S256)
+  std::string subject;     // RFC 2253, for logs
+  std::string issuer;      // RFC 2253, for logs
+  std::string serial;      // hex
+  // The values of each kind an identity can come from, as the certificate carries them
+  // (byte for byte: the SDK refuses values with control characters when it maps one).
+  std::vector<std::string> san_emails;   // rfc822Name subject alternative names
+  std::vector<std::string> san_uris;     // uniformResourceIdentifier subject alternative names
+  std::vector<std::string> common_names; // the subject's CN attributes
+  // The certificate has more than one subjectAltName extension: no SAN value is trusted.
+  bool duplicate_san_extension = false;
 };
 
 // What running one statement produced: rows, or the count of rows it changed.
@@ -218,6 +239,10 @@ class TokenService {
   // The principal a token belongs to. Throws Error(kInvalidToken) when it is missing,
   // malformed, forged or expired.
   virtual Principal Validate(std::string_view token) = 0;
+  // Whether Validate() returns the Principal::certificate_thumbprint Issue() was given.
+  // The SDK offers the client_certificate grant (spec §4.4) only with a service that does:
+  // a token that lost its binding would work without the certificate.
+  virtual bool BindsCertificates() const { return false; }
 };
 
 // Turns credentials into a principal (spec §4.1).
@@ -231,6 +256,17 @@ class Authenticator {
   // grant_type "token_exchange". Throws Error(kInvalidCredentials) if the token is not
   // one the server trusts.
   virtual Principal ExchangeToken(std::string_view subject_token);
+
+  // grant_type "client_certificate" (spec §4.4): `identity` is what the connection's
+  // verified client certificate maps to (TlsOptions::client_identity_source), already
+  // checked to be one value without control characters; `certificate` is the certificate.
+  // Returns the principal that identity signs in as. Throws
+  // Error(kUnknownCertificateIdentity) when it names no principal who may sign in this way.
+  // The SDK binds the token it issues to the certificate and sets auth_method to
+  // "client_certificate". Offered only when GrantTypes() lists "client_certificate" and
+  // the server verifies client certificates.
+  virtual Principal AuthenticateCertificate(std::string_view identity,
+                                            const ClientCertificate& certificate);
 
   // The grant types this authenticator supports, for discovery (spec §3.1).
   virtual boost::json::array GrantTypes() = 0;

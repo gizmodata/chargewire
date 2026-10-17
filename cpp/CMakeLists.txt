@@ -126,6 +126,7 @@ add_library(warpsql
   src/sdk/signal.cc
   src/sdk/statements.cc
   src/sdk/stop_signals.cc
+  src/sdk/tls_context.cc
   src/sdk/tls_stream.cc
   src/sdk/upload.cc)
 target_include_directories(warpsql PUBLIC include PRIVATE src/sdk)
