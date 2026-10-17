@@ -35,7 +35,9 @@ any language's standard HTTP library. No gRPC, no protobuf, no generated code.
 - 🚀 **Short queries stay one round trip.** One `POST` runs a query and streams its result.
 - 🔀 **Big results go wide.** A client can ask for a large result as several partitions and
   read them over separate connections at once, past what one TCP stream can carry, with the
-  order kept when the query has one.
+  order kept when the query has one. Warp SQL's drivers do it by default (8 partitions).
+- 📤 **Big uploads go wide too.** One bulk ingest can be sent as several parts over separate
+  connections at once and committed as one transaction, all or nothing.
 - 🌐 **Long queries survive real networks.** Submit a query, get a handle, poll it and fetch
   the result later. A dropped download resumes from the batch where it stopped, and no
   request has to outlive a proxy timeout.
@@ -117,6 +119,7 @@ sequenceDiagram
 | 🔀 Partitioned results, read concurrently over several connections, in order or not | [§6.10](spec/warp-sql.md#610-partitioned-results) |
 | 🧪 Prepared statements with JSON or Arrow parameter batches | [§7](spec/warp-sql.md#7-prepared-statements) |
 | 📥 Streaming bulk ingest, with zstd | [§8](spec/warp-sql.md#8-bulk-ingest) |
+| 📤 Partitioned ingest: one upload over several connections, committed atomically | [§8.3](spec/warp-sql.md#83-partitioned-ingest) |
 | 🔐 Security model: principals, bound handles, governed results | [§9](spec/warp-sql.md#9-security) |
 | 📚 Metadata with Flight SQL's result schemas, so driver code carries over | [§10](spec/warp-sql.md#10-metadata) |
 | ⚠️ Problem-document errors and graceful shutdown | [§11](spec/warp-sql.md#11-errors) |
@@ -201,7 +204,7 @@ See [cpp/README.md](cpp/README.md) for TLS, mTLS and the other options.
 5. ~~A production server on the SDK~~: [Hardcharger](https://github.com/gizmodata/hardcharger),
    which runs GizmoSQL 1.x's test battery over Warp SQL alone.
 6. ~~Parallel multi-partition results~~ (§6.10, with the SDK's pipelined streaming).
-7. ~~A JavaScript client~~ ([warp-sql-js](https://github.com/gizmodata/warp-sql-js)) and partitioned uploads. **In progress.**
+7. ~~A JavaScript client~~ ([warp-sql-js](https://github.com/gizmodata/warp-sql-js)) and ~~partitioned uploads~~ (§8.3).
 8. Spec 1.0.0: [Appendix A](spec/warp-sql.md#appendix-a-open-items-before-10) lists the open items.
 
 ## 📂 In this repo
