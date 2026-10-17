@@ -28,11 +28,14 @@ at run time. A server that wants more built in lists them in a CMake file of
 `duckdb_extension_load()` calls and names it in `WARPSQL_DUCKDB_EXTENSION_CONFIGS`
 (several: `;`-separated) when it runs `build-duckdb.sh`.
 
-Windows (x64 and arm64) builds with MSVC from a Developer shell's Git Bash, the same
-commands with `-DOPENSSL_ROOT_DIR=<an OpenSSL 3 built with the static C runtime>
--DOPENSSL_USE_STATIC_LIBS=TRUE -DOPENSSL_MSVC_STATIC_RT=TRUE` (DuckDB always builds with
-/MT on MSVC, so everything linked with it does too). There DuckDB is linked statically.
-Hardcharger's `.github/workflows/windows.yml` builds and tests it this way.
+Windows (x64 and arm64) builds with MSVC from a Developer shell's Git Bash. DuckDB always
+builds with the static C runtime (/MT) there, so everything linked with it must too:
+build Arrow with `CMAKE_TOOLCHAIN_FILE` naming a file that sets
+`CMAKE_MSVC_RUNTIME_LIBRARY` to `MultiThreaded` (this project sets it for itself), and
+configure with `-DOPENSSL_ROOT_DIR=<an OpenSSL 3 built with /MT>
+-DOPENSSL_USE_STATIC_LIBS=TRUE -DOPENSSL_MSVC_STATIC_RT=TRUE`. DuckDB is linked
+statically there. Hardcharger's `.github/workflows/windows.yml` builds and tests it this
+way.
 
 ## Run
 
