@@ -4,6 +4,7 @@ to the upload. A type DuckDB can't ingest must be refused, never stored as text.
 
 import duckdb
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 
 from cases import ARROW_CASES
@@ -24,6 +25,8 @@ def column_types(con: duckdb.DuckDBPyConnection, table: str) -> list[tuple[str, 
 def same_values(stored: pa.ChunkedArray, uploaded: pa.ChunkedArray) -> bool:
     """Compares in the upload's type when the stored column casts back to it,
     otherwise in the stored type."""
+    if pa.types.is_run_end_encoded(uploaded.type):
+        uploaded = pc.run_end_decode(uploaded)
     if pa.types.is_duration(uploaded.type) and pa.types.is_interval(stored.type):
         # DuckDB stores a duration as an INTERVAL; compare exact nanoseconds.
         nanos = uploaded.cast(target_type=pa.duration("ns")).cast(target_type=pa.int64())

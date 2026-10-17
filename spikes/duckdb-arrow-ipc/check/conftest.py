@@ -1,10 +1,12 @@
+import os
 import pathlib
 import subprocess
 
 import pytest
 
 SPIKE_DIR = pathlib.Path(__file__).resolve().parent.parent
-TOOL = SPIKE_DIR / "build" / "warp-spike"
+# WARP_SPIKE_TOOL picks another build, e.g. the Arrow C++ one in build-arrow/.
+TOOL = pathlib.Path(os.environ.get("WARP_SPIKE_TOOL", SPIKE_DIR / "build" / "warp-spike"))
 
 # Both sides render TIMESTAMPTZ in the same zone.
 SESSION_SETUP = "SET TimeZone = 'UTC';"

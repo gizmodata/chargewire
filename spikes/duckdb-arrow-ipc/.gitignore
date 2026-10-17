@@ -7,3 +7,5 @@ __pycache__/
 .deps-build.log
 .cache/
 *.log
+.deps-arrow-build.log
+build-nanoarrow/

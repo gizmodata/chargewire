@@ -85,25 +85,25 @@ class Backend {
 
 The point of Warp SQL is a small build. The SDK needs only:
 
-- **nanoarrow** with its IPC library for reading and writing Arrow IPC streams. Not
-  Arrow C++. Writing compressed IPC (ZSTD, LZ4) landed on nanoarrow's main branch on
-  2026-09-09 (apache/arrow-nanoarrow#935) and is not in a release yet (0.9.0 can only
-  read compressed IPC), so the SDK pins a main commit until the next release.
+- **Arrow C++, built with IPC only**: `ARROW_IPC` with ZSTD and LZ4, and Flight,
+  compute, Parquet, filesystems and the bundled allocators off. Without Flight it needs
+  none of gRPC, protobuf, abseil, c-ares or re2; it builds in about 30 seconds and adds
+  about 9 MB to the binary. Every incoming batch goes through `ValidateFull()`.
 - **An HTTP/1.1 server library** (to be chosen).
 - **OpenSSL** for TLS.
-- **zstd and lz4** for compression.
 
-No gRPC, no protobuf, no abseil, no c-ares, no re2.
+### Which Arrow library (spike, 2026-10-16)
 
-### The nanoarrow spike (done 2026-10-16)
-
-[`spikes/nanoarrow-duckdb`](../spikes/nanoarrow-duckdb/README.md) proved nanoarrow on
-DuckDB 2.0: every DuckDB type round-trips value for value, with and without
-compression, read back by pyarrow and by Arrow JS. Three gaps to close: nanoarrow's IPC
-has no view layouts or run-end encoding yet (contribute upstream; refuse until then),
-DuckDB's INTERVAL truncates sub-microsecond values, and DuckDB's default Arrow export
-of HUGEINT is invalid (a DuckDB bug to report). The server defaults to
-`arrow_lossless_conversion = true` without views.
+[`spikes/duckdb-arrow-ipc`](../spikes/duckdb-arrow-ipc/README.md) ran the same
+1,247-case harness on DuckDB 2.0 with nanoarrow and with Arrow C++. Arrow C++ passed
+every case its own code is responsible for; nanoarrow's IPC lacks the Arrow view
+layouts and run-end encoding, and writes compressed IPC only on its unreleased main
+branch. Arrow C++'s full validation also refuses a malformed upload (DuckDB's invalid
+HUGEINT decimals) that nanoarrow passed through into storage. The remaining failures
+are DuckDB's (sub-microsecond intervals are truncated; its default Arrow setting
+changes several types) and Arrow JS's (no list views; `get()` throws on infinite
+timestamps). The server defaults to `arrow_lossless_conversion = true` without list
+views, and refuses uploads DuckDB would truncate.
 
 ## GizmoSQL 2.0 on this SDK (decided 2026-10-16)
 

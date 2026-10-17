@@ -56,8 +56,8 @@ every GizmoSQL 1.x test over Warp SQL alone ([parity plan](docs/gizmosql-parity.
 ## Roadmap
 
 1. Spec draft (this).
-2. ~~Spike: DuckDB results through nanoarrow's IPC writer, checked value by value for
-   every type.~~ Done ([results](spikes/nanoarrow-duckdb/README.md)).
+2. ~~Spike: which Arrow library does the IPC, checked value by value for every DuckDB
+   type.~~ Done: Arrow C++ with IPC only ([results](spikes/duckdb-arrow-ipc/README.md)).
 3. Reference server SDK (C++) and a conformance test suite.
 4. Clients: [`warp-sql-adbc`](https://github.com/gizmodata/warp-sql-adbc) (generic Go
    ADBC driver) and a JavaScript client.
