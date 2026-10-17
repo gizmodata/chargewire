@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <map>
+#include <optional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -14,12 +15,21 @@
 
 namespace warpsql::detail {
 
+// A request body read on demand, for bodies too large to hold in memory (ingest).
+class BodySource {
+ public:
+  virtual ~BodySource() = default;
+  // The next piece of the body, or nullopt at its end. Throws if the connection fails.
+  virtual Task<std::optional<std::string>> Next() = 0;
+};
+
 struct Request {
   http::verb method = http::verb::unknown;
   std::string path;                          // decoded, without the query
   std::map<std::string, std::string> query;  // decoded parameters
   http::fields headers;
-  std::string body;
+  std::string body;                         // when the body is read up front
+  std::shared_ptr<BodySource> body_source;  // when it streams (see HttpLimits::streams_body)
   std::string request_id;
 
   std::string_view Header(std::string_view name) const;
@@ -53,7 +63,9 @@ using Handler = std::function<Task<Response>(Request&)>;
 // limit (431) or a request it can't parse (400).
 struct HttpLimits {
   std::size_t max_header_bytes;
-  std::size_t max_body_bytes;
+  std::size_t max_body_bytes;  // for bodies read up front
+  // Which requests stream their body instead (no size limit).
+  std::function<bool(const Request&)> streams_body;
   std::function<Response(http::status status, std::string_view detail)> error_response;
 };
 

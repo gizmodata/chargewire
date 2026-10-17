@@ -34,3 +34,10 @@ def test_oversized_header_block_gets_431(server):
 def test_no_cross_origin_access_by_default(server):
     response = httpx.get(url=f"{server.base_url}/warp", headers={"Origin": "https://evil.example"})
     assert "access-control-allow-origin" not in response.headers
+
+
+def test_oversized_json_body_gets_413(warp, session_id):
+    body = b'{"sql": "SELECT 1", "padding": "' + b"a" * (70 * 1024 * 1024) + b'"}'
+    response = warp.http.post(url=f"{warp.session_url(session_id)}/statements",
+                              headers=warp.headers(**{"Content-Type": "application/json"}), content=body)
+    assert_problem(response=response, status=413, code="payload_too_large")

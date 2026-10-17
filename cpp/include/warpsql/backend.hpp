@@ -20,6 +20,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "warpsql/errors.hpp"
 
@@ -40,6 +41,63 @@ struct StatementOutcome {
 // Per-option failures from EngineSession::SetOptions (spec §5.3).
 using OptionErrors = std::map<std::string, Error>;
 
+// A statement prepared once and executed many times (spec §7).
+class PreparedStatement {
+ public:
+  virtual ~PreparedStatement() = default;
+  // One field per parameter, in binding order (named parameters carry their name).
+  virtual std::shared_ptr<arrow::Schema> ParameterSchema() = 0;
+  // The rows' schema, or null when the statement returns no rows or the schema is only
+  // known at execution.
+  virtual std::shared_ptr<arrow::Schema> ResultSchema() = 0;
+};
+
+// Bind parameters for one request: JSON (spec §6.1), or Arrow rows, one execution per
+// row (spec §7.2).
+struct Parameters {
+  boost::json::value json = nullptr;
+  std::shared_ptr<arrow::RecordBatchReader> rows;
+};
+
+enum class IngestMode { kCreate, kAppend, kReplace, kCreateAppend };
+
+// Where a bulk ingest writes (spec §8.1). Empty catalog/schema: the session's current.
+struct IngestTarget {
+  std::string catalog;
+  std::string schema;
+  std::string table;
+  IngestMode mode = IngestMode::kCreateAppend;
+  bool temporary = false;
+};
+
+// Metadata filters (spec §10). Unset fields don't narrow the search; patterns use SQL
+// LIKE syntax.
+struct MetadataFilter {
+  std::optional<std::string> catalog;
+  std::optional<std::string> db_schema;  // exact (keys) or pattern (db-schemas, tables)
+  std::optional<std::string> table;      // exact (keys) or pattern (tables)
+  std::vector<std::string> table_types;
+  bool include_schema = false;
+  // cross-reference: the foreign-key side
+  std::optional<std::string> fk_catalog;
+  std::optional<std::string> fk_db_schema;
+  std::optional<std::string> fk_table;
+};
+
+enum class MetadataKind {
+  kCatalogs,
+  kDbSchemas,
+  kTables,
+  kTableTypes,
+  kPrimaryKeys,
+  kImportedKeys,
+  kExportedKeys,
+  kCrossReference,
+};
+
+// The exact result schema every backend returns for `kind` (Arrow Flight SQL's).
+std::shared_ptr<arrow::Schema> MetadataSchema(MetadataKind kind, bool include_schema = false);
+
 class EngineSession {
  public:
   virtual ~EngineSession() = default;
@@ -48,6 +106,21 @@ class EngineSession {
   // may block too. `parameters` is the request's bind parameters (spec §6.1): null for
   // none, an array for positional parameters, or an object for named ones.
   virtual StatementOutcome Execute(std::string_view sql, const boost::json::value& parameters);
+
+  virtual std::unique_ptr<PreparedStatement> Prepare(std::string_view sql);
+  // Executes `statement` once (JSON parameters or none) or once per Arrow parameter row;
+  // rows from several executions are concatenated in order.
+  virtual StatementOutcome ExecutePrepared(PreparedStatement& statement,
+                                           const Parameters& parameters);
+
+  // Writes every row of `rows` into `target`, atomically where the engine can, and
+  // returns how many (spec §8.1). The SDK has already validated each batch.
+  virtual int64_t Ingest(const IngestTarget& target,
+                         std::shared_ptr<arrow::RecordBatchReader> rows);
+
+  // Metadata as `MetadataSchema(kind)` describes it, only what the principal may see.
+  virtual std::shared_ptr<arrow::RecordBatchReader> Metadata(MetadataKind kind,
+                                                             const MetadataFilter& filter);
 
   // Asks the running Execute(), or the read of its rows, to stop. Safe from any thread.
   virtual void Interrupt();
@@ -82,6 +155,9 @@ class Backend {
   // Reports whether the engine can take work (spec §3.2). Throws if not. Must not hang:
   // the SDK gives up on it after the health timeout either way.
   virtual void CheckHealth() {}
+
+  // Facts for GET …/metadata/server-info (spec §10), merged over the SDK's own.
+  virtual boost::json::object ServerInfo() { return {}; }
 };
 
 // Turns credentials into a principal (spec §4.1). The SDK issues and checks the

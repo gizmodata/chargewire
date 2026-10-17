@@ -1,0 +1,480 @@
+#include "duckdb_session.hpp"
+
+#include <arrow/api.h>
+#include <arrow/ipc/writer.h>
+
+#include <map>
+
+#include "duckdb_sql.hpp"
+
+namespace warpduckdb {
+
+namespace json = boost::json;
+using warpsql::Error;
+using warpsql::ErrorCode;
+using warpsql::MetadataKind;
+
+namespace {
+
+using PreparedHandle =
+    Owned<duckdb_v2_prepared_statement_handle, duckdb_v2_prepared_statement_destroy>;
+
+class DuckDBPrepared : public warpsql::PreparedStatement {
+ public:
+  DuckDBPrepared(SqlStatement statement, PreparedHandle prepared, ParameterTypes types)
+      : statement_(std::move(statement)),
+        prepared_(std::move(prepared)),
+        types_(std::move(types)) {}
+
+  std::shared_ptr<arrow::Schema> ParameterSchema() override { return types_.ArrowSchema(); }
+  std::shared_ptr<arrow::Schema> ResultSchema() override { return nullptr; }
+
+  duckdb_v2_sql_statement_handle statement() const { return statement_.get(); }
+  duckdb_v2_prepared_statement_handle prepared() const { return prepared_.get(); }
+  const ParameterTypes& types() const { return types_; }
+
+ private:
+  SqlStatement statement_;
+  PreparedHandle prepared_;
+  ParameterTypes types_;
+};
+
+bool HasNull(const json::value& parameters) {
+  if (parameters.is_array()) {
+    for (const auto& item : parameters.as_array()) {
+      if (item.is_null()) return true;
+    }
+  } else if (parameters.is_object()) {
+    for (const auto& item : parameters.as_object()) {
+      if (item.value().is_null()) return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+DuckDBSession::DuckDBSession(duckdb_v2_instance_handle instance) {
+  Call([&](auto* err) { return duckdb_v2_connection_create(instance, connection_.out(), err); });
+  Call([&](auto* err) { return duckdb_v2_connection_get_factory(connection_.get(), &factory_, err); });
+  values_ = std::make_unique<ValueFactory>(factory_);
+  // DuckDB's default Arrow mapping, as GizmoSQL 1.x uses: HUGEINT (every integer SUM)
+  // arrives as decimal128(38, 0), which clients can compute with. The lossless mode
+  // keeps UUID, JSON and TIMETZ exact but turns HUGEINT into opaque bytes; a session can
+  // opt in with the arrow_lossless_conversion option.
+}
+
+DuckDBSession::~DuckDBSession() {
+  connection_.reset();
+}
+
+// ---- Statements ----
+
+warpsql::StatementOutcome DuckDBSession::Execute(std::string_view sql,
+                                                 const json::value& parameters) {
+  auto statements = Parse(connection_.get(), sql);
+  if (statements.empty()) {
+    throw Error(ErrorCode::kSqlError, "no SQL statement given");
+  }
+  if (!parameters.is_null() && statements.size() > 1) {
+    throw Error(ErrorCode::kSqlError, "bind parameters need a single SQL statement");
+  }
+  // Every statement but the last runs to completion; the last one's result is returned.
+  for (std::size_t i = 0; i + 1 < statements.size(); i++) {
+    RunToEnd(connection_.get(), statements[i].get());
+  }
+  auto last = std::make_shared<SqlStatement>(std::move(statements.back()));
+
+  const ParameterTypes types =
+      HasNull(parameters) ? ParameterTypes::Load(connection_.get(), last->get()) : ParameterTypes();
+  const BoundValues bound = values_->FromJson(parameters, types);
+  const auto handles = bound.Handles();
+  const auto names = bound.NameHandles();
+  ArrowResult result;
+  Call([&](auto* err) {
+    return duckdb_v2_statement_execute_arrow(connection_.get(), last->get(),
+                                             names.empty() ? nullptr : names.data(),
+                                             handles.empty() ? nullptr : handles.data(),
+                                             handles.size(), 0, result.out(), err);
+  });
+  return Outcome(result, last);
+}
+
+std::unique_ptr<warpsql::PreparedStatement> DuckDBSession::Prepare(std::string_view sql) {
+  auto statements = Parse(connection_.get(), sql);
+  if (statements.size() != 1) {
+    throw Error(ErrorCode::kSqlError, "a prepared statement is exactly one SQL statement");
+  }
+  PreparedHandle prepared;
+  Call([&](auto* err) {
+    return duckdb_v2_prepared_statement_create(connection_.get(), statements[0].get(), false,
+                                               prepared.out(), err);
+  });
+  ParameterTypes types = ParameterTypes::Load(connection_.get(), statements[0].get());
+  return std::make_unique<DuckDBPrepared>(std::move(statements[0]), std::move(prepared),
+                                          std::move(types));
+}
+
+warpsql::StatementOutcome DuckDBSession::ExecutePrepared(warpsql::PreparedStatement& statement,
+                                                         const warpsql::Parameters& parameters) {
+  auto& prepared = static_cast<DuckDBPrepared&>(statement);
+  auto run = [&](const BoundValues& bound) {
+    const auto handles = bound.Handles();
+    const auto names = bound.NameHandles();
+    ArrowResult result;
+    Call([&](auto* err) {
+      return duckdb_v2_prepared_statement_execute_arrow(
+          prepared.prepared(), names.empty() ? nullptr : names.data(),
+          handles.empty() ? nullptr : handles.data(), handles.size(), 0, result.out(), err);
+    });
+    // The prepared statement outlives its executions: the SDK destroys it on the
+    // session's strand, after any statement that uses it.
+    return Outcome(result, nullptr);
+  };
+
+  if (!parameters.rows) {
+    return run(values_->FromJson(parameters.json, prepared.types()));
+  }
+
+  // One execution per parameter row; rows from all executions in order (spec §7.2).
+  arrow::RecordBatchVector batches;
+  std::shared_ptr<arrow::Schema> schema;
+  std::optional<int64_t> changed;
+  for (;;) {
+    auto next = parameters.rows->Next();
+    if (!next.ok()) {
+      throw Error(ErrorCode::kBadRequest, next.status().message());
+    }
+    auto parameter_batch = std::move(next).ValueUnsafe();
+    if (parameter_batch == nullptr) {
+      break;
+    }
+    for (int64_t row = 0; row < parameter_batch->num_rows(); row++) {
+      auto outcome = run(values_->FromArrowRow(*parameter_batch, row, prepared.types()));
+      if (outcome.rows) {
+        schema = outcome.rows->schema();
+        auto all = outcome.rows->ToRecordBatches();
+        if (!all.ok()) {
+          throw Error(ErrorCode::kExecutionError, all.status().message());
+        }
+        for (auto& batch : *all) batches.push_back(std::move(batch));
+      } else if (outcome.rows_affected) {
+        changed = changed.value_or(0) + *outcome.rows_affected;
+      }
+    }
+  }
+  warpsql::StatementOutcome outcome;
+  if (schema) {
+    auto reader = arrow::RecordBatchReader::Make(std::move(batches), schema);
+    if (!reader.ok()) {
+      throw Error(ErrorCode::kExecutionError, reader.status().message());
+    }
+    outcome.rows = *reader;
+  } else {
+    outcome.rows_affected = changed.value_or(0);
+  }
+  return outcome;
+}
+
+int64_t DuckDBSession::Ingest(const warpsql::IngestTarget& target,
+                              std::shared_ptr<arrow::RecordBatchReader> rows) {
+  return warpduckdb::Ingest(connection_.get(), target, std::move(rows));
+}
+
+// ---- Metadata (spec §10), with Arrow Flight SQL's result schemas ----
+
+std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::Metadata(
+    MetadataKind kind, const warpsql::MetadataFilter& filter) {
+  // Filters are bound as parameters, never spliced into the SQL: one VARCHAR value (or
+  // VARCHAR NULL) per named parameter.
+  std::vector<std::string> names;
+  std::vector<Value> values;
+  auto text = [&](std::string name, const std::optional<std::string>& value) {
+    names.push_back(std::move(name));
+    json::array one;
+    one.push_back(value ? json::value(*value) : json::value(nullptr));
+    values.push_back(std::move(values_->FromJson(one, {}).values[0]));
+  };
+
+  std::string sql;
+  switch (kind) {
+    case MetadataKind::kCatalogs:
+      sql = "SELECT DISTINCT catalog_name FROM information_schema.schemata ORDER BY 1";
+      break;
+    case MetadataKind::kDbSchemas:
+      text("catalog", filter.catalog);
+      text("schema", filter.db_schema);
+      sql = "SELECT catalog_name, schema_name AS db_schema_name "
+            "FROM information_schema.schemata "
+            "WHERE ($catalog IS NULL OR catalog_name = $catalog) "
+            "AND ($schema IS NULL OR schema_name LIKE $schema ESCAPE '\\') ORDER BY 1, 2";
+      break;
+    case MetadataKind::kTables: {
+      std::optional<std::string> types;
+      for (const auto& type : filter.table_types) {
+        types = types ? *types + "," + type : type;
+      }
+      text("catalog", filter.catalog);
+      text("schema", filter.db_schema);
+      text("table", filter.table);
+      text("types", types);
+      sql = "SELECT table_catalog AS catalog_name, table_schema AS db_schema_name, table_name, "
+            "table_type FROM information_schema.tables "
+            "WHERE ($catalog IS NULL OR table_catalog = $catalog) "
+            "AND ($schema IS NULL OR table_schema LIKE $schema ESCAPE '\\') "
+            "AND ($table IS NULL OR table_name LIKE $table ESCAPE '\\') "
+            "AND ($types IS NULL OR list_contains(string_split($types, ','), table_type)) "
+            "ORDER BY 1, 2, 3, 4";
+      break;
+    }
+    case MetadataKind::kTableTypes:
+      sql = "SELECT table_type FROM (VALUES ('BASE TABLE'), ('LOCAL TEMPORARY'), ('VIEW')) "
+            "t(table_type) ORDER BY 1";
+      break;
+    case MetadataKind::kPrimaryKeys:
+      text("catalog", filter.catalog);
+      text("schema", filter.db_schema);
+      text("table", filter.table);
+      sql = "SELECT catalog_name, db_schema_name, table_name, column_name, key_name, "
+            "CAST(key_sequence AS INTEGER) AS key_sequence FROM ("
+            "SELECT database_name AS catalog_name, schema_name AS db_schema_name, table_name, "
+            "unnest(constraint_column_names) AS column_name, constraint_name AS key_name, "
+            "unnest(range(1, len(constraint_column_names) + 1)) AS key_sequence "
+            "FROM duckdb_constraints() WHERE constraint_type = 'PRIMARY KEY' "
+            "AND table_name = $table AND ($catalog IS NULL OR database_name = $catalog) "
+            "AND ($schema IS NULL OR schema_name = $schema)) ORDER BY 1, 2, 3, 5, 6";
+      break;
+    case MetadataKind::kImportedKeys:
+    case MetadataKind::kExportedKeys:
+    case MetadataKind::kCrossReference: {
+      std::string where;
+      if (kind == MetadataKind::kImportedKeys) {
+        text("catalog", filter.catalog);
+        text("schema", filter.db_schema);
+        text("table", filter.table);
+        where = "table_name = $table AND ($catalog IS NULL OR database_name = $catalog) "
+                "AND ($schema IS NULL OR schema_name = $schema)";
+      } else if (kind == MetadataKind::kExportedKeys) {
+        text("catalog", filter.catalog);
+        text("schema", filter.db_schema);
+        text("table", filter.table);
+        where = "referenced_table = $table AND ($catalog IS NULL OR database_name = $catalog) "
+                "AND ($schema IS NULL OR schema_name = $schema)";
+      } else {
+        text("pk_table", filter.table);
+        text("fk_table", filter.fk_table);
+        text("pk_catalog", filter.catalog);
+        text("pk_schema", filter.db_schema);
+        where = "referenced_table = $pk_table AND table_name = $fk_table "
+                "AND ($pk_catalog IS NULL OR database_name = $pk_catalog) "
+                "AND ($pk_schema IS NULL OR schema_name = $pk_schema)";
+      }
+      const std::string order =
+          kind == MetadataKind::kImportedKeys ? "1, 2, 3, 11, 9" : "5, 6, 7, 10, 9";
+      sql = "SELECT pk_catalog_name, pk_db_schema_name, pk_table_name, pk_column_name, "
+            "fk_catalog_name, fk_db_schema_name, fk_table_name, fk_column_name, "
+            "CAST(key_sequence AS INTEGER) AS key_sequence, fk_key_name, "
+            "NULL::VARCHAR AS pk_key_name, CAST(3 AS UTINYINT) AS update_rule, "
+            "CAST(3 AS UTINYINT) AS delete_rule FROM ("
+            "SELECT database_name AS pk_catalog_name, schema_name AS pk_db_schema_name, "
+            "referenced_table AS pk_table_name, "
+            "unnest(referenced_column_names) AS pk_column_name, "
+            "database_name AS fk_catalog_name, schema_name AS fk_db_schema_name, "
+            "table_name AS fk_table_name, unnest(constraint_column_names) AS fk_column_name, "
+            "unnest(range(1, len(constraint_column_names) + 1)) AS key_sequence, "
+            "constraint_name AS fk_key_name FROM duckdb_constraints() "
+            "WHERE constraint_type = 'FOREIGN KEY' AND " + where + ") ORDER BY " + order;
+      break;
+    }
+  }
+
+  std::vector<duckdb_v2_value_handle> handles;
+  for (const auto& value : values) handles.push_back(value.get());
+  auto rows = QueryArrow(connection_.get(), sql, names, handles);
+  if (kind == MetadataKind::kTables && filter.include_schema) {
+    return TablesWithSchemas(std::move(rows));
+  }
+  return rows;
+}
+
+std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::TablesWithSchemas(
+    std::shared_ptr<arrow::RecordBatchReader> tables) {
+  auto all = tables->ToTable();
+  tables.reset();  // a connection runs one result at a time: release it first
+  if (!all.ok()) {
+    throw Error(ErrorCode::kExecutionError, all.status().message());
+  }
+  auto combined = (*all)->CombineChunksToBatch();
+  if (!combined.ok()) {
+    throw Error(ErrorCode::kExecutionError, combined.status().message());
+  }
+  const auto& batch = **combined;
+  auto column = [&](int i) { return std::static_pointer_cast<arrow::StringArray>(batch.column(i)); };
+  auto catalogs = column(0), schemas = column(1), names = column(2);
+
+  arrow::BinaryBuilder builder;
+  for (int64_t row = 0; row < batch.num_rows(); row++) {
+    const std::string catalog = catalogs->GetString(row);
+    const std::string schema = schemas->GetString(row);
+    const std::string table = names->GetString(row);
+    // The table's Arrow schema, with the Flight SQL per-field metadata drivers read.
+    auto table_schema = QueryArrow(connection_.get(), "SELECT * FROM " +
+                                                          QualifiedName({catalog, schema, table}) +
+                                                          " LIMIT 0")
+                            ->schema();
+    std::map<std::string, std::string> type_names;
+    {
+      std::vector<Value> bound;
+      for (const auto& part : {catalog, schema, table}) {
+        bound.push_back(std::move(values_->FromJson(json::array{json::value(part)}, {}).values[0]));
+      }
+      std::vector<duckdb_v2_value_handle> handles;
+      for (const auto& value : bound) handles.push_back(value.get());
+      auto described = QueryArrow(
+          connection_.get(),
+          "SELECT column_name, data_type FROM information_schema.columns WHERE table_catalog = $c "
+          "AND table_schema = $s AND table_name = $t ORDER BY ordinal_position",
+          {"c", "s", "t"}, handles);
+      auto rows = described->ToTable();
+      described.reset();
+      if (rows.ok()) {
+        auto flat = (*rows)->CombineChunksToBatch();
+        if (flat.ok() && (*flat)->num_rows() > 0) {
+          auto col_names = std::static_pointer_cast<arrow::StringArray>((*flat)->column(0));
+          auto col_types = std::static_pointer_cast<arrow::StringArray>((*flat)->column(1));
+          for (int64_t i = 0; i < (*flat)->num_rows(); i++) {
+            type_names[col_names->GetString(i)] = col_types->GetString(i);
+          }
+        }
+      }
+    }
+    arrow::FieldVector fields;
+    for (const auto& field : table_schema->fields()) {
+      auto it = type_names.find(field->name());
+      auto metadata = arrow::key_value_metadata(
+          {"ARROW:FLIGHT:SQL:CATALOG_NAME", "ARROW:FLIGHT:SQL:DB_SCHEMA_NAME",
+           "ARROW:FLIGHT:SQL:TABLE_NAME", "ARROW:FLIGHT:SQL:TYPE_NAME"},
+          {catalog, schema, table, it == type_names.end() ? field->type()->ToString() : it->second});
+      fields.push_back(field->WithMetadata(metadata));
+    }
+    auto serialized = arrow::ipc::SerializeSchema(*arrow::schema(fields));
+    if (!serialized.ok()) {
+      throw Error(ErrorCode::kExecutionError, serialized.status().message());
+    }
+    if (!builder.Append((*serialized)->data(), (*serialized)->size()).ok()) {
+      throw Error(ErrorCode::kExecutionError, "could not build table schemas");
+    }
+  }
+  std::shared_ptr<arrow::Array> schemas_column;
+  if (!builder.Finish(&schemas_column).ok()) {
+    throw Error(ErrorCode::kExecutionError, "could not build table schemas");
+  }
+  auto columns = batch.columns();
+  columns.push_back(schemas_column);
+  auto fields = batch.schema()->fields();
+  fields.push_back(arrow::field("table_schema", arrow::binary(), false));
+  auto out = arrow::RecordBatch::Make(arrow::schema(fields), batch.num_rows(), columns);
+  auto reader = arrow::RecordBatchReader::Make({out});
+  if (!reader.ok()) {
+    throw Error(ErrorCode::kExecutionError, reader.status().message());
+  }
+  return *reader;
+}
+
+// ---- Control and options ----
+
+void DuckDBSession::Interrupt() { duckdb_v2_connection_interrupt(connection_.get(), nullptr); }
+
+std::optional<double> DuckDBSession::Progress() {
+  double percentage = -1;
+  uint64_t processed = 0;
+  uint64_t total = 0;
+  if (duckdb_v2_connection_progress_get(connection_.get(), &percentage, &processed, &total,
+                                        nullptr) != DUCKDB_V2_ERROR_NONE ||
+      percentage < 0) {
+    return std::nullopt;
+  }
+  return percentage / 100.0;
+}
+
+warpsql::OptionErrors DuckDBSession::SetOptions(const json::object& options) {
+  warpsql::OptionErrors errors;
+  auto apply = [&](std::string_view key, auto&& fn) {
+    const json::value* value = options.if_contains(key);
+    if (value == nullptr) return;
+    try {
+      fn(*value);
+    } catch (const Error& error) {
+      errors.emplace(std::string(key), Error(ErrorCode::kInvalidOptionValue, error.what()));
+    }
+  };
+  auto text = [](const json::value& value, std::string_view key) {
+    if (!value.is_string()) {
+      throw Error(ErrorCode::kInvalidOptionValue, std::string(key) + " must be a string");
+    }
+    return std::string(value.as_string());
+  };
+  // Catalog before schema, so {"catalog": a, "schema": b} means a.b.
+  apply("catalog", [&](const json::value& value) {
+    RunSql(connection_.get(), "USE " + QualifiedName({text(value, "catalog")}));
+  });
+  apply("schema", [&](const json::value& value) {
+    const std::string catalog = QueryText(connection_.get(), "SELECT current_database()");
+    RunSql(connection_.get(), "USE " + QualifiedName({catalog, text(value, "schema")}));
+  });
+  apply("autocommit", [&](const json::value& value) {
+    if (!value.is_bool()) {
+      throw Error(ErrorCode::kInvalidOptionValue, "autocommit must be true or false");
+    }
+    const bool on = value.as_bool();
+    if (!on && autocommit_) {
+      RunSql(connection_.get(), "BEGIN TRANSACTION");
+    } else if (on && !autocommit_) {
+      RunSql(connection_.get(), "COMMIT");
+    }
+    autocommit_ = on;
+  });
+  apply("session_tag", [&](const json::value& value) { session_tag_ = value; });
+  apply("arrow_lossless_conversion", [&](const json::value& value) {
+    if (!value.is_bool()) {
+      throw Error(ErrorCode::kInvalidOptionValue, "arrow_lossless_conversion must be true or false");
+    }
+    RunSql(connection_.get(), value.as_bool() ? "SET arrow_lossless_conversion = true"
+                                              : "SET arrow_lossless_conversion = false");
+    lossless_ = value.as_bool();
+  });
+  for (const auto& option : options) {
+    const std::string_view key = option.key();
+    if (key != "catalog" && key != "schema" && key != "autocommit" && key != "session_tag" &&
+        key != "arrow_lossless_conversion") {
+      errors.emplace(std::string(key), Error(ErrorCode::kUnknownOption, "unknown session option"));
+    }
+  }
+  return errors;
+}
+
+json::object DuckDBSession::Options() {
+  json::object options{
+      {"catalog", QueryText(connection_.get(), "SELECT current_database()")},
+      {"schema", QueryText(connection_.get(), "SELECT current_schema()")},
+      {"autocommit", autocommit_},
+      {"arrow_lossless_conversion", lossless_},
+  };
+  if (!session_tag_.is_null()) {
+    options["session_tag"] = session_tag_;
+  }
+  return options;
+}
+
+void DuckDBSession::Commit() { EndTransaction("COMMIT"); }
+
+void DuckDBSession::Rollback() { EndTransaction("ROLLBACK"); }
+
+void DuckDBSession::EndTransaction(std::string_view sql) {
+  RunSql(connection_.get(), sql);
+  if (!autocommit_) {
+    RunSql(connection_.get(), "BEGIN TRANSACTION");  // the next statement starts a new one
+  }
+}
+
+}  // namespace warpduckdb

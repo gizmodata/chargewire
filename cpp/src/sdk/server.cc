@@ -50,6 +50,11 @@ class Server::Impl {
         api_(state_),
         http_(io_, state_.options,
               HttpLimits{state_.options.max_header_bytes, state_.options.max_json_body_bytes,
+                         // Bulk ingest streams its body; everything else is read up front.
+                         [](const Request& request) {
+                           return request.method == http::verb::post &&
+                                  request.path.ends_with("/ingest");
+                         },
                          [](http::status status, std::string_view detail) {
                            Response response = ProblemResponse(
                                Error(CodeForStatus(status), std::string(detail)), "");

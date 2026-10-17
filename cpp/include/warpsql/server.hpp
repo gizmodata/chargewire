@@ -27,7 +27,9 @@ struct ServerOptions {
   int engine_threads = 0;  // 0: two per core
 
   std::size_t max_header_bytes = 16 * 1024;  // larger header blocks get 431
-  std::size_t max_json_body_bytes = 16 * 1024 * 1024;
+  // Bodies read whole: JSON, and Arrow parameters for prepared statements. Ingest
+  // streams and has no limit.
+  std::size_t max_json_body_bytes = 64 * 1024 * 1024;
 
   std::chrono::seconds token_lifetime{3600};
   std::chrono::seconds session_idle_timeout{900};

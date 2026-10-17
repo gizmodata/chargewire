@@ -40,12 +40,10 @@ class Statement {
     std::function<bool(int64_t)> reserve_bytes;
   };
 
-  Statement(std::string id, std::string sql, json::value parameters, Config config);
+  Statement(std::string id, Config config);
   ~Statement();
 
   const std::string& id() const { return id_; }
-  const std::string& sql() const { return sql_; }
-  const json::value& parameters() const { return parameters_; }
   bool retained() const { return config_.retain; }
   Signal& changed() { return changed_; }
 
@@ -100,8 +98,6 @@ class Statement {
   bool IsTerminalLocked() const;                                     // mutex_ held
 
   const std::string id_;
-  const std::string sql_;
-  const json::value parameters_;
   const Config config_;
   const WallClock::time_point submitted_at_;
 
@@ -142,6 +138,7 @@ class IdempotencyStore {
     std::string session_id;
     std::string statement_id;
     Clock::time_point expires;
+    std::shared_ptr<std::string> response;  // an ingest's answer, once it has one
   };
 
   // Records `entry` unless the key already has one; returns the existing entry if so.

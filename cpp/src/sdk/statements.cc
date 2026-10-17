@@ -53,10 +53,8 @@ std::string_view StateName(StatementState state) {
   return "failed";
 }
 
-Statement::Statement(std::string id, std::string sql, json::value parameters, Config config)
+Statement::Statement(std::string id, Config config)
     : id_(std::move(id)),
-      sql_(std::move(sql)),
-      parameters_(std::move(parameters)),
       config_(std::move(config)),
       submitted_at_(WallClock::now()) {}
 

@@ -25,6 +25,7 @@ class DuckDBBackend : public warpsql::Backend {
   std::unique_ptr<warpsql::EngineSession> OpenSession(const warpsql::Principal& principal,
                                                       const boost::json::object& options) override;
   void CheckHealth() override;
+  boost::json::object ServerInfo() override;
 
  private:
   Environment environment_;

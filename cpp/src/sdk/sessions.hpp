@@ -37,6 +37,12 @@ class Session {
   json::object options() const;
   void set_options(json::object options);
 
+  // Prepared statements (spec §7). Engine objects: destroy them on strand().
+  std::string AddPrepared(std::shared_ptr<PreparedStatement> prepared);
+  // Throws prepared_not_found.
+  std::shared_ptr<PreparedStatement> FindPrepared(const std::string& id) const;
+  std::shared_ptr<PreparedStatement> RemovePrepared(const std::string& id);
+
   void AddStatement(std::shared_ptr<Statement> statement);
   // Throws statement_not_found.
   std::shared_ptr<Statement> FindStatement(const std::string& id) const;
@@ -62,6 +68,7 @@ class Session {
   mutable std::mutex mutex_;
   json::object options_;
   std::map<std::string, std::shared_ptr<Statement>> statements_;
+  std::map<std::string, std::shared_ptr<PreparedStatement>> prepared_;
   Clock::time_point last_activity_;
   bool closed_ = false;
 };

@@ -4,9 +4,13 @@
 #include <charconv>
 #include <format>
 
+#include <arrow/table.h>
+
 #include "ids.hpp"
 #include "ipc.hpp"
 #include "json.hpp"
+#include "metadata.hpp"
+#include "upload.hpp"
 
 namespace warpsql::detail {
 
@@ -198,6 +202,30 @@ Task<Response> Api::Route(Request& request) {
     if (method != http::verb::post) throw wrong_method();
     co_return co_await EndTransaction(request, session_id, rest[2] == "commit");
   }
+  if (rest[2] == "prepared") {
+    if (rest.size() == 3) {
+      if (method != http::verb::post) throw wrong_method();
+      co_return co_await PrepareStatement(request, session_id);
+    }
+    const std::string prepared_id(rest[3]);
+    if (rest.size() == 4) {
+      if (method != http::verb::delete_) throw wrong_method();
+      co_return co_await ClosePrepared(request, session_id, prepared_id);
+    }
+    if (rest.size() == 5 && rest[4] == "execute") {
+      if (method != http::verb::post) throw wrong_method();
+      co_return co_await ExecutePrepared(request, session_id, prepared_id);
+    }
+    throw Error(ErrorCode::kNotFound, "no such endpoint");
+  }
+  if (rest.size() == 3 && rest[2] == "ingest") {
+    if (method != http::verb::post) throw wrong_method();
+    co_return co_await Ingest(request, session_id);
+  }
+  if (rest.size() == 4 && rest[2] == "metadata") {
+    if (method != http::verb::get) throw wrong_method();
+    co_return co_await Metadata(request, session_id, rest[3]);
+  }
   if (rest[2] != "statements") {
     throw Error(ErrorCode::kNotFound, "no such endpoint");
   }
@@ -236,7 +264,8 @@ Task<Response> Api::Discovery(Request&) {
       {"draft", "0.1.0"},
       {"server", {{"name", identity.name}, {"version", identity.version}}},
       {"capabilities",
-       json::array{"transactions", "result_retention", "long_poll", "ipc_compression_zstd"}},
+       json::array{"prepared_statements", "transactions", "ingest", "result_retention",
+                   "long_poll", "ipc_compression_zstd"}},
       {"auth", {{"grant_types", state_.authenticator->GrantTypes()}}},
   };
   co_return JsonResponse(http::status::ok, doc);
@@ -438,14 +467,14 @@ void Api::Cancel(Session& session, Statement& statement, CancelReason reason) {
   }
 }
 
-void Api::Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> statement) {
-  net::post(session->strand(), [session, statement] {
+void Api::Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> statement,
+              StatementWork work) {
+  net::post(session->strand(), [session, statement, work = std::move(work)] {
     if (!statement->BeginRunning()) {
       return;  // cancelled while queued
     }
     try {
-      StatementOutcome outcome =
-          session->engine().Execute(statement->sql(), statement->parameters());
+      StatementOutcome outcome = work(session->engine());
       if (outcome.rows) {
         statement->SetRows(outcome.rows->schema());
         for (;;) {
@@ -486,20 +515,32 @@ void Api::ScheduleTimeout(std::shared_ptr<Session> session, std::shared_ptr<Stat
   });
 }
 
-Task<Response> Api::SubmitStatement(Request& request, const std::string& session_id) {
-  auto session = OwnSession(request, session_id);
-  RejectIfDraining();
-  const json::object body = ParseObject(request.body);
-  std::string sql = RequiredString(body, "sql");
-  // Bind parameters: an array binds positionally (? or $1), an object by name ($name).
-  json::value parameters = nullptr;
-  if (const json::value* given = body.if_contains("parameters"); given && !given->is_null()) {
-    if (!given->is_array() && !given->is_object()) {
-      throw Error(ErrorCode::kBadRequest, "'parameters' must be an array or an object");
-    }
-    parameters = *given;
+std::optional<IdempotencyStore::Entry> Api::ReserveIdempotencyKey(const Request& request,
+                                                                   const Session& session,
+                                                                   const std::string& statement_id,
+                                                                   const std::string& material) {
+  const auto key = request.Header("Idempotency-Key");
+  if (key.empty()) {
+    return std::nullopt;
   }
+  if (key.size() > 255) {
+    throw Error(ErrorCode::kBadRequest, "Idempotency-Key is longer than 255 characters");
+  }
+  const std::string hash = Sha256Hex(material);
+  auto existing = state_.idempotency.Reserve(
+      session.owner().name, std::string(key),
+      {hash, session.id(), statement_id, Clock::now() + state_.options.idempotency_window,
+       std::make_shared<std::string>()});
+  if (existing && existing->request_hash != hash) {
+    throw Error(ErrorCode::kIdempotencyKeyReused,
+                "this Idempotency-Key was used for a different request");
+  }
+  return existing;
+}
 
+Task<Response> Api::Launch(Request& request, std::shared_ptr<Session> session, StatementWork work,
+                           const std::string& idempotency_material) {
+  RejectIfDraining();
   const Preferences prefs = ParsePrefer(request.Header("Prefer"));
   const bool streamed = AcceptsArrow(request.Header("Accept")) && !prefs.respond_async;
   bool retain = !streamed;
@@ -518,49 +559,34 @@ Task<Response> Api::SubmitStatement(Request& request, const std::string& session
     timeout = std::chrono::milliseconds(ms);
   }
 
-  const Principal& principal = session->owner();
   const std::string statement_id = NewId("q");
-
-  // Idempotent submission (spec §6.7).
-  if (const auto key = request.Header("Idempotency-Key"); !key.empty()) {
-    if (key.size() > 255) {
-      throw Error(ErrorCode::kBadRequest, "Idempotency-Key is longer than 255 characters");
-    }
-    const std::string hash = Sha256Hex(request.path + "\n" + request.body);
-    auto existing = state_.idempotency.Reserve(
-        principal.name, std::string(key),
-        {hash, session_id, statement_id, Clock::now() + state_.options.idempotency_window});
-    if (existing) {
-      if (existing->request_hash != hash) {
-        throw Error(ErrorCode::kIdempotencyKeyReused,
-                    "this Idempotency-Key was used for a different request");
-      }
-      auto original = state_.sessions.Find(existing->session_id, principal)
-                          ->FindStatement(existing->statement_id);
-      co_return JsonResponse(http::status::ok, StatementDocument(*session, *original));
-    }
+  // Idempotent submission (spec §6.7): a retry gets the original statement.
+  if (auto existing =
+          ReserveIdempotencyKey(request, *session, statement_id, idempotency_material)) {
+    auto original = state_.sessions.Find(existing->session_id, session->owner())
+                        ->FindStatement(existing->statement_id);
+    co_return JsonResponse(http::status::ok, StatementDocument(*session, *original));
   }
 
   Statement::Config config;
   config.retain = retain;
   config.retention = state_.options.result_ttl;
-  config.reserve_bytes = [this, owner = principal.name](int64_t bytes) {
+  config.reserve_bytes = [this, owner = session->owner().name](int64_t bytes) {
     return state_.quota.Change(owner, bytes);
   };
-  auto statement =
-      std::make_shared<Statement>(statement_id, std::move(sql), std::move(parameters), config);
+  auto statement = std::make_shared<Statement>(statement_id, config);
   session->AddStatement(statement);
-  Run(session, statement);
+  Run(session, statement, std::move(work));
   if (timeout) {
     ScheduleTimeout(session, statement, *timeout);
   }
 
   // Wait for the outcome (streamed) or for the end (status document), within limits.
-  const auto wait = prefs.respond_async ? std::chrono::seconds(0)
-                                        : std::min(prefs.wait.value_or(streamed
-                                                                           ? state_.options.max_wait
-                                                                           : state_.options.default_wait),
-                                                   state_.options.max_wait);
+  const auto wait = prefs.respond_async
+                        ? std::chrono::seconds(0)
+                        : std::min(prefs.wait.value_or(streamed ? state_.options.max_wait
+                                                                : state_.options.default_wait),
+                                   state_.options.max_wait);
   const auto deadline = Clock::now() + wait;
   uint64_t seen = statement->changed().version();
   while (Clock::now() < deadline &&
@@ -579,10 +605,287 @@ Task<Response> Api::SubmitStatement(Request& request, const std::string& session
   }
   Response response = JsonResponse(streamed ? http::status::ok : http::status::created,
                                    StatementDocument(*session, *statement));
-  response.headers.emplace_back("Location",
-                                std::format("/warp/v1/sessions/{}/statements/{}", session_id,
-                                            statement_id));
+  response.headers.emplace_back(
+      "Location", std::format("/warp/v1/sessions/{}/statements/{}", session->id(), statement_id));
   response.headers.emplace_back("Warp-Statement-Id", statement_id);
+  co_return response;
+}
+
+namespace {
+
+// Bind parameters from a JSON body: an array binds positionally (? or $1), an object by
+// name ($name) (spec §6.1).
+json::value JsonParameters(const json::object& body) {
+  const json::value* given = body.if_contains("parameters");
+  if (given == nullptr || given->is_null()) {
+    return nullptr;
+  }
+  if (!given->is_array() && !given->is_object()) {
+    throw Error(ErrorCode::kBadRequest, "'parameters' must be an array or an object");
+  }
+  return *given;
+}
+
+}  // namespace
+
+Task<Response> Api::SubmitStatement(Request& request, const std::string& session_id) {
+  auto session = OwnSession(request, session_id);
+  const json::object body = ParseObject(request.body);
+  std::string sql = RequiredString(body, "sql");
+  json::value parameters = JsonParameters(body);
+  StatementWork work = [sql = std::move(sql), parameters = std::move(parameters)](
+                           EngineSession& engine) { return engine.Execute(sql, parameters); };
+  co_return co_await Launch(request, session, std::move(work), request.path + "\n" + request.body);
+}
+
+// ---- Prepared statements (spec §7) ----
+
+Task<Response> Api::PrepareStatement(Request& request, const std::string& session_id) {
+  auto session = OwnSession(request, session_id);
+  RejectIfDraining();
+  const json::object body = ParseObject(request.body);
+  std::string sql = RequiredString(body, "sql");
+  struct Prepared {
+    std::shared_ptr<PreparedStatement> statement;
+    json::value parameter_schema;
+    json::value result_schema;
+  };
+  auto prepared = co_await OnEngine(*session, [session, sql = std::move(sql)] {
+    Prepared out;
+    out.statement = session->engine().Prepare(sql);
+    out.parameter_schema = SchemaBase64(out.statement->ParameterSchema());
+    if (auto result = out.statement->ResultSchema()) {
+      out.result_schema = SchemaBase64(result);
+    }
+    return out;
+  });
+  const std::string id = session->AddPrepared(prepared.statement);
+  Response response = JsonResponse(http::status::created,
+                                   json::object{{"prepared_id", id},
+                                                {"parameter_schema", prepared.parameter_schema},
+                                                {"result_schema", prepared.result_schema}});
+  response.headers.emplace_back(
+      "Location", std::format("/warp/v1/sessions/{}/prepared/{}", session_id, id));
+  co_return response;
+}
+
+Task<Response> Api::ExecutePrepared(Request& request, const std::string& session_id,
+                                    const std::string& prepared_id) {
+  auto session = OwnSession(request, session_id);
+  auto prepared = session->FindPrepared(prepared_id);
+  Parameters parameters;
+  std::shared_ptr<ValidatedReader> rows;
+  if (request.Header("Content-Type").starts_with(kArrowStream)) {
+    rows = OpenValidatedIpc(request.body);  // one execution per row (spec §7.2)
+    parameters.rows = rows;
+  } else {
+    parameters.json = JsonParameters(ParseObject(request.body));
+  }
+  StatementWork work = [prepared, parameters, rows](EngineSession& engine) {
+    try {
+      return engine.ExecutePrepared(*prepared, parameters);
+    } catch (const Error&) {
+      if (rows && rows->failure()) {
+        throw Error(ErrorCode::kUnsupportedArrowType, *rows->failure());
+      }
+      throw;
+    }
+  };
+  co_return co_await Launch(request, session, std::move(work),
+                            request.path + "\n" + Sha256Hex(request.body));
+}
+
+Task<Response> Api::ClosePrepared(Request& request, const std::string& session_id,
+                                  const std::string& prepared_id) {
+  auto session = OwnSession(request, session_id);
+  auto prepared = session->RemovePrepared(prepared_id);
+  // Engine objects are destroyed on the session's strand.
+  net::post(session->strand(), [prepared = std::move(prepared)]() mutable { prepared.reset(); });
+  co_return NoContent();
+}
+
+// ---- Bulk ingest (spec §8) ----
+
+Task<Response> Api::Ingest(Request& request, const std::string& session_id) {
+  auto session = OwnSession(request, session_id);
+  RejectIfDraining();
+  if (!request.body_source) {
+    throw Error(ErrorCode::kBadRequest, "ingest needs an Arrow IPC stream body");
+  }
+
+  IngestTarget target;
+  auto query = [&](const char* name) -> std::optional<std::string> {
+    auto it = request.query.find(name);
+    return it == request.query.end() ? std::nullopt : std::optional(it->second);
+  };
+  target.table = query("table").value_or("");
+  if (target.table.empty()) {
+    throw Error(ErrorCode::kBadRequest, "the 'table' query parameter is required");
+  }
+  target.catalog = query("catalog").value_or("");
+  target.schema = query("schema").value_or("");
+  const std::string mode = query("mode").value_or("create_append");
+  if (mode == "create") target.mode = IngestMode::kCreate;
+  else if (mode == "append") target.mode = IngestMode::kAppend;
+  else if (mode == "replace") target.mode = IngestMode::kReplace;
+  else if (mode == "create_append") target.mode = IngestMode::kCreateAppend;
+  else throw Error(ErrorCode::kBadRequest, "mode must be create, append, replace or create_append");
+  const std::string temporary = query("temporary").value_or("false");
+  if (temporary != "true" && temporary != "false") {
+    throw Error(ErrorCode::kBadRequest, "temporary must be true or false");
+  }
+  target.temporary = temporary == "true";
+
+  // A retried upload returns the first one's answer. The key covers the target, not the
+  // body: hashing the body would mean reading all of it before answering a retry.
+  std::string material = request.path;
+  for (const auto& [name, value] : request.query) {
+    material += "\n" + name + "=" + value;
+  }
+  if (auto existing = ReserveIdempotencyKey(request, *session, "", material)) {
+    if (existing->response && !existing->response->empty()) {
+      Response response = JsonResponse(http::status::ok, json::parse(*existing->response));
+      response.close = true;  // the retried body is not read
+      co_return response;
+    }
+    throw Error(ErrorCode::kIdempotencyKeyReused, "an upload with this key is still running");
+  }
+  const std::string key(request.Header("Idempotency-Key"));
+
+  auto queue = std::make_shared<ByteQueue>(8);
+  auto completion = std::make_shared<Completion<int64_t>>();
+  net::post(session->strand(), [session, queue, completion, target] {
+    std::shared_ptr<ValidatedReader> rows;
+    try {
+      rows = OpenValidatedIpc(QueueInput(queue));
+      completion->Succeed(session->engine().Ingest(target, rows));
+    } catch (const Error& error) {
+      if (rows && rows->failure()) {
+        completion->Fail(std::make_exception_ptr(
+            Error(ErrorCode::kUnsupportedArrowType, *rows->failure())));
+      } else {
+        completion->Fail(std::current_exception());
+      }
+    } catch (...) {
+      completion->Fail(std::current_exception());
+    }
+    queue->StopReading();
+  });
+
+  // Feed the body to the engine as it arrives; the queue's bound is the backpressure.
+  try {
+    while (auto piece = co_await request.body_source->Next()) {
+      if (!co_await queue->Push(std::move(*piece))) {
+        break;  // the engine stopped reading: its error is the answer
+      }
+    }
+    queue->Close();
+  } catch (...) {
+    queue->Abort();
+  }
+  const int64_t rows = co_await completion->Wait();
+
+  json::object answer{{"rows_ingested", rows}};
+  if (!key.empty()) {
+    if (auto entry = state_.idempotency.Reserve(session->owner().name, key, {})) {
+      if (entry->response) *entry->response = json::serialize(answer);
+    }
+  }
+  co_return JsonResponse(http::status::ok, answer);
+}
+
+// ---- Metadata (spec §10) ----
+
+Task<Response> Api::Metadata(Request& request, const std::string& session_id,
+                             std::string_view kind_name) {
+  auto session = OwnSession(request, session_id);
+  if (kind_name == "server-info") {
+    const ServerIdentity identity = state_.backend->Identity();
+    json::object info{
+        {"server_name", identity.name},
+        {"server_version", identity.version},
+        {"protocol", "warp-sql"},
+        {"protocol_version", "1"},
+        {"sql_identifier_quote_char", "\""},
+        {"transactions_supported", true},
+    };
+    for (const auto& item : state_.backend->ServerInfo()) {
+      info[item.key()] = item.value();
+    }
+    co_return JsonResponse(http::status::ok, info);
+  }
+
+  static const std::map<std::string_view, MetadataKind> kKinds{
+      {"catalogs", MetadataKind::kCatalogs},
+      {"db-schemas", MetadataKind::kDbSchemas},
+      {"tables", MetadataKind::kTables},
+      {"table-types", MetadataKind::kTableTypes},
+      {"primary-keys", MetadataKind::kPrimaryKeys},
+      {"imported-keys", MetadataKind::kImportedKeys},
+      {"exported-keys", MetadataKind::kExportedKeys},
+      {"cross-reference", MetadataKind::kCrossReference},
+  };
+  auto found = kKinds.find(kind_name);
+  if (found == kKinds.end()) {
+    throw Error(ErrorCode::kNotFound, "no such metadata");
+  }
+  const MetadataKind kind = found->second;
+
+  auto query = [&](const char* name) -> std::optional<std::string> {
+    auto it = request.query.find(name);
+    return it == request.query.end() ? std::nullopt : std::optional(it->second);
+  };
+  MetadataFilter filter;
+  if (kind == MetadataKind::kCrossReference) {
+    filter.catalog = query("pk_catalog");
+    filter.db_schema = query("pk_db_schema");
+    filter.table = query("pk_table");
+    filter.fk_catalog = query("fk_catalog");
+    filter.fk_db_schema = query("fk_db_schema");
+    filter.fk_table = query("fk_table");
+  } else {
+    filter.catalog = query("catalog");
+    filter.db_schema = query("db_schema");
+    if (!filter.db_schema) filter.db_schema = query("db_schema_filter_pattern");
+    filter.table = query("table");
+    if (!filter.table) filter.table = query("table_name_filter_pattern");
+  }
+  if (auto types = query("table_types")) {
+    std::string_view rest = *types;
+    while (!rest.empty()) {
+      const auto comma = rest.find(',');
+      filter.table_types.emplace_back(Trim(rest.substr(0, comma)));
+      rest = comma == std::string_view::npos ? std::string_view{} : rest.substr(comma + 1);
+    }
+  }
+  filter.include_schema = query("include_schema").value_or("false") == "true";
+  if ((kind == MetadataKind::kPrimaryKeys || kind == MetadataKind::kImportedKeys ||
+       kind == MetadataKind::kExportedKeys) && !filter.table) {
+    throw Error(ErrorCode::kBadRequest, "the 'table' query parameter is required");
+  }
+
+  auto table = co_await OnEngine(*session, [session, kind, filter] {
+    auto rows = session->engine().Metadata(kind, filter);
+    return ConformMetadata(kind, filter.include_schema, *rows);
+  });
+
+  IpcStreamEncoder encoder(table->schema(),
+                           ParseIpcCompression(request.Header("Warp-IPC-Compression")));
+  std::string body;
+  arrow::TableBatchReader batches(*table);
+  for (;;) {
+    std::shared_ptr<arrow::RecordBatch> batch;
+    if (!batches.ReadNext(&batch).ok() || batch == nullptr) {
+      break;
+    }
+    body += encoder.Write(*batch);
+  }
+  body += encoder.Finish();
+  Response response;
+  response.content_type = kArrowStream;
+  response.body = std::move(body);
+  response.headers.emplace_back("X-Content-Type-Options", "nosniff");
+  response.headers.emplace_back("Cache-Control", "no-store");
   co_return response;
 }
 

@@ -1,10 +1,29 @@
 #include "sessions.hpp"
 
+#include "ids.hpp"
+
 namespace warpsql {
 
 // Defaults for the optional EngineSession methods: "not implemented" (spec §11).
 StatementOutcome EngineSession::Execute(std::string_view, const boost::json::value&) {
   throw Error(ErrorCode::kNotImplemented, "this server does not run SQL");
+}
+
+std::unique_ptr<PreparedStatement> EngineSession::Prepare(std::string_view) {
+  throw Error(ErrorCode::kNotImplemented, "this server does not support prepared statements");
+}
+
+StatementOutcome EngineSession::ExecutePrepared(PreparedStatement&, const Parameters&) {
+  throw Error(ErrorCode::kNotImplemented, "this server does not support prepared statements");
+}
+
+int64_t EngineSession::Ingest(const IngestTarget&, std::shared_ptr<arrow::RecordBatchReader>) {
+  throw Error(ErrorCode::kNotImplemented, "this server does not support bulk ingest");
+}
+
+std::shared_ptr<arrow::RecordBatchReader> EngineSession::Metadata(MetadataKind,
+                                                                  const MetadataFilter&) {
+  throw Error(ErrorCode::kNotImplemented, "this server does not serve this metadata");
 }
 
 void EngineSession::Interrupt() {}
@@ -55,6 +74,12 @@ void Session::SetEngine(std::unique_ptr<EngineSession> engine) {
 
 void Session::DestroyEngine() {
   std::unique_ptr<EngineSession> engine;
+  std::map<std::string, std::shared_ptr<PreparedStatement>> prepared;
+  {
+    std::lock_guard lock(mutex_);
+    prepared.swap(prepared_);
+  }
+  prepared.clear();  // prepared statements go before the engine session they belong to
   {
     std::lock_guard lock(engine_mutex_);
     engine = std::move(engine_);
@@ -82,6 +107,33 @@ json::object Session::options() const {
 void Session::set_options(json::object options) {
   std::lock_guard lock(mutex_);
   options_ = std::move(options);
+}
+
+std::string Session::AddPrepared(std::shared_ptr<PreparedStatement> prepared) {
+  std::string id = NewId("p");
+  std::lock_guard lock(mutex_);
+  prepared_[id] = std::move(prepared);
+  return id;
+}
+
+std::shared_ptr<PreparedStatement> Session::FindPrepared(const std::string& id) const {
+  std::lock_guard lock(mutex_);
+  auto it = prepared_.find(id);
+  if (it == prepared_.end()) {
+    throw Error(ErrorCode::kPreparedNotFound, "no such prepared statement in this session");
+  }
+  return it->second;
+}
+
+std::shared_ptr<PreparedStatement> Session::RemovePrepared(const std::string& id) {
+  std::lock_guard lock(mutex_);
+  auto it = prepared_.find(id);
+  if (it == prepared_.end()) {
+    throw Error(ErrorCode::kPreparedNotFound, "no such prepared statement in this session");
+  }
+  auto prepared = std::move(it->second);
+  prepared_.erase(it);
+  return prepared;
 }
 
 void Session::AddStatement(std::shared_ptr<Statement> statement) {

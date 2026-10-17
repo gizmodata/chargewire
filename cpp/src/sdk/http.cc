@@ -102,28 +102,67 @@ Task<bool> WriteResponse(Stream& stream, Response& response, unsigned version, b
   co_return keep_alive;
 }
 
+constexpr std::size_t kBodyChunk = 64 * 1024;
+
+// Reads a request body piece by piece from the connection, after the headers.
+template <class Stream>
+class ParserBodySource : public BodySource {
+ public:
+  ParserBodySource(Stream& stream, beast::flat_buffer& buffer,
+                   http::request_parser<http::buffer_body>& parser)
+      : stream_(stream), buffer_(buffer), parser_(parser), chunk_(kBodyChunk, '\0') {}
+
+  Task<std::optional<std::string>> Next() override {
+    while (!parser_.is_done()) {
+      auto& body = parser_.get().body();
+      body.data = chunk_.data();
+      body.size = chunk_.size();
+      beast::get_lowest_layer(stream_).expires_after(kReadTimeout);
+      boost::system::error_code ec;
+      co_await http::async_read(stream_, buffer_, parser_,
+                                net::redirect_error(net::use_awaitable, ec));
+      if (ec && ec != http::error::need_buffer) {
+        throw boost::system::system_error(ec);
+      }
+      const std::size_t got = chunk_.size() - body.size;
+      if (got > 0) {
+        co_return std::string(chunk_.data(), got);
+      }
+    }
+    co_return std::nullopt;
+  }
+
+  bool done() const { return parser_.is_done(); }
+
+ private:
+  Stream& stream_;
+  beast::flat_buffer& buffer_;
+  http::request_parser<http::buffer_body>& parser_;
+  std::string chunk_;
+};
+
 template <class Stream>
 Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler& handler) {
   beast::flat_buffer buffer;
   for (;;) {
-    http::request_parser<http::string_body> parser;
+    http::request_parser<http::buffer_body> parser;
     parser.header_limit(static_cast<std::uint32_t>(limits.max_header_bytes));
-    parser.body_limit(limits.max_body_bytes);
+    // Beast checks Content-Length against the body limit while reading the headers; the
+    // limit depends on the endpoint, so it is applied once the headers are known.
+    parser.body_limit(boost::none);
     beast::get_lowest_layer(stream).expires_after(kReadTimeout);
     boost::system::error_code ec;
-    co_await http::async_read(stream, buffer, parser, net::redirect_error(net::use_awaitable, ec));
+    co_await http::async_read_header(stream, buffer, parser,
+                                     net::redirect_error(net::use_awaitable, ec));
 
     Response response;
     unsigned version = 11;
     bool keep_alive = false;
+    bool body_unread = false;
     if (ec == http::error::header_limit) {
       response = limits.error_response(
           http::status::request_header_fields_too_large,
           "request headers are larger than " + std::to_string(limits.max_header_bytes) + " bytes");
-    } else if (ec == http::error::body_limit) {
-      response = limits.error_response(
-          http::status::payload_too_large,
-          "request body is larger than " + std::to_string(limits.max_body_bytes) + " bytes");
     } else if (ec && ec.category() == http::make_error_code(http::error::bad_target).category()) {
       if (ec == http::error::end_of_stream) {
         co_return;  // the client closed an idle connection
@@ -138,10 +177,40 @@ Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler
       Request request;
       request.method = message.method();
       request.headers = static_cast<const http::fields&>(message.base());
-      request.body = std::move(message.body());
       request.request_id = NewId("r");
-      if (!ParseTarget(message.target(), request)) {
-        response = limits.error_response(http::status::bad_request, "malformed request target");
+      const bool target_ok = ParseTarget(message.target(), request);
+
+      std::optional<Response> early;
+      if (!target_ok) {
+        early = limits.error_response(http::status::bad_request, "malformed request target");
+      } else if (limits.streams_body(request)) {
+        auto source = std::make_shared<ParserBodySource<Stream>>(stream, buffer, parser);
+        request.body_source = source;
+      } else if (message.has_content_length() &&
+                 *parser.content_length() > limits.max_body_bytes) {
+        early = limits.error_response(
+            http::status::payload_too_large,
+            "request body is larger than " + std::to_string(limits.max_body_bytes) + " bytes");
+      } else {
+        // Read the whole body, up to the limit.
+        parser.body_limit(limits.max_body_bytes);
+        ParserBodySource<Stream> source(stream, buffer, parser);
+        try {
+          while (auto piece = co_await source.Next()) {
+            request.body += *piece;
+          }
+        } catch (const boost::system::system_error& error) {
+          if (error.code() != http::error::body_limit) {
+            co_return;
+          }
+          early = limits.error_response(
+              http::status::payload_too_large,
+              "request body is larger than " + std::to_string(limits.max_body_bytes) + " bytes");
+        }
+      }
+
+      if (early) {
+        response = std::move(*early);
       } else {
         try {
           response = co_await handler(request);
@@ -149,8 +218,13 @@ Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler
           response = limits.error_response(http::status::internal_server_error, e.what());
         }
       }
+      // A body the handler didn't read leaves the connection unusable for the next request.
+      body_unread = !parser.is_done();
     }
 
+    if (body_unread) {
+      response.close = true;
+    }
     if (!co_await WriteResponse(stream, response, version, keep_alive)) {
       co_return;
     }

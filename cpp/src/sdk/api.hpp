@@ -62,7 +62,24 @@ class Api {
   Task<Response> DeleteSession(Request& request, const std::string& session_id);
   Task<Response> EndTransaction(Request& request, const std::string& session_id, bool commit);
 
+  using StatementWork = std::function<StatementOutcome(EngineSession&)>;
+
   Task<Response> SubmitStatement(Request& request, const std::string& session_id);
+  Task<Response> PrepareStatement(Request& request, const std::string& session_id);
+  Task<Response> ExecutePrepared(Request& request, const std::string& session_id,
+                                 const std::string& prepared_id);
+  Task<Response> ClosePrepared(Request& request, const std::string& session_id,
+                               const std::string& prepared_id);
+  Task<Response> Ingest(Request& request, const std::string& session_id);
+  Task<Response> Metadata(Request& request, const std::string& session_id,
+                          std::string_view kind_name);
+  // Starts a statement and answers per spec §6.1 (streamed or status document).
+  Task<Response> Launch(Request& request, std::shared_ptr<Session> session, StatementWork work,
+                        const std::string& idempotency_material);
+  std::optional<IdempotencyStore::Entry> ReserveIdempotencyKey(const Request& request,
+                                                               const Session& session,
+                                                               const std::string& statement_id,
+                                                               const std::string& material);
   Task<Response> GetStatement(Request& request, const std::string& session_id,
                               const std::string& statement_id);
   Task<Response> GetResult(Request& request, const std::string& session_id,
@@ -80,7 +97,8 @@ class Api {
   Response ResultStream(std::shared_ptr<Session> session, std::shared_ptr<Statement> statement,
                         int64_t from_batch, std::string_view compression_header);
   void Cancel(Session& session, Statement& statement, CancelReason reason);
-  void Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> statement);
+  void Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> statement,
+           StatementWork work);
   void ScheduleTimeout(std::shared_ptr<Session> session, std::shared_ptr<Statement> statement,
                        std::chrono::milliseconds timeout);
 

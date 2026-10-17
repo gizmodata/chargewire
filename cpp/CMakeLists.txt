@@ -36,10 +36,12 @@ add_library(warpsql
   src/sdk/ids.cc
   src/sdk/ipc.cc
   src/sdk/json.cc
+  src/sdk/metadata.cc
   src/sdk/server.cc
   src/sdk/sessions.cc
   src/sdk/signal.cc
-  src/sdk/statements.cc)
+  src/sdk/statements.cc
+  src/sdk/upload.cc)
 target_include_directories(warpsql PUBLIC include PRIVATE src/sdk)
 target_link_libraries(warpsql PUBLIC Boost::beast Boost::json Boost::url Arrow::arrow_static
                                      OpenSSL::SSL OpenSSL::Crypto)
@@ -48,6 +50,10 @@ target_compile_options(warpsql PRIVATE -Wall -Wextra)
 # The reference server: the SDK in front of DuckDB 2.0, through its v2 C API only.
 add_executable(warp-duckdb
   src/duckdb/duckdb_backend.cc
+  src/duckdb/duckdb_session.cc
+  src/duckdb/duckdb_sql.cc
+  src/duckdb/duckdb_upload.cc
+  src/duckdb/duckdb_values.cc
   src/duckdb/main.cc)
 target_include_directories(warp-duckdb PRIVATE src/duckdb "${WARPSQL_DEPS}/duckdb-install/include")
 target_link_libraries(warp-duckdb PRIVATE warpsql "${DUCKDB_LIBRARY}")
