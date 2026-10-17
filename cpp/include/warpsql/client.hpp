@@ -122,6 +122,7 @@ struct StatementDocument {
   std::optional<int64_t> rows_affected;
   std::shared_ptr<arrow::Schema> schema;  // a rows result's
   std::vector<Partition> partitions;
+  std::string partition_order;  // "interleaved" or "any" for a result split on this server (§6.10)
   bool retained = false;
   std::string expires_at;
 
@@ -140,6 +141,11 @@ struct StatementOptions {
   std::string query_tag;               // Warp-Query-Tag: a JSON object's text
   std::string idempotency_key;         // empty: a random one per request
   bool accept_zstd = false;            // Warp-IPC-Compression: zstd
+  // Split results (spec §6.10): up to this many partitions, read at once over separate
+  // connections (sent only to a server with the result_partitions capability). With
+  // any_order the batches come as they arrive; without, in the result's order.
+  int result_partitions = 1;           // Warp-Result-Partitions
+  bool any_order = false;              // Warp-Result-Order: any
 };
 
 // The record batches of a result, read from the network as they arrive. A stream that

@@ -5,7 +5,11 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
+#include <functional>
+#include <mutex>
 #include <thread>
 #include <utility>
 
@@ -390,6 +394,26 @@ class ClientCore {
 
   std::mutex auth_mutex;
   std::unique_ptr<Transport> auth_transport;
+
+  // Whether the server splits results (capability result_partitions), asked once.
+  bool OffersPartitions() {
+    std::lock_guard lock(auth_mutex);
+    if (!offers_partitions) {
+      if (!auth_transport) auth_transport = NewTransport();
+      Reply reply = auth_transport->Exchange(Request(http::verb::get, options.base_path, false));
+      bool offered = false;
+      if (auto object = reply.status == 200 ? ParseObject(reply.body) : std::nullopt) {
+        if (auto* caps = object->if_contains("capabilities"); caps != nullptr && caps->is_array()) {
+          for (const auto& cap : caps->as_array()) {
+            offered = offered || (cap.is_string() && cap.as_string() == "result_partitions");
+          }
+        }
+      }
+      offers_partitions = offered;
+    }
+    return *offers_partitions;
+  }
+  std::optional<bool> offers_partitions;
 };
 
 // ---- SessionCore ----
@@ -467,6 +491,7 @@ class SessionCore : public std::enable_shared_from_this<SessionCore> {
         doc.retained = retained->as_bool();
       }
       doc.expires_at = String(r, "expires_at");
+      doc.partition_order = String(r, "partition_order");
       if (auto* parts = r.if_contains("partitions"); parts != nullptr && parts->is_array()) {
         for (const auto& item : parts->as_array()) {
           if (!item.is_object()) continue;
@@ -559,6 +584,10 @@ class SessionCore : public std::enable_shared_from_this<SessionCore> {
   std::shared_ptr<ResultReader> Fetch(const std::string& statement_id, int64_t partition, int64_t from_batch,
                                       uint64_t serial);
   ExecuteResult Finish(StatementDocument doc, uint64_t serial);
+  // A reader of every partition of a split result at once (spec §6.10). `first`, when
+  // set, is partition 0's response; otherwise partition 0 is requested too.
+  std::shared_ptr<ResultReader> MakePartitioned(const std::string& statement_id, uint64_t serial, int partitions,
+                                                bool any_order, std::unique_ptr<BodyReader> first);
 
   std::shared_ptr<ClientCore> client;
   std::string id;
@@ -640,6 +669,236 @@ class StreamResultReader : public ResultReader {
   bool finished_ = false;
 };
 
+// One partition's Arrow stream, read by a pump thread of PartitionedResultReader.
+class PartStream {
+ public:
+  PartStream(std::unique_ptr<Transport> own, std::unique_ptr<BodyReader> body)
+      : own_(std::move(own)), body_(std::move(body)), input_(std::make_shared<BodyStream>(body_.get())) {}
+
+  // Reads the schema message; throws std::runtime_error when there is none.
+  std::shared_ptr<arrow::Schema> Open() {
+    auto opened = arrow::ipc::RecordBatchStreamReader::Open(input_);
+    if (!opened.ok()) throw std::runtime_error(opened.status().message());
+    reader_ = *opened;
+    return reader_->schema();
+  }
+  // The next batch; nullptr at the end of a complete stream. Throws std::runtime_error
+  // when the stream fails or ends without its end-of-stream marker.
+  std::shared_ptr<arrow::RecordBatch> Next() {
+    std::shared_ptr<arrow::RecordBatch> batch;
+    if (auto status = reader_->ReadNext(&batch); !status.ok()) throw std::runtime_error(status.message());
+    if (batch) return batch;
+    if (!input_->EndedWithEos()) throw std::runtime_error("the stream ended without its end-of-stream marker");
+    try {
+      body_->ReadAll();
+    } catch (const Error&) {
+    }
+    return nullptr;
+  }
+  void Drop() {
+    reader_.reset();
+    input_.reset();
+    body_.reset();
+    own_.reset();
+  }
+
+ private:
+  std::unique_ptr<Transport> own_;  // the partition's connection (partition 0 uses the session's)
+  std::unique_ptr<BodyReader> body_;
+  std::shared_ptr<BodyStream> input_;
+  std::shared_ptr<arrow::ipc::RecordBatchStreamReader> reader_;
+};
+
+// Every partition of a split result (spec §6.10), read at once by one thread each and
+// merged: round robin for "interleaved" (the result's order), as batches arrive for
+// "any". The result is complete only when every partition ended with its end-of-stream
+// marker; the first partition that fails fails the result with the statement's error.
+class PartitionedResultReader : public ResultReader {
+ public:
+  PartitionedResultReader(std::shared_ptr<SessionCore> core, std::string statement_id, uint64_t serial,
+                          std::vector<std::unique_ptr<PartStream>> parts, bool any_order,
+                          std::function<void()> cancel)
+      : core_(std::move(core)), statement_id_(std::move(statement_id)), serial_(serial), any_(any_order),
+        cancel_(std::move(cancel)), parts_(std::move(parts)), queues_(parts_.size()), ended_(parts_.size(), false) {
+    for (std::size_t i = 0; i < parts_.size(); i++) {
+      std::shared_ptr<arrow::Schema> schema;
+      try {
+        schema = parts_[i]->Open();
+      } catch (const std::exception& e) {
+        RecordFailure(e.what());
+        continue;
+      }
+      if (!schema_) {
+        schema_ = schema;
+      } else if (!schema->Equals(*schema_)) {
+        RecordFailure("partition " + std::to_string(i) + " has another schema than partition 0");
+      }
+    }
+    if (failure_) {
+      Stop();
+      Fail();
+    }
+    for (std::size_t i = 0; i < parts_.size(); i++) {
+      pumps_.emplace_back([this, i] { Pump(i); });
+    }
+  }
+
+  ~PartitionedResultReader() override {
+    try {
+      Close();
+    } catch (...) {
+    }
+  }
+
+  const std::string& statement_id() const override { return statement_id_; }
+  std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+
+  std::shared_ptr<arrow::RecordBatch> Next() override {
+    if (finished_) return nullptr;
+    std::unique_lock lock(mutex_);
+    for (;;) {
+      if (failure_) {
+        lock.unlock();
+        Stop();
+        Fail();
+      }
+      if (any_) {
+        for (auto& queue : queues_) {
+          if (!queue.empty()) return Take(queue, lock);
+        }
+        if (std::all_of(ended_.begin(), ended_.end(), [](bool e) { return e; })) break;
+      } else {
+        auto& queue = queues_[next_];
+        if (!queue.empty()) {
+          next_ = (next_ + 1) % queues_.size();
+          return Take(queue, lock);
+        }
+        if (ended_[next_]) {
+          // Round robin: once a partition has no next batch, none has (§6.10).
+          ready_.wait(lock, [this] {
+            return failure_ || std::all_of(ended_.begin(), ended_.end(), [](bool e) { return e; });
+          });
+          if (failure_) continue;
+          for (const auto& rest : queues_) {
+            if (!rest.empty()) {
+              failure_ = "a partition has more batches than an interleaved result allows";
+              break;
+            }
+          }
+          if (failure_) continue;
+          break;
+        }
+      }
+      ready_.wait(lock);
+    }
+    lock.unlock();
+    Stop();
+    finished_ = true;
+    core_->EndRun(serial_);
+    return nullptr;
+  }
+
+  void Close() override {
+    if (finished_) return;
+    {
+      std::lock_guard lock(mutex_);
+      if (!failure_) failure_ = "closed";
+    }
+    // Pumps blocked reading a socket end when the statement does.
+    if (cancel_) cancel_();
+    Stop();
+    finished_ = true;
+    core_->EndRun(serial_);
+  }
+
+ private:
+  static constexpr std::size_t kBuffer = 2;  // batches each partition reads ahead
+
+  void Pump(std::size_t i) {
+    try {
+      for (;;) {
+        {
+          std::unique_lock lock(mutex_);
+          room_.wait(lock, [&] { return failure_ || queues_[i].size() < kBuffer; });
+          if (failure_) break;
+        }
+        auto batch = parts_[i]->Next();
+        std::lock_guard lock(mutex_);
+        if (!batch) {
+          ended_[i] = true;
+          ready_.notify_all();
+          break;
+        }
+        queues_[i].push_back(std::move(batch));
+        ready_.notify_all();
+      }
+    } catch (const std::exception& e) {
+      RecordFailure(e.what());
+    }
+    std::lock_guard lock(mutex_);
+    ended_[i] = true;
+    ready_.notify_all();
+  }
+
+  std::shared_ptr<arrow::RecordBatch> Take(std::deque<std::shared_ptr<arrow::RecordBatch>>& queue,
+                                           std::unique_lock<std::mutex>&) {
+    auto batch = std::move(queue.front());
+    queue.pop_front();
+    room_.notify_all();
+    return batch;
+  }
+
+  void RecordFailure(const std::string& what) {
+    std::lock_guard lock(mutex_);
+    if (!failure_) failure_ = what;
+    room_.notify_all();
+    ready_.notify_all();
+  }
+
+  // Waits for every pump to end and drops the connections.
+  void Stop() {
+    {
+      std::lock_guard lock(mutex_);
+      if (!failure_ && !std::all_of(ended_.begin(), ended_.end(), [](bool e) { return e; })) failure_ = "stopped";
+      room_.notify_all();
+    }
+    for (auto& pump : pumps_) {
+      if (pump.joinable()) pump.join();
+    }
+    for (auto& part : parts_) part->Drop();
+  }
+
+  [[noreturn]] void Fail() {
+    finished_ = true;
+    std::string fallback;
+    {
+      std::lock_guard lock(mutex_);
+      fallback = failure_.value_or("failed");
+    }
+    Error error = core_->ErrorOf(statement_id_, fallback);  // every pump has stopped: the session's connection is free
+    core_->EndRun(serial_);
+    throw error;
+  }
+
+  std::shared_ptr<SessionCore> core_;
+  std::string statement_id_;
+  uint64_t serial_;
+  bool any_;
+  std::function<void()> cancel_;
+  std::vector<std::unique_ptr<PartStream>> parts_;
+  std::shared_ptr<arrow::Schema> schema_;
+
+  std::mutex mutex_;
+  std::condition_variable ready_;  // a batch arrived, or a partition ended
+  std::condition_variable room_;   // a batch was taken
+  std::vector<std::deque<std::shared_ptr<arrow::RecordBatch>>> queues_;
+  std::vector<bool> ended_;
+  std::optional<std::string> failure_;
+  std::size_t next_ = 0;
+  std::vector<std::thread> pumps_;
+  bool finished_ = false;
+};
+
 class ReaderAdapter : public arrow::RecordBatchReader {
  public:
   explicit ReaderAdapter(ResultReader* reader) : reader_(reader) {}
@@ -700,7 +959,12 @@ ExecuteResult SessionCore::Finish(StatementDocument doc, uint64_t serial) {
     if (doc.result_kind == "rows") {
       ExecuteResult result;
       result.statement_id = doc.statement_id;
-      result.reader = Fetch(doc.statement_id, 0, 0, serial);
+      if (doc.partitions.size() > 1 && (doc.partition_order == "interleaved" || doc.partition_order == "any")) {
+        result.reader = MakePartitioned(doc.statement_id, serial, static_cast<int>(doc.partitions.size()),
+                                        doc.partition_order == "any", nullptr);
+      } else {
+        result.reader = Fetch(doc.statement_id, 0, 0, serial);
+      }
       return result;
     }
   } catch (...) {
@@ -724,6 +988,10 @@ ExecuteResult SessionCore::Execute(const std::string& target, const json::value*
   if (options.retain_result) request.set("Warp-Retain-Result", *options.retain_result ? "true" : "false");
   if (!options.query_tag.empty()) request.set("Warp-Query-Tag", options.query_tag);
   if (options.accept_zstd) request.set("Warp-IPC-Compression", "zstd");
+  if (options.result_partitions > 1 && client->OffersPartitions()) {
+    request.set("Warp-Result-Partitions", std::to_string(std::min(options.result_partitions, 256)));
+    if (options.any_order) request.set("Warp-Result-Order", "any");
+  }
   std::optional<StreamChunks> chunks;
   ChunkSource source;
   if (parameters != nullptr) {
@@ -750,7 +1018,18 @@ ExecuteResult SessionCore::Execute(const std::string& target, const json::value*
     ExecuteResult result;
     result.statement_id = statement_id;
     try {
-      result.reader = std::make_shared<StreamResultReader>(shared_from_this(), std::move(reply), statement_id, serial);
+      int partitions = 1;
+      try {
+        partitions = std::stoi(reply->Header("Warp-Result-Partitions"));
+      } catch (...) {
+      }
+      if (partitions > 1 && partitions <= 256) {
+        // A split result (spec §6.10): this body is partition 0; the rest are read at once.
+        const bool any = reply->Header("Warp-Result-Order") != "interleaved";
+        result.reader = MakePartitioned(statement_id, serial, partitions, any, std::move(reply));
+      } else {
+        result.reader = std::make_shared<StreamResultReader>(shared_from_this(), std::move(reply), statement_id, serial);
+      }
     } catch (...) {
       EndRun(serial);
       throw;
@@ -774,6 +1053,42 @@ ExecuteResult SessionCore::Execute(const std::string& target, const json::value*
   }
   EndRun(serial);
   throw ProblemOf(status, text, content_type);
+}
+
+std::shared_ptr<ResultReader> SessionCore::MakePartitioned(const std::string& statement_id, uint64_t serial,
+                                                           int partitions, bool any_order,
+                                                           std::unique_ptr<BodyReader> first) {
+  auto open = [&](int index, Transport& on) {
+    auto request = client->Request(
+        http::verb::get, Path("/statements/" + statement_id + "/result?partition=" + std::to_string(index)), true);
+    request.set(http::field::accept, kArrowStream);
+    auto reply = on.Open(std::move(request));
+    if (reply->status() != 200 || reply->ContentType() != kArrowStream) {
+      const int status = reply->status();
+      const std::string content_type = reply->ContentType();
+      throw ProblemOf(status, reply->ReadAll(), content_type);
+    }
+    return reply;
+  };
+  std::vector<std::unique_ptr<PartStream>> parts;
+  parts.push_back(std::make_unique<PartStream>(nullptr, first ? std::move(first) : open(0, *transport)));
+  for (int i = 1; i < partitions; i++) {
+    auto own = client->NewTransport();
+    auto reply = open(i, *own);
+    parts.push_back(std::make_unique<PartStream>(std::move(own), std::move(reply)));
+  }
+  // Closing early cancels the statement, which ends every partition's stream.
+  auto self = shared_from_this();
+  auto cancel = [self, statement_id] {
+    try {
+      auto t = self->client->NewTransport(std::chrono::seconds(2));
+      t->Exchange(self->client->Request(http::verb::post, self->Path("/statements/" + statement_id + "/cancel"), true),
+                  nullptr, std::chrono::seconds(5));
+    } catch (const Error&) {
+    }
+  };
+  return std::make_shared<PartitionedResultReader>(self, statement_id, serial, std::move(parts), any_order,
+                                                   std::move(cancel));
 }
 
 std::shared_ptr<ResultReader> SessionCore::Fetch(const std::string& statement_id, int64_t partition,
@@ -873,6 +1188,10 @@ StatementDocument Session::Submit(const std::string& sql, int wait_s, const Stat
   if (options.timeout_ms) request.set("Warp-Statement-Timeout", std::to_string(*options.timeout_ms));
   if (options.retain_result) request.set("Warp-Retain-Result", *options.retain_result ? "true" : "false");
   if (!options.query_tag.empty()) request.set("Warp-Query-Tag", options.query_tag);
+  if (options.result_partitions > 1 && core_->client->OffersPartitions()) {
+    request.set("Warp-Result-Partitions", std::to_string(std::min(options.result_partitions, 256)));
+    if (options.any_order) request.set("Warp-Result-Order", "any");
+  }
   Reply reply = core_->transport->Exchange(std::move(request));
   if (reply.status != 200 && reply.status != 201) throw ProblemOf(reply);
   auto object = ParseObject(reply.body);

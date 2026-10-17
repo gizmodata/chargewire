@@ -3,6 +3,8 @@
 // server that doesn't start fails the tests; nothing is skipped.
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -620,6 +622,84 @@ TEST_F(Live, AnAbandonedResultLeavesTheSessionUsable) {
   auto exact = session_->Execute("SELECT i FROM range(10) t(i)").reader->ToTable(10, &more);
   EXPECT_EQ(exact->num_rows(), 10);
   EXPECT_FALSE(more);
+}
+
+// ---- Split results (spec §6.10) ----
+
+namespace {
+
+std::vector<int64_t> Int64s(wc::ResultReader& reader) {
+  std::vector<int64_t> out;
+  while (auto batch = reader.Next()) {
+    auto values = std::static_pointer_cast<arrow::Int64Array>(batch->column(0));
+    for (int64_t i = 0; i < values->length(); i++) out.push_back(values->Value(i));
+  }
+  return out;
+}
+
+wc::StatementOptions Split(int partitions, bool any_order = false) {
+  wc::StatementOptions options;
+  options.result_partitions = partitions;
+  options.any_order = any_order;
+  return options;
+}
+
+}  // namespace
+
+TEST_F(Live, ASplitResultKeepsItsOrder) {
+  auto result = session_->Execute("SELECT i FROM range(1000000) t(i) ORDER BY i DESC", Split(4));
+  ASSERT_TRUE(result.HasRows());
+  auto values = Int64s(*result.reader);
+  ASSERT_EQ(values.size(), 1000000u);
+  for (int64_t i = 0; i < 1000000; i++) ASSERT_EQ(values[i], 999999 - i) << "at " << i;
+  EXPECT_EQ(Scalar(*session_, "SELECT 3"), 3);  // the session goes on
+}
+
+TEST_F(Live, ASplitResultInAnyOrderHasEveryRowOnce) {
+  auto result = session_->Execute("SELECT i FROM range(2000000) t(i)", Split(6, true));
+  auto values = Int64s(*result.reader);
+  std::sort(values.begin(), values.end());
+  ASSERT_EQ(values.size(), 2000000u);
+  for (int64_t i = 0; i < 2000000; i++) ASSERT_EQ(values[i], i);
+}
+
+TEST_F(Live, ASplitResultOnTheStatusDocumentPath) {
+  wc::StatementOptions options = Split(3);
+  options.retain_result = true;
+  auto doc = session_->Submit("SELECT i FROM range(1000000) t(i) ORDER BY i", 0, options);
+  doc = session_->Wait(doc.statement_id);
+  ASSERT_GT(doc.partitions.size(), 1u);
+  EXPECT_EQ(doc.partition_order, "interleaved");
+  EXPECT_EQ(doc.TotalRows(), 1000000);
+  int64_t rows = 0;
+  for (const auto& partition : doc.partitions) {
+    rows += session_->FetchResult(doc.statement_id, partition.index)->ToTable()->num_rows();
+  }
+  EXPECT_EQ(rows, 1000000);
+}
+
+TEST_F(Live, AFailureInOnePartitionFailsTheSplitResult) {
+  auto result = session_->Execute(
+      "SELECT CASE WHEN i < 30000000 THEN i ELSE error('boom in a split') END AS v FROM range(100000000) t(i)",
+      Split(4));
+  ASSERT_TRUE(result.HasRows());
+  int64_t rows = 0;
+  try {
+    while (auto batch = result.reader->Next()) rows += batch->num_rows();
+    FAIL() << "the split result ended normally after " << rows << " rows";
+  } catch (const wc::Error& e) {
+    EXPECT_NE(std::string(e.what()).find("boom in a split"), std::string::npos) << e.code() << ": " << e.what();
+  }
+  EXPECT_EQ(Scalar(*session_, "SELECT 4"), 4);
+}
+
+TEST_F(Live, ClosingASplitResultEarlyLeavesTheSessionUsable) {
+  auto result = session_->Execute("SELECT i FROM range(3000000000) t(i)", Split(4, true));
+  ASSERT_TRUE(result.HasRows());
+  ASSERT_NE(result.reader->Next(), nullptr);
+  result.reader->Close();
+  EXPECT_EQ(result.reader->Next(), nullptr);
+  EXPECT_EQ(Scalar(*session_, "SELECT 6"), 6);
 }
 
 TEST_F(Live, Metadata) {

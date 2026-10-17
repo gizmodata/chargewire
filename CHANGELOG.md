@@ -26,6 +26,11 @@ spec's version is the repository's version.
   partitions at once over separate connections; `interleaved` partitions rebuild the
   result's order round robin. Without the header a result has one partition, as before.
   `ServerOptions::max_result_partitions` (default 32). Conformance: `test_partitions.py`.
+- `libwarpsql_client` reads split results: `StatementOptions::result_partitions` and
+  `any_order` (sent to servers with `result_partitions`); every partition is read at
+  once on its own connection and thread and merged into one `ResultReader` (round robin
+  for interleaved results), and a failed partition fails the result with the statement's
+  error. `StatementDocument::partition_order`.
 - `WARPSQL_STREAM_STATS=1`: the SDK logs each result stream's and statement's stage times.
 
 ### Changed
