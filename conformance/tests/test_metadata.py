@@ -89,6 +89,7 @@ def test_server_info_is_json(warp, session_id):
     info = response.json()
     assert info["server_name"]
     assert info["sql_identifier_quote_char"] == '"'
+    assert isinstance(info["sql_transactions_supported"], bool)
 
 
 def test_unknown_metadata_kind(warp, session_id):
@@ -112,3 +113,11 @@ def test_table_schema_reports_nullability_and_decimal_precision(warp, session_id
     assert [(field.name, field.nullable) for field in schema] == [("a", False), ("b", False), ("c", True)]
     c = schema.field("c").metadata
     assert (c[b"ARROW:FLIGHT:SQL:PRECISION"], c[b"ARROW:FLIGHT:SQL:SCALE"]) == (b"10", b"3")
+
+
+def test_keys_of_every_table_in_one_request(warp, keyed):
+    primary = metadata(warp=warp, session_id=keyed, kind="primary-keys")
+    assert {"meta_parent"} <= set(primary.column("table_name").to_pylist())
+    imported = metadata(warp=warp, session_id=keyed, kind="imported-keys")
+    assert {("meta_parent", "meta_child")} <= set(
+        zip(imported.column("pk_table_name").to_pylist(), imported.column("fk_table_name").to_pylist()))

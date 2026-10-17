@@ -68,3 +68,16 @@ def test_idempotency_key_reused_for_another_request(warp, session_id):
                        headers={"Idempotency-Key": key}).status_code == 201
     response = warp.submit(session_id=session_id, sql="SELECT 2", headers={"Idempotency-Key": key})
     assert_problem(response=response, status=422, code="idempotency_key_reused")
+
+
+def test_session_cancel_stops_what_the_session_is_running(warp, session_id):
+    # For a client that has no statement id yet (its submit's answer hasn't arrived).
+    response = warp.submit(session_id=session_id, sql=SLOW, headers={"Prefer": "respond-async"})
+    statement_id = response.json()["statement_id"]
+    cancelled = warp.http.post(url=f"{warp.session_url(session_id)}/cancel", headers=warp.headers())
+    assert cancelled.status_code == 202, cancelled.text
+    assert statement_id in cancelled.json()["cancelled"]
+    doc = warp.wait_done(session_id=session_id, statement_id=statement_id, timeout=30)
+    assert doc["state"] == "cancelled" and doc["cancel_reason"] == "client", doc
+    again = warp.http.post(url=f"{warp.session_url(session_id)}/cancel", headers=warp.headers())
+    assert again.status_code == 202 and again.json()["cancelled"] == []

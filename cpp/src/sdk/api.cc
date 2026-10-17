@@ -219,6 +219,10 @@ Task<Response> Api::Route(Request& request) {
     }
     throw Error(ErrorCode::kNotFound, "no such endpoint");
   }
+  if (rest.size() == 3 && rest[2] == "cancel") {
+    if (method != http::verb::post) throw wrong_method();
+    co_return co_await CancelSession(request, session_id);
+  }
   if (rest.size() == 3 && rest[2] == "ingest") {
     if (method != http::verb::post) throw wrong_method();
     co_return co_await Ingest(request, session_id);
@@ -824,7 +828,7 @@ Task<Response> Api::Metadata(Request& request, const std::string& session_id,
         {"protocol", "warp-sql"},
         {"protocol_version", "1"},
         {"sql_identifier_quote_char", "\""},
-        {"transactions_supported", true},
+        {"sql_transactions_supported", true},
     };
     for (const auto& item : state_.backend->ServerInfo()) {
       info[item.key()] = item.value();
@@ -876,8 +880,9 @@ Task<Response> Api::Metadata(Request& request, const std::string& session_id,
     }
   }
   filter.include_schema = query("include_schema").value_or("false") == "true";
-  if ((kind == MetadataKind::kPrimaryKeys || kind == MetadataKind::kImportedKeys ||
-       kind == MetadataKind::kExportedKeys) && !filter.table) {
+  // Primary and imported keys without a table cover every table the principal sees, so
+  // a client lists all constraints in one request (spec §10).
+  if (kind == MetadataKind::kExportedKeys && !filter.table) {
     throw Error(ErrorCode::kBadRequest, "the 'table' query parameter is required");
   }
 
@@ -1020,6 +1025,18 @@ Task<Response> Api::CancelStatement(Request& request, const std::string& session
   auto statement = session->FindStatement(statement_id);
   Cancel(*session, *statement, CancelReason::kClient);
   co_return JsonResponse(http::status::accepted, StatementDocument(*session, *statement));
+}
+
+Task<Response> Api::CancelSession(Request& request, const std::string& session_id) {
+  auto session = OwnSession(request, session_id);
+  json::array cancelled;
+  for (const auto& statement : session->Statements()) {
+    if (!statement->IsTerminal()) {
+      Cancel(*session, *statement, CancelReason::kClient);
+      cancelled.push_back(json::value(statement->id()));
+    }
+  }
+  co_return JsonResponse(http::status::accepted, json::object{{"cancelled", std::move(cancelled)}});
 }
 
 Task<Response> Api::DeleteStatement(Request& request, const std::string& session_id,

@@ -87,6 +87,7 @@ class Api {
                            const std::string& statement_id);
   Task<Response> CancelStatement(Request& request, const std::string& session_id,
                                  const std::string& statement_id);
+  Task<Response> CancelSession(Request& request, const std::string& session_id);
   Task<Response> DeleteStatement(Request& request, const std::string& session_id,
                                  const std::string& statement_id);
 

@@ -346,7 +346,8 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::Metadata(
             "unnest(constraint_column_names) AS column_name, constraint_name AS key_name, "
             "unnest(range(1, len(constraint_column_names) + 1)) AS key_sequence "
             "FROM duckdb_constraints() WHERE constraint_type = 'PRIMARY KEY' "
-            "AND table_name = $table AND ($catalog IS NULL OR database_name = $catalog) "
+            "AND ($table IS NULL OR table_name = $table) "
+            "AND ($catalog IS NULL OR database_name = $catalog) "
             "AND ($schema IS NULL OR schema_name = $schema)) ORDER BY 1, 2, 3, 5, 6";
       break;
     case MetadataKind::kImportedKeys:
@@ -357,7 +358,8 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::Metadata(
         text("catalog", filter.catalog);
         text("schema", filter.db_schema);
         text("table", filter.table);
-        where = "table_name = $table AND ($catalog IS NULL OR database_name = $catalog) "
+        where = "($table IS NULL OR table_name = $table) "
+                "AND ($catalog IS NULL OR database_name = $catalog) "
                 "AND ($schema IS NULL OR schema_name = $schema)";
       } else if (kind == MetadataKind::kExportedKeys) {
         text("catalog", filter.catalog);

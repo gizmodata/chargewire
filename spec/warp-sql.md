@@ -380,11 +380,19 @@ or, for a statement that returns no rows:
 "result": {"kind": "update", "rows_affected": 42}
 ```
 
+`rows_affected` is present when the engine counts the rows a statement changed (INSERT,
+UPDATE, DELETE) and absent otherwise (DDL, SET, …); clients report it as unknown.
+
 `partitions` lists the pieces of the result. Most results have one partition with
 `location: null`, meaning "this server". A server MAY split a result into several
 partitions, and a partition's `location` MAY be the base URL of another server that
 holds it (capability `partitioned_results`); the client fetches each partition from
-its location with the same access token and may do so in parallel. The order of rows
+its location with the same access token and may do so in parallel. `location` is an
+absolute URL of the same form as a server's base (`https://worker-3.example:31337/warp`),
+and the partition is read at
+`{location}/v1/sessions/{session_id}/statements/{statement_id}/result?partition={index}`
+with the coordinator's session and statement ids (whether it carries its own token
+instead is §A.4). The order of rows
 across partitions is undefined unless the query's `ORDER BY` fixes it, in which case
 the server MUST return a single partition. `batches` and `rows` are known only once
 the partition is complete and MAY be `null` before that.
@@ -463,6 +471,12 @@ whose response was lost, including DML.
   no-op (`202`).
 - `DELETE …/statements/{statement_id}`: cancels it if running and frees its result.
   `204`.
+- `POST /warp/v1/sessions/{session_id}/cancel`: cancels every statement of the session
+  that is queued or running when the request arrives; `202` with
+  `{"cancelled": ["q_…", …]}` (possibly empty). This is for a client that has no
+  statement id yet, because its submit's answer hasn't arrived (`Prefer: wait`, or a
+  streamed submit still waiting for its result). A submit that reaches the server
+  after the cancel isn't affected.
 
 ### 6.9 Timeouts
 
@@ -619,8 +633,8 @@ SQL `LIKE` syntax (`%`, `_`, `\` escape), as in Flight SQL.
 | `db-schemas` | `catalog`, `db_schema_filter_pattern` | `CommandGetDbSchemas`: `catalog_name: utf8, db_schema_name: utf8 not null` |
 | `tables` | `catalog`, `db_schema_filter_pattern`, `table_name_filter_pattern`, `table_types` (comma-separated), `include_schema` | `CommandGetTables`: `catalog_name: utf8, db_schema_name: utf8, table_name: utf8 not null, table_type: utf8 not null` [, `table_schema: binary not null`] |
 | `table-types` | none | `CommandGetTableTypes`: `table_type: utf8 not null` |
-| `primary-keys` | `catalog`, `db_schema`, `table` | `CommandGetPrimaryKeys`: `catalog_name: utf8, db_schema_name: utf8, table_name: utf8 not null, column_name: utf8 not null, key_name: utf8, key_sequence: int32 not null` |
-| `imported-keys` | `catalog`, `db_schema`, `table` | `CommandGetImportedKeys` (13 columns, `pk_catalog_name` … `delete_rule`) |
+| `primary-keys` | `catalog`, `db_schema`, `table` (optional: without it, every table) | `CommandGetPrimaryKeys`: `catalog_name: utf8, db_schema_name: utf8, table_name: utf8 not null, column_name: utf8 not null, key_name: utf8, key_sequence: int32 not null` |
+| `imported-keys` | `catalog`, `db_schema`, `table` (optional, as for `primary-keys`) | `CommandGetImportedKeys` (13 columns, `pk_catalog_name` … `delete_rule`) |
 | `exported-keys` | `catalog`, `db_schema`, `table` | `CommandGetExportedKeys` (same columns) |
 | `cross-reference` | `pk_catalog`, `pk_db_schema`, `pk_table`, `fk_catalog`, `fk_db_schema`, `fk_table` | `CommandGetCrossReference` (same columns) |
 | `type-info` | `data_type` | `CommandGetXdbcTypeInfo` |
@@ -716,4 +730,4 @@ MAY serve several majors at once.
 5. **Push notification.** Whether long-poll (§6.3) is enough or a server-sent-events
    stream of state changes is worth adding.
 6. **Conformance suite.** Every MUST in this document needs a test in the
-   conformance suite (`conformance/`, not yet written).
+   conformance suite (`conformance/`); most have one, and the rest are listed there.
