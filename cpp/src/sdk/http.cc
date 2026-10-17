@@ -6,7 +6,9 @@
 #include <poll.h>
 #include <sys/socket.h>
 
+#include <cctype>
 #include <cerrno>
+#include <cstring>
 #include <optional>
 
 #include "ids.hpp"
@@ -138,21 +140,28 @@ Task<bool> WriteResponse(Stream& stream, Response& response, unsigned version, b
   co_return keep_alive;
 }
 
-constexpr std::size_t kBodyChunk = 64 * 1024;
+// A streamed request body (an upload) is handed on in pieces of up to this size: few
+// enough handoffs to the engine that each costs nothing next to the bytes it carries.
+// (StreamingBodySource, below.)
+constexpr std::size_t kBodyChunk = 1024 * 1024;
 
 // Reads a request body piece by piece from the connection, after the headers.
 template <class Stream>
 class ParserBodySource : public BodySource {
  public:
   ParserBodySource(Stream& stream, beast::flat_buffer& buffer,
-                   http::request_parser<http::buffer_body>& parser)
-      : stream_(stream), buffer_(buffer), parser_(parser), chunk_(kBodyChunk, '\0') {}
+                   http::request_parser<http::buffer_body>& parser, std::size_t piece_size)
+      : stream_(stream), buffer_(buffer), parser_(parser), piece_size_(piece_size) {}
 
+  // Reads straight into the piece it returns, so the bytes are copied once, from the
+  // connection's buffer.
   Task<std::optional<std::string>> Next() override {
+    std::string piece;
     while (!parser_.is_done()) {
+      piece.resize(piece_size_);
       auto& body = parser_.get().body();
-      body.data = chunk_.data();
-      body.size = chunk_.size();
+      body.data = piece.data();
+      body.size = piece.size();
       beast::get_lowest_layer(stream_).expires_after(kReadTimeout);
       boost::system::error_code ec;
       co_await http::async_read(stream_, buffer_, parser_,
@@ -160,9 +169,10 @@ class ParserBodySource : public BodySource {
       if (ec && ec != http::error::need_buffer) {
         throw boost::system::system_error(ec);
       }
-      const std::size_t got = chunk_.size() - body.size;
+      const std::size_t got = piece.size() - body.size;
       if (got > 0) {
-        co_return std::string(chunk_.data(), got);
+        piece.resize(got);
+        co_return piece;
       }
     }
     co_return std::nullopt;
@@ -174,7 +184,145 @@ class ParserBodySource : public BodySource {
   Stream& stream_;
   beast::flat_buffer& buffer_;
   http::request_parser<http::buffer_body>& parser_;
-  std::string chunk_;
+  const std::size_t piece_size_;
+};
+
+// A streamed request body (an upload), read straight from the connection in large
+// reads instead of through Beast's parser, which reads at most 64 KB at a time and
+// hands the body over in pieces of whatever each read returned. It decodes the body's
+// framing itself: Content-Length, or chunked transfer coding (RFC 9112 §7.1), with
+// limits on the size lines and trailers a client can send.
+template <class Stream>
+class StreamingBodySource : public BodySource {
+ public:
+  StreamingBodySource(Stream& stream, beast::flat_buffer& buffer, std::optional<std::uint64_t> length,
+                      bool chunked)
+      : stream_(stream), buffer_(buffer), chunked_(chunked), remaining_(length.value_or(0)) {
+    done_ = !chunked_ && remaining_ == 0;
+    if (chunked_) state_ = State::kSize;
+  }
+
+  Task<std::optional<std::string>> Next() override {
+    if (done_) co_return std::nullopt;
+    std::string piece(kBodyChunk, '\0');
+    std::size_t filled = 0;
+    while (filled < piece.size() && !done_) {
+      if (buffer_.size() == 0) {
+        if (filled > 0 && !stream_ready_) {
+          break;  // hand on what arrived rather than wait with it
+        }
+        beast::get_lowest_layer(stream_).expires_after(kReadTimeout);
+        const std::size_t got =
+            co_await stream_.async_read_some(buffer_.prepare(kRawRead), net::use_awaitable);
+        buffer_.commit(got);
+        stream_ready_ = got == kRawRead;  // a full read: more is probably waiting
+      }
+      filled += Decode(piece.data() + filled, piece.size() - filled);
+    }
+    piece.resize(filled);
+    if (filled == 0) co_return std::nullopt;
+    co_return piece;
+  }
+
+  // The whole body has been read (the connection can carry another request).
+  bool complete() const { return done_; }
+
+ private:
+  enum class State { kData, kSize, kDataEnd, kTrailers };
+  static constexpr std::size_t kRawRead = 1024 * 1024;
+  static constexpr std::size_t kMaxLine = 4096;      // a chunk-size line, extensions included
+  static constexpr std::size_t kMaxTrailers = 16 * 1024;
+
+  [[noreturn]] static void Bad() {
+    throw boost::system::system_error(http::error::bad_chunk);
+  }
+
+  // Moves body bytes from the read buffer into `out`; returns how many.
+  std::size_t Decode(char* out, std::size_t room) {
+    std::size_t written = 0;
+    while (buffer_.size() > 0 && !done_ && written < room) {
+      const char* data = static_cast<const char*>(buffer_.data().data());
+      const std::size_t size = buffer_.size();
+      switch (state_) {
+        case State::kData: {
+          const std::size_t take = static_cast<std::size_t>(
+              std::min<std::uint64_t>({remaining_, size, room - written}));
+          std::memcpy(out + written, data, take);
+          written += take;
+          remaining_ -= take;
+          buffer_.consume(take);
+          if (remaining_ == 0) {
+            if (chunked_) {
+              state_ = State::kDataEnd;
+            } else {
+              done_ = true;
+            }
+          }
+          break;
+        }
+        case State::kSize: {  // hex digits, then extensions up to CRLF
+          const char* end = static_cast<const char*>(std::memchr(data, '\n', size));
+          const std::size_t line = end ? static_cast<std::size_t>(end - data) + 1 : size;
+          line_ += std::string_view(data, line);
+          buffer_.consume(line);
+          if (line_.size() > kMaxLine) Bad();
+          if (!end) break;
+          std::uint64_t value = 0;
+          std::size_t digits = 0;
+          for (; digits < line_.size() && std::isxdigit(static_cast<unsigned char>(line_[digits])); ++digits) {
+            if (digits >= 15) Bad();  // no chunk is 2^60 bytes
+            const char c = line_[digits];
+            value = value * 16 + static_cast<std::uint64_t>(
+                std::isdigit(static_cast<unsigned char>(c)) ? c - '0' : (std::tolower(c) - 'a' + 10));
+          }
+          if (digits == 0 || line_.size() < 2 || line_[line_.size() - 2] != '\r') Bad();
+          const char after = line_[digits];
+          if (after != '\r' && after != ';' && after != ' ' && after != '\t') Bad();
+          line_.clear();
+          remaining_ = value;
+          state_ = value == 0 ? State::kTrailers : State::kData;
+          break;
+        }
+        case State::kDataEnd: {  // the CRLF after a chunk's data
+          line_ += data[0];
+          buffer_.consume(1);
+          if (line_.size() == 2) {
+            if (line_ != "\r\n") Bad();
+            line_.clear();
+            state_ = State::kSize;
+          }
+          break;
+        }
+        case State::kTrailers: {  // trailer fields (ignored), then an empty line
+          const char* end = static_cast<const char*>(std::memchr(data, '\n', size));
+          const std::size_t line = end ? static_cast<std::size_t>(end - data) + 1 : size;
+          line_ += std::string_view(data, line);
+          trailer_bytes_ += line;
+          buffer_.consume(line);
+          if (trailer_bytes_ > kMaxTrailers) Bad();
+          if (!end) break;
+          if (line_ == "\r\n") {
+            done_ = true;
+          } else if (line_.size() < 2 || line_[line_.size() - 2] != '\r') {
+            Bad();
+          }
+          line_.clear();
+          break;
+        }
+      }
+    }
+    return written;
+  }
+
+  Stream& stream_;
+  beast::flat_buffer& buffer_;
+  const bool chunked_;
+  State state_ = State::kData;
+  std::uint64_t remaining_;
+  std::string line_;
+  std::size_t trailer_bytes_ = 0;
+  bool done_ = false;
+  bool stream_ready_ = false;
 };
 
 template <class Stream>
@@ -195,6 +343,7 @@ Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler
     unsigned version = 11;
     bool keep_alive = false;
     bool body_unread = false;
+    std::shared_ptr<StreamingBodySource<Stream>> streaming;
     if (ec == http::error::header_limit) {
       response = limits.error_response(
           http::status::request_header_fields_too_large,
@@ -220,8 +369,11 @@ Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler
       if (!target_ok) {
         early = limits.error_response(http::status::bad_request, "malformed request target");
       } else if (limits.streams_body(request)) {
-        auto source = std::make_shared<ParserBodySource<Stream>>(stream, buffer, parser);
-        request.body_source = source;
+        auto length = parser.content_length();
+        streaming = std::make_shared<StreamingBodySource<Stream>>(
+            stream, buffer, length ? std::optional<std::uint64_t>(*length) : std::nullopt,
+            message.chunked());
+        request.body_source = streaming;
       } else if (message.has_content_length() &&
                  *parser.content_length() > limits.max_body_bytes) {
         early = limits.error_response(
@@ -230,7 +382,7 @@ Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler
       } else {
         // Read the whole body, up to the limit.
         parser.body_limit(limits.max_body_bytes);
-        ParserBodySource<Stream> source(stream, buffer, parser);
+        ParserBodySource<Stream> source(stream, buffer, parser, 64 * 1024);
         try {
           while (auto piece = co_await source.Next()) {
             request.body += *piece;
@@ -255,7 +407,7 @@ Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler
         }
       }
       // A body the handler didn't read leaves the connection unusable for the next request.
-      body_unread = !parser.is_done();
+      body_unread = streaming ? !streaming->complete() : !parser.is_done();
     }
 
     if (body_unread) {

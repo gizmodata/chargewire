@@ -123,3 +123,91 @@ def test_retried_upload_with_the_same_key_runs_once(warp, session_id):
 def test_table_is_required(warp, session_id):
     response = ingest(warp=warp, session_id=session_id, body=ipc_bytes(table=pa.table({"k": [1]})))
     assert_problem(response=response, status=400, code="bad_request")
+
+
+def raw_upload(server_url: str, token: str, session_id: str, body_chunks: list[bytes], table: str,
+               chunked: bool = True, then_get: bool = False) -> list[bytes]:
+    """Sends an ingest over a raw socket (chunked framing written by hand), optionally followed
+    by a second request on the same connection; returns the raw responses."""
+    import socket
+    import urllib.parse
+
+    url = urllib.parse.urlparse(server_url)
+    sock = socket.create_connection((url.hostname, url.port))
+    head = (f"POST /warp/v1/sessions/{session_id}/ingest?table={table}&mode=replace HTTP/1.1\r\n"
+            f"Host: x\r\nAuthorization: Bearer {token}\r\nContent-Type: {ARROW_STREAM}\r\n")
+    if chunked:
+        head += "Transfer-Encoding: chunked\r\n\r\n"
+        payload = b"".join(body_chunks)
+    else:
+        payload = b"".join(body_chunks)
+        head += f"Content-Length: {len(payload)}\r\n\r\n"
+    sock.sendall(head.encode() + payload)
+    if then_get:
+        sock.sendall(f"GET /warp HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n".encode())
+    else:
+        sock.shutdown(socket.SHUT_WR)
+    data = b""
+    sock.settimeout(60)
+    while chunk := sock.recv(65536):
+        data += chunk
+    sock.close()
+    return [part for part in data.split(b"HTTP/1.1 ")[1:]]
+
+
+def chunk(data: bytes, extension: str = "") -> bytes:
+    return f"{len(data):x}{extension}\r\n".encode() + data + b"\r\n"
+
+
+def test_chunked_upload_in_many_sizes_then_another_request(warp, session_id):
+    # Chunks of every size from one byte to a megabyte, a chunk extension and a trailer:
+    # the body is the same stream however it is cut, and the connection stays usable.
+    table = pa.table({"k": pa.array(range(300000), type=pa.int64()), "s": [f"v{i}" for i in range(300000)]})
+    body = ipc_bytes(table=table, batch_rows=50000)
+    pieces, offset, size = [], 0, 1
+    while offset < len(body):
+        pieces.append(chunk(body[offset:offset + size], extension=";x=y" if size == 7 else ""))
+        offset += size
+        size = size * 7 % 1048573 + 1
+    pieces.append(b"0\r\nX-Trailer: ignored\r\n\r\n")
+    responses = raw_upload(server_url=str(warp.http.base_url), token=warp.token, session_id=session_id,
+                           body_chunks=pieces, table="ing_chunked", then_get=True)
+    assert len(responses) == 2, responses
+    assert responses[0].startswith(b"200"), responses[0][:300]
+    assert b'"rows_ingested":300000' in responses[0]
+    assert responses[1].startswith(b"200"), "the connection carried no second request after the upload"
+    assert count(warp=warp, session_id=session_id, table="ing_chunked") == 300000
+
+
+def test_content_length_upload_then_another_request(warp, session_id):
+    table = pa.table({"k": pa.array(range(100000), type=pa.int64())})
+    responses = raw_upload(server_url=str(warp.http.base_url), token=warp.token, session_id=session_id,
+                           body_chunks=[ipc_bytes(table=table)], table="ing_length", chunked=False,
+                           then_get=True)
+    assert len(responses) == 2 and responses[0].startswith(b"200") and responses[1].startswith(b"200")
+    assert count(warp=warp, session_id=session_id, table="ing_length") == 100000
+
+
+def test_malformed_chunked_upload_is_refused_and_writes_nothing(warp, session_id):
+    body = ipc_bytes(table=pa.table({"k": pa.array(range(1000), type=pa.int64())}))
+    for bad in (b"zz\r\n", b"10\n0123456789abcdef\r\n", b"1" * 5000 + b"\r\n",
+                chunk(body[:100])[:-2] + b"XX"):
+        responses = raw_upload(server_url=str(warp.http.base_url), token=warp.token,
+                               session_id=session_id, body_chunks=[chunk(body[:100]), bad],
+                               table="ing_malformed")
+        assert responses and not responses[0].startswith(b"200"), responses[:1]
+        exists = warp.query(session_id=session_id,
+                            sql="SELECT count(*) AS n FROM duckdb_tables() WHERE table_name = 'ing_malformed'")
+        assert exists.column("n").to_pylist() == [0]
+
+
+def test_upload_cut_short_writes_nothing(warp, session_id):
+    body = ipc_bytes(table=pa.table({"k": pa.array(range(500000), type=pa.int64())}), batch_rows=10000)
+    # The connection ends in the middle of a chunk.
+    responses = raw_upload(server_url=str(warp.http.base_url), token=warp.token, session_id=session_id,
+                           body_chunks=[chunk(body[:len(body) // 2]), b"10000\r\n" + body[:100]],
+                           table="ing_cut")
+    assert not responses or not responses[0].startswith(b"200")
+    exists = warp.query(session_id=session_id,
+                        sql="SELECT count(*) AS n FROM duckdb_tables() WHERE table_name = 'ing_cut'")
+    assert exists.column("n").to_pylist() == [0]
