@@ -130,7 +130,7 @@ hand a client several streams to fetch in parallel without changing the protocol
 | Reference server | [`warp-duckdb`](cpp/README.md) (this repo): DuckDB 2.0 through its v2 C API |
 | Server SDK | [`libwarpsql`](cpp/README.md) (C++20, this repo): engines implement a `Backend`; the SDK owns authentication, handle binding, streaming, retention, cancellation and draining |
 | ADBC driver | [`warp-sql-adbc`](https://github.com/gizmodata/warp-sql-adbc): Go, with Python bindings, loadable by any ADBC driver manager |
-| JDBC driver | [`warp-sql-jdbc`](https://github.com/gizmodata/warp-sql-jdbc): pure Java |
+| JDBC driver | [`warp-sql-jdbc`](https://github.com/gizmodata/warp-sql-jdbc): one jar for Java 17+, no gRPC or Netty |
 
 ## ✅ Conformance
 
