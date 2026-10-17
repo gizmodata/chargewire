@@ -47,6 +47,21 @@ struct StatementOutcome {
   bool finish_if_abandoned = false;
 };
 
+// The rows of a bulk ingest, readable from several threads at once (spec §8.1). The
+// reader EngineSession::Ingest receives is one. Each NextIndexed() call takes the next
+// batch from the upload in order, under a lock, and decodes, decompresses and validates
+// it outside the lock, in the calling thread: an engine that calls it from N threads
+// does that work N at a time. ReadNext() is NextIndexed() without the position.
+class IngestBatches : public arrow::RecordBatchReader {
+ public:
+  // The next batch and its position in the upload (0, 1, …), or a null batch at the end.
+  virtual arrow::Status NextIndexed(std::shared_ptr<arrow::RecordBatch>* batch, int64_t* index) = 0;
+  arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch>* batch) override {
+    int64_t index = 0;
+    return NextIndexed(batch, &index);
+  }
+};
+
 // Per-option failures from EngineSession::SetOptions (spec §5.3).
 using OptionErrors = std::map<std::string, Error>;
 
@@ -129,7 +144,8 @@ class EngineSession {
                                            const Parameters& parameters);
 
   // Writes every row of `rows` into `target`, atomically where the engine can, and
-  // returns how many (spec §8.1). The SDK has already validated each batch.
+  // returns how many (spec §8.1). Each batch is validated as it is read. `rows` is an
+  // IngestBatches (see there), so an engine can read it from several threads.
   virtual int64_t Ingest(const IngestTarget& target,
                          std::shared_ptr<arrow::RecordBatchReader> rows);
 

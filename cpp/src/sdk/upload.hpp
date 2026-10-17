@@ -4,6 +4,8 @@
 #pragma once
 
 #include <arrow/io/interfaces.h>
+#include <arrow/ipc/dictionary.h>
+#include <arrow/ipc/message.h>
 #include <arrow/record_batch.h>
 
 #include <condition_variable>
@@ -16,6 +18,7 @@
 
 #include "common.hpp"
 #include "signal.hpp"
+#include "warpsql/backend.hpp"
 
 namespace warpsql::detail {
 
@@ -48,18 +51,32 @@ class ByteQueue {
 // An Arrow input stream over a ByteQueue.
 std::shared_ptr<arrow::io::InputStream> QueueInput(std::shared_ptr<ByteQueue> queue);
 
-// Reads batches through ValidateFull(). A malformed batch fails the read with an Arrow
-// status (it runs inside the engine, so it can't throw) and is remembered in failure(),
-// which the SDK reports as unsupported_arrow_type.
-class ValidatedReader : public arrow::RecordBatchReader {
+// An upload's batches, each fully validated (ValidateFull()) before the engine sees it.
+// A malformed batch fails the read with an Arrow status (it runs inside the engine, so it
+// can't throw) and is remembered in failure(), which the SDK reports as
+// unsupported_arrow_type. Safe to read from several threads (IngestBatches): reading
+// the next message is serialized, decoding and validating it is not. A schema with
+// dictionaries is read one batch at a time, as dictionaries are stream state.
+class ValidatedReader : public warpsql::IngestBatches {
  public:
-  explicit ValidatedReader(std::shared_ptr<arrow::RecordBatchReader> source);
-  std::shared_ptr<arrow::Schema> schema() const override;
-  arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch>* batch) override;
+  // Reads the schema message; throws bad_request if the input isn't an IPC stream.
+  explicit ValidatedReader(std::shared_ptr<arrow::io::InputStream> input);
+  std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+  arrow::Status NextIndexed(std::shared_ptr<arrow::RecordBatch>* batch, int64_t* index) override;
   std::optional<std::string> failure() const;
 
  private:
-  std::shared_ptr<arrow::RecordBatchReader> source_;
+  arrow::Status Fail(const arrow::Status& status);
+
+  std::shared_ptr<arrow::io::InputStream> input_;
+  std::shared_ptr<arrow::Schema> schema_;
+  std::mutex read_mutex_;  // the input, the messages and the dictionaries
+  std::unique_ptr<arrow::ipc::MessageReader> messages_;
+  std::unique_ptr<arrow::ipc::DictionaryMemo> dictionaries_;
+  bool has_dictionaries_ = false;
+  std::shared_ptr<arrow::RecordBatchReader> serial_;  // a schema with dictionaries
+  bool ended_ = false;
+  int64_t next_index_ = 0;
   mutable std::mutex mutex_;
   std::optional<std::string> failure_;
 };

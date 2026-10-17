@@ -211,3 +211,40 @@ def test_upload_cut_short_writes_nothing(warp, session_id):
     exists = warp.query(session_id=session_id,
                         sql="SELECT count(*) AS n FROM duckdb_tables() WHERE table_name = 'ing_cut'")
     assert exists.column("n").to_pylist() == [0]
+
+
+def test_a_large_upload_keeps_its_row_order(warp, session_id):
+    # Many batches, which a server may insert in parallel: the table still reads back in
+    # upload order, and every value survives.
+    n = 2_000_000
+    table = pa.table({"k": pa.array(range(n), type=pa.int64()),
+                      "s": pa.array([None if i % 11 == 0 else f"row {i}" for i in range(n)])})
+    response = ingest(warp=warp, session_id=session_id, body=ipc_bytes(table=table, batch_rows=7919),
+                      table="ing_order", mode="create")
+    assert response.status_code == 200, response.text
+    assert response.json() == {"rows_ingested": n}
+    back = warp.query(session_id=session_id, sql="SELECT k, s FROM ing_order")
+    assert back.column("k").to_pylist() == list(range(n))
+    assert back.column("s").equals(table.column("s"))
+
+
+def test_a_bad_batch_in_the_middle_writes_nothing(warp, session_id):
+    # Batch 40 of 80 holds a value the server must refuse: none of the 80 remain, also
+    # when the batches before it were already being inserted.
+    batches = []
+    for b in range(80):
+        nanos = [b * 1000 + i * 1000 for i in range(5000)]
+        if b == 40:
+            nanos[123] += 1  # sub-microsecond: DuckDB would truncate it
+        batches.append(pa.record_batch([pa.array(range(b * 5000, (b + 1) * 5000), type=pa.int64()),
+                                        pa.array(nanos, type=pa.duration("ns"))], names=["k", "d"]))
+    body = ipc_bytes(table=pa.Table.from_batches(batches=batches))
+    response = ingest(warp=warp, session_id=session_id, body=body, table="ing_bad_middle", mode="create")
+    assert_problem(response=response, status=415, code="unsupported_arrow_type")
+    exists = warp.query(session_id=session_id,
+                        sql="SELECT count(*) AS n FROM duckdb_tables() WHERE table_name = 'ing_bad_middle'")
+    assert exists.column("n").to_pylist() == [0]
+    warp.execute(session_id=session_id, sql="CREATE TABLE ing_bad_append (k BIGINT, d INTERVAL)")
+    response = ingest(warp=warp, session_id=session_id, body=body, table="ing_bad_append", mode="append")
+    assert_problem(response=response, status=415, code="unsupported_arrow_type")
+    assert count(warp=warp, session_id=session_id, table="ing_bad_append") == 0
