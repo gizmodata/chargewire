@@ -341,7 +341,10 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::Metadata(
   std::string sql;
   switch (kind) {
     case MetadataKind::kCatalogs:
-      sql = "SELECT DISTINCT catalog_name FROM information_schema.schemata ORDER BY 1";
+      // duckdb_databases() names the attached catalogs without opening them;
+      // information_schema.schemata would list every schema of every catalog, which for
+      // remote catalogs (DuckLake on PostgreSQL, say) means a connection to each.
+      sql = "SELECT DISTINCT database_name AS catalog_name FROM duckdb_databases() ORDER BY 1";
       break;
     case MetadataKind::kDbSchemas:
       text("catalog", filter.catalog);
