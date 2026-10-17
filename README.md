@@ -136,6 +136,29 @@ the protocol ([docs/distributed.md](docs/distributed.md)).
 | Server SDK | [`libwarpsql`](cpp/README.md) (C++20, this repo): engines implement a `Backend`; the SDK owns authentication, handle binding, retention, cancellation and draining, and streams every result through an asynchronous pipeline (produce, compress on a worker pool, encrypt and send, each stage overlapped) |
 | ADBC driver | [`warp-sql-adbc`](https://github.com/gizmodata/warp-sql-adbc): Go, with Python bindings, loadable by any ADBC driver manager |
 | JDBC driver | [`warp-sql-jdbc`](https://github.com/gizmodata/warp-sql-jdbc): one jar for Java 17+, no gRPC or Netty |
+| JavaScript client | [`warp-sql-js`](https://github.com/gizmodata/warp-sql-js): `@gizmodata/warp-sql`, TypeScript over plain `fetch` and Arrow JS, for Node, browsers, Deno, Bun and Cloudflare Workers |
+
+### JavaScript
+
+A Warp SQL server needs nothing but `fetch` from JavaScript. With
+[`@gizmodata/warp-sql`](https://github.com/gizmodata/warp-sql-js), rows come back as an Arrow JS
+Table (or stream batch by batch), and resumable downloads, idempotent retries, cancellation
+through an `AbortSignal` and split results come with it:
+
+```js
+import { connect } from "@gizmodata/warp-sql";
+
+const conn = await connect({ url: "warp://localhost:31337?tls=false", username: "joe", password: "s3:cret" });
+const table = await conn.query("SELECT 42 AS answer, ? AS greeting", ["hello"]);
+console.log(table.toArray().map((row) => row.toJSON()));
+await conn.close();
+```
+
+```text
+[ { answer: 42, greeting: 'hello' } ]
+```
+
+*(Run against `warp-duckdb --username joe`, with `WARP_DUCKDB_PASSWORD='s3:cret'`.)*
 
 ## ✅ Conformance
 
@@ -178,7 +201,7 @@ See [cpp/README.md](cpp/README.md) for TLS, mTLS and the other options.
 5. ~~A production server on the SDK~~: [Hardcharger](https://github.com/gizmodata/hardcharger),
    which runs GizmoSQL 1.x's test battery over Warp SQL alone.
 6. ~~Parallel multi-partition results~~ (§6.10, with the SDK's pipelined streaming).
-7. A JavaScript client and partitioned uploads. **In progress.**
+7. ~~A JavaScript client~~ ([warp-sql-js](https://github.com/gizmodata/warp-sql-js)) and partitioned uploads. **In progress.**
 8. Spec 1.0.0: [Appendix A](spec/warp-sql.md#appendix-a-open-items-before-10) lists the open items.
 
 ## 📂 In this repo
