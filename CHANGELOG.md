@@ -69,6 +69,13 @@ spec's version is the repository's version.
 - The DuckDB backend ingests in parallel: `warp_upload()` is a parallel table function
   over the SDK's thread-safe `IngestBatches` reader, with batch indexes, so DuckDB's
   batch insert runs on many threads and keeps the upload's order, in one transaction.
+- The SDK and `warp-duckdb` build on Windows x64 and arm64 (MSVC). `warpsql::StopSignals`
+  (`include/warpsql/stop_signals.hpp`) gives a server's main() its stop requests:
+  SIGINT/SIGTERM on POSIX, the console's Ctrl+C, Ctrl+Break, close and shutdown events on
+  Windows. Platform code is in `src/sdk/platform.cc` (client-gone detection with WSAPoll
+  on Windows; no SO_REUSEADDR there, where it lets a second server bind a listening
+  port). On Windows DuckDB is linked statically, with the extensions its shared library
+  links. The conformance harness stops a server it started with Ctrl+Break on Windows.
 
 - Draft 0.1.0 of the protocol spec (`spec/warp-sql.md`): discovery and health,
   token authentication (password, token exchange, browser sign-in), sessions,
