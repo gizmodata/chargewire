@@ -61,7 +61,97 @@ class WithoutSchema : public arrow::ipc::internal::IpcPayloadWriter {
   std::unique_ptr<arrow::ipc::internal::IpcPayloadWriter> inner_;
 };
 
+// Collects what WriteIpcPayload emits: small writes are copied into owned pieces, large
+// buffers are kept by reference.
+class GatherStream : public arrow::io::OutputStream {
+ public:
+  explicit GatherStream(std::vector<std::unique_ptr<std::string>>& owned,
+                        std::vector<std::shared_ptr<arrow::Buffer>>& referenced,
+                        std::vector<boost::asio::const_buffer>& pieces)
+      : owned_(owned), referenced_(referenced), pieces_(pieces) {}
+
+  arrow::Status Write(const void* data, int64_t nbytes) override {
+    if (nbytes <= 0) return arrow::Status::OK();
+    if (!open_) {
+      owned_.push_back(std::make_unique<std::string>());
+      open_ = owned_.back().get();
+      pieces_.emplace_back();  // filled in when the piece is closed
+    }
+    open_->append(static_cast<const char*>(data), static_cast<std::size_t>(nbytes));
+    pieces_.back() = boost::asio::buffer(*open_);
+    position_ += nbytes;
+    return arrow::Status::OK();
+  }
+
+  arrow::Status Write(const std::shared_ptr<arrow::Buffer>& data) override {
+    if (data->size() < kReferenceAtLeast) {
+      return Write(data->data(), data->size());
+    }
+    open_ = nullptr;
+    referenced_.push_back(data);
+    pieces_.push_back(boost::asio::buffer(data->data(), static_cast<std::size_t>(data->size())));
+    position_ += data->size();
+    return arrow::Status::OK();
+  }
+
+  arrow::Result<int64_t> Tell() const override { return position_; }
+  arrow::Status Close() override {
+    closed_ = true;
+    return arrow::Status::OK();
+  }
+  bool closed() const override { return closed_; }
+
+ private:
+  // Smaller buffers are cheaper to copy than to send as a piece of their own.
+  static constexpr int64_t kReferenceAtLeast = 4096;
+
+  std::vector<std::unique_ptr<std::string>>& owned_;
+  std::vector<std::shared_ptr<arrow::Buffer>>& referenced_;
+  std::vector<boost::asio::const_buffer>& pieces_;
+  std::string* open_ = nullptr;
+  int64_t position_ = 0;
+  bool closed_ = false;
+};
+
+bool HasDictionary(const arrow::DataType& type) {
+  if (type.id() == arrow::Type::DICTIONARY) return true;
+  for (const auto& child : type.fields()) {
+    if (HasDictionary(*child->type())) return true;
+  }
+  return false;
+}
+
 }  // namespace
+
+bool CanEncodeIndependently(const arrow::Schema& schema) {
+  for (const auto& field : schema.fields()) {
+    if (HasDictionary(*field->type())) return false;
+  }
+  return true;
+}
+
+EncodedBatch EncodeBatch(const arrow::RecordBatch& batch, IpcCompression compression) {
+  auto options = arrow::ipc::IpcWriteOptions::Defaults();
+  options.use_threads = false;  // batches are encoded in parallel instead
+  if (compression == IpcCompression::kZstd) {
+    auto codec = arrow::util::Codec::Create(arrow::Compression::ZSTD);
+    Check(codec.status());
+    options.codec = std::move(codec).ValueUnsafe();
+  }
+  arrow::ipc::IpcPayload payload;
+  Check(arrow::ipc::GetRecordBatchPayload(batch, options, &payload));
+  EncodedBatch out;
+  GatherStream sink(out.owned_, out.referenced_, out.pieces_);
+  int32_t metadata_length = 0;
+  Check(arrow::ipc::WriteIpcPayload(payload, options, &sink, &metadata_length));
+  for (const auto& piece : out.pieces_) out.size_ += piece.size();
+  return out;
+}
+
+std::string_view EndOfStreamMarker() {
+  static constexpr char kMarker[8] = {'\xff', '\xff', '\xff', '\xff', 0, 0, 0, 0};
+  return {kMarker, sizeof(kMarker)};
+}
 
 IpcCompression ParseIpcCompression(std::string_view header) {
   return header == "zstd" ? IpcCompression::kZstd : IpcCompression::kNone;

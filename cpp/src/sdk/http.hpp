@@ -40,6 +40,13 @@ class BodyWriter {
  public:
   virtual ~BodyWriter() = default;
   virtual Task<void> Write(std::string_view bytes) = 0;
+  // Writes several pieces as one HTTP chunk (one socket write; with TLS, encrypted in one
+  // go). The pieces must stay valid until it returns.
+  virtual Task<void> WriteGather(const std::vector<net::const_buffer>& pieces) {
+    for (const auto& piece : pieces) {
+      co_await Write(std::string_view(static_cast<const char*>(piece.data()), piece.size()));
+    }
+  }
   // True once the client has closed or reset the connection. Doesn't block or read, so
   // a stream that has nothing to send yet can notice a client that gave up.
   virtual bool ClientGone() { return false; }

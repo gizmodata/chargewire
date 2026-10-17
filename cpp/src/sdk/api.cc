@@ -2,8 +2,12 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cstdio>
+#include <cstdlib>
+#include <deque>
 #include <format>
 
+#include <arrow/array.h>
 #include <arrow/table.h>
 #include <arrow/util/config.h>  // ARROW_VERSION_STRING
 
@@ -20,6 +24,36 @@ namespace {
 // How often a result stream waiting for its next batch checks that its client is still
 // there, so an abandoned query is cancelled rather than left running.
 constexpr auto kClientCheck = std::chrono::seconds(1);
+
+// The result stream's pipeline (Api::StreamBatches): batches being encoded at once
+// (compressing is slow, so more of them then), the bytes they may hold, and how much
+// encoded data is gathered into one write.
+constexpr std::size_t kEncodeWindow = 2;
+constexpr std::size_t kEncodeWindowZstd = 8;
+constexpr std::size_t kEncodeBytes = 64 * 1024 * 1024;
+constexpr std::size_t kGatherBytes = 1024 * 1024;
+
+// WARPSQL_STREAM_STATS=1 logs, for every result stream and statement, how long each
+// stage of the pipeline took (stderr), to see which one limits a stream.
+bool StreamStatsEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("WARPSQL_STREAM_STATS");
+    return value != nullptr && std::string_view(value) == "1";
+  }();
+  return enabled;
+}
+
+double Seconds(Clock::duration d) { return std::chrono::duration<double>(d).count(); }
+
+int64_t BatchBytes(const arrow::RecordBatch& batch) {
+  int64_t bytes = 0;
+  for (const auto& column : batch.columns()) {
+    for (const auto& buffer : column->data()->buffers) {
+      if (buffer) bytes += buffer->size();
+    }
+  }
+  return bytes;
+}
 
 std::vector<std::string_view> Segments(std::string_view path) {
   std::vector<std::string_view> out;
@@ -504,12 +538,34 @@ void Api::Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> state
       return;  // cancelled while queued
     }
     try {
+      const auto started = Clock::now();
       StatementOutcome outcome = work(session->engine());
       if (outcome.rows) {
         statement->SetRows(outcome.rows->schema(), outcome.finish_if_abandoned);
+        Clock::duration producing{}, handing_over{};
+        int64_t produced = 0, produced_bytes = 0;
+        struct Report {
+          Clock::time_point started;
+          Clock::duration& producing;
+          Clock::duration& handing_over;
+          int64_t& produced;
+          int64_t& produced_bytes;
+          ~Report() {
+            if (!StreamStatsEnabled()) return;
+            std::fprintf(stderr,
+                         "warpsql statement: %lld batches, %.1f MB in %.3f s: engine producing "
+                         "%.3f s (%.0f MB/s), waiting for readers %.3f s\n",
+                         static_cast<long long>(produced), produced_bytes / 1e6,
+                         Seconds(Clock::now() - started), Seconds(producing),
+                         Seconds(producing) > 0 ? produced_bytes / 1e6 / Seconds(producing) : 0.0,
+                         Seconds(handing_over));
+          }
+        } report{started, producing, handing_over, produced, produced_bytes};
         // A read deleted before it started producing stops before its first batch.
         for (; !statement->CancelRequested();) {
+          const auto next_started = Clock::now();
           auto next = outcome.rows->Next();
+          producing += Clock::now() - next_started;
           if (!next.ok()) {
             throw Error(ErrorCode::kExecutionError, next.status().message());
           }
@@ -520,7 +576,12 @@ void Api::Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> state
           if (batch->num_rows() == 0) {
             continue;
           }
-          if (!statement->AddBatch(std::move(batch))) {
+          produced += 1;
+          produced_bytes += BatchBytes(*batch);
+          const auto add_started = Clock::now();
+          const bool added = statement->AddBatch(std::move(batch));
+          handing_over += Clock::now() - add_started;
+          if (!added) {
             break;  // cancelled, or over the retention quota
           }
         }
@@ -1027,31 +1088,164 @@ Response Api::ResultStream(std::shared_ptr<Session> session, std::shared_ptr<Sta
 
     IpcStreamEncoder encoder(statement->schema(), compression);
     co_await out.Write(encoder.Begin());
-    int64_t index = from_batch;
-    for (;;) {
-      const uint64_t seen = statement->changed().version();
-      auto [step, batch] = statement->Read(index);
-      switch (step) {
-        case ReadStep::kBatch:
-          co_await out.Write(encoder.Write(*batch));
-          ++index;
-          continue;
-        case ReadStep::kEnd:
-          co_await out.Write(encoder.Finish());
-          guard.complete = true;
-          co_return true;
-        case ReadStep::kFailed:
-          co_return false;  // no end-of-stream marker: the client sees an incomplete stream
-        case ReadStep::kWait:
-          co_await statement->changed().WaitChange(seen, Clock::now() + kClientCheck);
-          if (out.ClientGone()) {
-            co_return false;  // the read is incomplete: an unretained statement is cancelled
-          }
-          continue;
+    if (!CanEncodeIndependently(*statement->schema())) {
+      // Dictionaries depend on the stream's state: one batch after another.
+      int64_t index = from_batch;
+      for (;;) {
+        const uint64_t seen = statement->changed().version();
+        auto [step, batch] = statement->Read(index);
+        switch (step) {
+          case ReadStep::kBatch:
+            co_await out.Write(encoder.Write(*batch));
+            ++index;
+            continue;
+          case ReadStep::kEnd:
+            co_await out.Write(encoder.Finish());
+            guard.complete = true;
+            co_return true;
+          case ReadStep::kFailed:
+            co_return false;  // no end-of-stream marker: the client sees an incomplete stream
+          case ReadStep::kWait:
+            co_await statement->changed().WaitChange(seen, Clock::now() + kClientCheck);
+            if (out.ClientGone()) {
+              co_return false;  // the read is incomplete: an unretained statement is cancelled
+            }
+            continue;
+        }
       }
     }
+    const bool complete = co_await StreamBatches(*statement, from_batch, compression, out);
+    guard.complete = complete;
+    co_return complete;
   };
   return response;
+}
+
+// The result stream's pipeline. The statement's engine thread produces batches; encoding
+// (and zstd compression) runs on the encode pool, several batches at once; this
+// coroutine, on the connection's strand, writes the encoded batches in order, gathered
+// into large writes (with TLS, each is encrypted in one go). Each stage runs while the
+// others do, within bounds: the statement buffers a few batches, at most kEncodeWindow
+// (kEncodeBytes) are being encoded, and one write is in flight.
+Task<bool> Api::StreamBatches(Statement& statement, int64_t from_batch, IpcCompression compression,
+                              BodyWriter& out) {
+  struct Job {
+    std::shared_ptr<arrow::RecordBatch> batch;
+    std::size_t bytes = 0;
+    Completion<EncodedBatch> encoded;
+    Clock::duration took{};
+  };
+  struct Stats {
+    Clock::time_point started = Clock::now();
+    Clock::duration wait_rows{}, wait_encode{}, write{}, encode{};
+    int64_t batches = 0, writes = 0;
+    std::size_t raw = 0, sent = 0;
+    ~Stats() {
+      if (!StreamStatsEnabled()) return;
+      const double wall = Seconds(Clock::now() - started);
+      std::fprintf(stderr,
+                   "warpsql stream: %lld batches, %.1f MB raw, %.1f MB sent, %.3f s "
+                   "(%.0f MB/s sent): waiting for rows %.3f s, waiting for encoding %.3f s, "
+                   "writing %.3f s in %lld writes (%.0f MB/s while writing), encoding %.3f s of CPU "
+                   "(%.0f MB/s per thread)\n",
+                   static_cast<long long>(batches), raw / 1e6, sent / 1e6, wall,
+                   wall > 0 ? sent / 1e6 / wall : 0.0, Seconds(wait_rows), Seconds(wait_encode),
+                   Seconds(write), static_cast<long long>(writes),
+                   Seconds(write) > 0 ? sent / 1e6 / Seconds(write) : 0.0, Seconds(encode),
+                   Seconds(encode) > 0 ? raw / 1e6 / Seconds(encode) : 0.0);
+    }
+  } stats;
+  const std::size_t window = compression == IpcCompression::kZstd ? kEncodeWindowZstd : kEncodeWindow;
+  std::deque<std::shared_ptr<Job>> encoding;
+  std::size_t encoding_bytes = 0;
+  std::vector<EncodedBatch> gathered;  // encoded, not yet written
+  std::vector<net::const_buffer> pieces;
+  std::size_t gathered_bytes = 0;
+  auto flush = [&]() -> Task<void> {
+    if (!pieces.empty()) {
+      const auto started = Clock::now();
+      co_await out.WriteGather(pieces);
+      stats.write += Clock::now() - started;
+      stats.writes += 1;
+      stats.sent += gathered_bytes;
+    }
+    pieces.clear();
+    gathered.clear();
+    gathered_bytes = 0;
+  };
+
+  int64_t index = from_batch;
+  bool produced_all = false;
+  for (;;) {
+    const uint64_t seen = statement.changed().version();
+    while (!produced_all && encoding.size() < window &&
+           (encoding.empty() || encoding_bytes < kEncodeBytes)) {
+      auto [step, batch] = statement.Read(index);
+      if (step == ReadStep::kFailed) {
+        co_return false;  // no end-of-stream marker: the client sees an incomplete stream
+      }
+      if (step == ReadStep::kEnd) {
+        produced_all = true;
+        break;
+      }
+      if (step == ReadStep::kWait) {
+        break;
+      }
+      ++index;
+      auto job = std::make_shared<Job>();
+      job->bytes = static_cast<std::size_t>(BatchBytes(*batch));
+      job->batch = std::move(batch);
+      encoding_bytes += job->bytes;
+      net::post(state_.encode_pool, [job, compression] {
+        try {
+          const auto started = Clock::now();
+          EncodedBatch encoded = EncodeBatch(*job->batch, compression);
+          job->took = Clock::now() - started;
+          job->batch.reset();  // the encoded batch holds the buffers it sends
+          job->encoded.Succeed(std::move(encoded));
+        } catch (...) {
+          job->encoded.Fail(std::current_exception());
+        }
+      });
+      encoding.push_back(std::move(job));
+    }
+
+    if (encoding.empty()) {
+      if (produced_all) {
+        pieces.push_back(net::buffer(EndOfStreamMarker()));
+        co_await flush();
+        co_return true;
+      }
+      // Nothing to encode until the statement produces more: send what is ready, then wait.
+      co_await flush();
+      const auto started = Clock::now();
+      co_await statement.changed().WaitChange(seen, Clock::now() + kClientCheck);
+      stats.wait_rows += Clock::now() - started;
+      if (out.ClientGone()) {
+        co_return false;  // the read is incomplete: an unretained statement is cancelled
+      }
+      continue;
+    }
+    auto job = encoding.front();
+    if (!job->encoded.done() && !pieces.empty()) {
+      co_await flush();  // write what is ready while the next batch is encoded
+      continue;
+    }
+    const auto wait_started = Clock::now();
+    EncodedBatch encoded = co_await job->encoded.Wait();  // an encoding failure ends the stream incomplete
+    stats.wait_encode += Clock::now() - wait_started;
+    stats.encode += job->took;
+    stats.batches += 1;
+    stats.raw += job->bytes;
+    encoding.pop_front();
+    encoding_bytes -= job->bytes;
+    gathered_bytes += encoded.size();
+    pieces.insert(pieces.end(), encoded.pieces().begin(), encoded.pieces().end());
+    gathered.push_back(std::move(encoded));
+    if (gathered_bytes >= kGatherBytes) {
+      co_await flush();
+    }
+  }
 }
 
 Task<Response> Api::CancelStatement(Request& request, const std::string& session_id,

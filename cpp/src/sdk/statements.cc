@@ -124,7 +124,8 @@ bool Statement::AddBatch(std::shared_ptr<arrow::RecordBatch> batch) {
       // Backpressure: wait for the reader, unless the statement ends meanwhile.
       waiting_for_reader_ = true;
       room_.wait(lock, [this] {
-        return batches_.size() < config_.unretained_buffer_batches || abandoned_ ||
+        return batches_.size() < 2 ||
+               buffered_bytes_ < static_cast<int64_t>(config_.unretained_buffer_bytes) || abandoned_ ||
                cancel_reason_ != CancelReason::kNone || IsTerminalLocked();
       });
       waiting_for_reader_ = false;
@@ -139,6 +140,7 @@ bool Statement::AddBatch(std::shared_ptr<arrow::RecordBatch> batch) {
     }
     row_count_ += batch->num_rows();
     batch_count_ += 1;
+    if (!config_.retain) buffered_bytes_ += BatchBytes(*batch);
     batches_.push_back(std::move(batch));
   }
   changed_.Notify();
@@ -238,6 +240,7 @@ bool Statement::IsTerminalLocked() const {
 
 void Statement::DropBatches() {
   batches_.clear();
+  buffered_bytes_ = 0;
   if (reserved_bytes_ != 0 && config_.reserve_bytes) {
     config_.reserve_bytes(-reserved_bytes_);
   }
@@ -368,6 +371,7 @@ std::pair<ReadStep, std::shared_ptr<arrow::RecordBatch>> Statement::Read(int64_t
       batch = std::move(batches_.front());
       batches_.pop_front();
       first_index_ += 1;
+      buffered_bytes_ -= BatchBytes(*batch);
     } else if (produced_all_ && index >= batch_count_) {
       return {ReadStep::kEnd, nullptr};
     } else {

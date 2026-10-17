@@ -40,11 +40,13 @@ class Server::Impl {
   Impl(ServerOptions options, std::shared_ptr<Backend> backend,
        std::shared_ptr<Authenticator> authenticator, std::shared_ptr<TokenService> tokens)
       : engine_pool_(static_cast<std::size_t>(ThreadCount(options.engine_threads, 2))),
+        encode_pool_(static_cast<std::size_t>(ThreadCount(0, 1))),
         state_{options,
                std::move(backend),
                std::move(authenticator),
                io_,
                engine_pool_,
+               encode_pool_,
                tokens,
                tokens ? nullptr : std::make_shared<TokenStore>(options.token_lifetime),
                {},
@@ -127,6 +129,7 @@ class Server::Impl {
       }
     }
     engine_pool_.join();
+    encode_pool_.join();
     stopped_cv_.notify_all();
   }
 
@@ -195,6 +198,7 @@ class Server::Impl {
   // coroutines of requests still in flight, and their sessions' strands belong to the
   // engine pool, so tearing the pool down first crashed a server stopped mid-request.
   net::thread_pool engine_pool_;
+  net::thread_pool encode_pool_;
   net::io_context io_;
   ServerState state_;
   Api api_;

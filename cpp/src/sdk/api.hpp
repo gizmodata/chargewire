@@ -9,6 +9,7 @@
 #include "auth.hpp"
 #include "common.hpp"
 #include "http.hpp"
+#include "ipc.hpp"
 #include "sessions.hpp"
 #include "statements.hpp"
 #include "warpsql/server.hpp"
@@ -35,6 +36,8 @@ struct ServerState {
   std::shared_ptr<Authenticator> authenticator;
   net::io_context& io;
   net::thread_pool& engine_pool;
+  // Encodes (and compresses) result batches for the streams that send them.
+  net::thread_pool& encode_pool;
 
   std::shared_ptr<TokenService> tokens;
   std::shared_ptr<TokenStore> in_memory_tokens;  // when the server brought no TokenService
@@ -98,6 +101,8 @@ class Api {
   json::object StatementDocument(Session& session, Statement& statement) const;
   Response ResultStream(std::shared_ptr<Session> session, std::shared_ptr<Statement> statement,
                         int64_t from_batch, std::string_view compression_header);
+  Task<bool> StreamBatches(Statement& statement, int64_t from_batch, IpcCompression compression,
+                           BodyWriter& out);
   void Cancel(const std::shared_ptr<Session>& session, const std::shared_ptr<Statement>& statement,
               CancelReason reason);
   // Interrupts the engine again every 100 ms until `statement` ends.

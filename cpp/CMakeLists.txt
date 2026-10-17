@@ -44,6 +44,7 @@ add_library(warpsql
   src/sdk/sessions.cc
   src/sdk/signal.cc
   src/sdk/statements.cc
+  src/sdk/tls_stream.cc
   src/sdk/upload.cc)
 target_include_directories(warpsql PUBLIC include PRIVATE src/sdk)
 target_link_libraries(warpsql PUBLIC Boost::beast Boost::json Boost::url Arrow::arrow_static

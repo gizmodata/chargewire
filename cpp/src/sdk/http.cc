@@ -1,7 +1,6 @@
 #include "http.hpp"
 
 #include <boost/asio/ssl.hpp>
-#include <boost/beast/ssl.hpp>
 #include <boost/url.hpp>
 
 #include <poll.h>
@@ -11,6 +10,7 @@
 #include <optional>
 
 #include "ids.hpp"
+#include "tls_stream.hpp"
 
 namespace warpsql::detail {
 
@@ -30,6 +30,18 @@ constexpr auto kReadTimeout = std::chrono::seconds(60);
 constexpr auto kWriteTimeout = std::chrono::seconds(60);
 constexpr auto kHandshakeTimeout = std::chrono::seconds(30);
 
+// Writes all of `buffers`. Unlike net::async_write, which hands the stream at most 64 KB
+// per write, this passes everything on: a TlsStream then encrypts a whole gathered
+// write at once, and a plain socket takes as much as it can per writev.
+template <class Stream, class Buffers>
+Task<void> WriteAll(Stream& stream, const Buffers& buffers) {
+  beast::buffers_suffix<Buffers> rest(buffers);
+  while (net::buffer_size(rest) > 0) {
+    const std::size_t written = co_await stream.async_write_some(rest, net::use_awaitable);
+    rest.consume(written);
+  }
+}
+
 template <class Stream>
 class ChunkWriter : public BodyWriter {
  public:
@@ -40,8 +52,15 @@ class ChunkWriter : public BodyWriter {
       co_return;  // an empty chunk would end the body
     }
     beast::get_lowest_layer(stream_).expires_after(kWriteTimeout);
-    co_await net::async_write(stream_, http::make_chunk(net::buffer(bytes.data(), bytes.size())),
-                              net::use_awaitable);
+    co_await WriteAll(stream_, http::make_chunk(net::buffer(bytes.data(), bytes.size())));
+  }
+
+  Task<void> WriteGather(const std::vector<net::const_buffer>& pieces) override {
+    if (net::buffer_size(pieces) == 0) {
+      co_return;
+    }
+    beast::get_lowest_layer(stream_).expires_after(kWriteTimeout);
+    co_await WriteAll(stream_, http::make_chunk(pieces));
   }
 
   bool ClientGone() override {
@@ -320,10 +339,15 @@ class HttpServer::Impl {
         stream.socket().shutdown(tcp::socket::shutdown_both, ignored);
         co_return;
       }
-      beast::ssl_stream<beast::tcp_stream> tls_stream(std::move(stream), *tls_);
-      beast::get_lowest_layer(tls_stream).expires_after(kHandshakeTimeout);
-      co_await tls_stream.async_handshake(ssl::stream_base::server, net::use_awaitable);
-      co_await ServeRequests(tls_stream, limits_, handler_);
+      TlsStream tls_stream(std::move(stream), tls_->native_handle());
+      try {
+        beast::get_lowest_layer(tls_stream).expires_after(kHandshakeTimeout);
+        co_await tls_stream.async_handshake(net::use_awaitable);
+        co_await ServeRequests(tls_stream, limits_, handler_);
+      } catch (const std::exception&) {
+        // the connection failed; it still ends below
+      }
+      // Always: it also waits for a send still under way, which uses the stream.
       beast::get_lowest_layer(tls_stream).expires_after(kHandshakeTimeout);
       boost::system::error_code ignored;
       co_await tls_stream.async_shutdown(net::redirect_error(net::use_awaitable, ignored));

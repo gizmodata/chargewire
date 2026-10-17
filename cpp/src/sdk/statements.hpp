@@ -33,7 +33,9 @@ class Statement {
  public:
   struct Config {
     bool retain = false;
-    std::size_t unretained_buffer_batches = 4;
+    // An unretained result's producer runs ahead of its reader by this many bytes, and by
+    // at least two batches.
+    std::size_t unretained_buffer_bytes = 32 * 1024 * 1024;
     std::chrono::seconds retention = std::chrono::seconds(3600);
     // Reserves (positive) or releases (negative) retained bytes against the owner's
     // quota; returns false when a reservation doesn't fit.
@@ -128,6 +130,7 @@ class Statement {
   std::string schema_base64_;
 
   std::deque<std::shared_ptr<arrow::RecordBatch>> batches_;
+  int64_t buffered_bytes_ = 0;  // of an unretained result's batches, not yet read
   int64_t first_index_ = 0;  // index of batches_.front(); grows as an unretained read consumes
   int64_t batch_count_ = 0;
   int64_t row_count_ = 0;
