@@ -56,21 +56,52 @@ DUCKDB_V2_STATEMENT_TYPE StatementType(duckdb_v2_sql_statement_handle statement)
   return type;
 }
 
+// A write, described by binding it (read-only, even inside the session's transaction):
+// without RETURNING DuckDB reports one BIGINT column named Count, the changed rows.
+// With RETURNING it returns rows, whose Arrow schema binding doesn't give.
+Described DescribeWrite(duckdb_v2_connection_handle connection,
+                        duckdb_v2_sql_statement_handle statement) {
+  using Schema = Owned<duckdb_v2_schema_handle, duckdb_v2_schema_destroy>;
+  Schema output;
+  duckdb_v2_error_info_handle err = nullptr;
+  if (duckdb_v2_statement_bind(connection, statement, output.out(), nullptr, &err) !=
+      DUCKDB_V2_ERROR_NONE) {
+    if (err != nullptr) duckdb_v2_error_info_destroy(&err);
+    return {};
+  }
+  idx_t count = 0;
+  Call([&](auto* e) { return duckdb_v2_schema_get_count(output.get(), &count, e); });
+  if (count == 1) {
+    duckdb_v2_identifier_t name{};
+    duckdb_v2_logical_type_handle type = nullptr;  // borrowed from the schema
+    Call([&](auto* e) { return duckdb_v2_schema_get_field(output.get(), 0, &name, &type, e); });
+    DUCKDB_V2_LOGICAL_TYPE_ID id{};
+    Call([&](auto* e) { return duckdb_v2_logical_type_get_id(type, &id, e); });
+    if (ToString(name) == "Count" && id == DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT) {
+      return Described{false, nullptr};
+    }
+  }
+  return Described{true, nullptr};
+}
+
 // Executing returns a handle whose result type and schema are known before its first
-// step, and destroying it unstepped runs nothing, so a prepared statement describes
-// itself by executing with typed NULL parameters. Only kinds of statement that run
-// lazily are executed; DDL and the like return no rows, and the rest (PRAGMA, a
-// statement whose parameter types DuckDB can't tell, ...) stay unknown.
-Described Describe(ValueFactory& values, duckdb_v2_sql_statement_handle statement,
+// step, and destroying it unstepped runs nothing, so a prepared query describes itself
+// by executing with typed NULL parameters. Writes are never executed to describe them:
+// dropping an unstepped write inside an explicit transaction aborts the transaction.
+// DDL and the like return no rows; the rest (PRAGMA, a statement whose parameter types
+// DuckDB can't tell, ...) stay unknown.
+Described Describe(ValueFactory& values, duckdb_v2_connection_handle connection,
+                   duckdb_v2_sql_statement_handle statement,
                    duckdb_v2_prepared_statement_handle prepared, const ParameterTypes& types) {
   switch (StatementType(statement)) {
     case DUCKDB_V2_STATEMENT_TYPE_SELECT:
+    case DUCKDB_V2_STATEMENT_TYPE_EXPLAIN:
+      break;
     case DUCKDB_V2_STATEMENT_TYPE_INSERT:
     case DUCKDB_V2_STATEMENT_TYPE_UPDATE:
     case DUCKDB_V2_STATEMENT_TYPE_DELETE:
     case DUCKDB_V2_STATEMENT_TYPE_MERGE_INTO:
-    case DUCKDB_V2_STATEMENT_TYPE_EXPLAIN:
-      break;
+      return DescribeWrite(connection, statement);
     case DUCKDB_V2_STATEMENT_TYPE_CREATE:
     case DUCKDB_V2_STATEMENT_TYPE_DROP:
     case DUCKDB_V2_STATEMENT_TYPE_ALTER:
@@ -211,7 +242,8 @@ std::unique_ptr<warpsql::PreparedStatement> DuckDBSession::Prepare(std::string_v
                                                prepared.out(), err);
   });
   ParameterTypes types = ParameterTypes::Load(connection_.get(), statements[0].get());
-  Described described = Describe(*values_, statements[0].get(), prepared.get(), types);
+  Described described =
+      Describe(*values_, connection_.get(), statements[0].get(), prepared.get(), types);
   return std::make_unique<DuckDBPrepared>(std::move(statements[0]), std::move(prepared),
                                           std::move(types), std::move(described));
 }

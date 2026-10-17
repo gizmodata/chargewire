@@ -170,3 +170,20 @@ def test_prepared_statements_with_typed_parameters_close_cleanly(warp):
         prepare(warp=warp, session_id=session_id, sql="SELECT CAST(? AS DECIMAL(18, 4)) AS kept")
         warp.http.delete(url=warp.session_url(session_id), headers=warp.headers())
     assert warp.query(session_id=warp.new_session(), sql="SELECT 42 AS ok").to_pylist() == [{"ok": 42}]
+
+
+def test_preparing_inside_a_transaction_leaves_it_usable(warp, session_id):
+    warp.execute(session_id=session_id, sql="CREATE TABLE prepared_tx (id INTEGER)")
+    warp.http.patch(url=warp.session_url(session_id), headers=warp.headers(),
+                    json={"options": {"autocommit": False}})
+    insert = prepare(warp=warp, session_id=session_id, sql="INSERT INTO prepared_tx VALUES (?)")
+    for sql in ["UPDATE prepared_tx SET id = ?", "DELETE FROM prepared_tx WHERE id = ?",
+                "INSERT INTO prepared_tx VALUES (?) RETURNING id", "SELECT CAST(? AS INTEGER) AS v"]:
+        prepare(warp=warp, session_id=session_id, sql=sql)
+    response = execute(warp=warp, session_id=session_id, prepared_id=insert["prepared_id"],
+                       arrow=pa.table({"id": pa.array([1, 2], type=pa.int32())}))
+    assert response.status_code in (200, 201), response.text
+    assert warp.http.post(url=f"{warp.session_url(session_id)}/commit",
+                          headers=warp.headers()).status_code == 204
+    other = warp.new_session()
+    assert warp.query(session_id=other, sql="SELECT count(*) AS n FROM prepared_tx").to_pylist() == [{"n": 2}]
