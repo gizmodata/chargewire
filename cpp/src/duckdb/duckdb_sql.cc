@@ -68,10 +68,23 @@ void RunSql(duckdb_v2_connection_handle connection, std::string_view sql) {
 
 warpsql::StatementOutcome Outcome(ArrowResult& result, std::shared_ptr<void> keep_alive) {
   DUCKDB_V2_RESULT_TYPE type{};
-  Call([&](auto* err) { return duckdb_v2_arrow_result_get_result_type(result.get(), &type, err); });
-  warpsql::StatementOutcome outcome;
   DUCKDB_V2_STATEMENT_TYPE statement{};
-  Call([&](auto* err) { return duckdb_v2_arrow_result_get_statement_type(result.get(), &statement, err); });
+  // A statement that expands into several (PIVOT without an IN list) knows its shape
+  // only once the ones before its row-producing statement ran: the Arrow stream runs
+  // them when asked for its schema, so such a result is read as rows.
+  duckdb_v2_error_info_handle deferred = nullptr;
+  const DUCKDB_V2_ERROR code = duckdb_v2_arrow_result_get_result_type(result.get(), &type, &deferred);
+  if (deferred != nullptr) duckdb_v2_error_info_destroy(&deferred);
+  if (code == DUCKDB_V2_ERROR_INPUT_METADATA_DEFERRED) {
+    type = DUCKDB_V2_RESULT_TYPE_QUERY_RESULT;
+    statement = DUCKDB_V2_STATEMENT_TYPE_SELECT;
+  } else {
+    if (code != DUCKDB_V2_ERROR_NONE) {
+      Call([&](auto* err) { return duckdb_v2_arrow_result_get_result_type(result.get(), &type, err); });
+    }
+    Call([&](auto* err) { return duckdb_v2_arrow_result_get_statement_type(result.get(), &statement, err); });
+  }
+  warpsql::StatementOutcome outcome;
   // Only reads are cancelled when their reader goes away; a write finishes what it began.
   outcome.finish_if_abandoned = statement != DUCKDB_V2_STATEMENT_TYPE_SELECT &&
                                 statement != DUCKDB_V2_STATEMENT_TYPE_EXPLAIN &&
