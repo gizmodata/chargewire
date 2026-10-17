@@ -56,6 +56,24 @@ std::shared_ptr<arrow::Schema> MetadataSchema(MetadataKind kind, bool include_sc
     case MetadataKind::kExportedKeys:
     case MetadataKind::kCrossReference:
       return KeysSchema();
+    case MetadataKind::kTypeInfo: {
+      auto i32 = [](std::string name, bool nullable = true) {
+        return arrow::field(std::move(name), arrow::int32(), nullable);
+      };
+      auto flag = [](std::string name, bool nullable = true) {
+        return arrow::field(std::move(name), arrow::boolean(), nullable);
+      };
+      return arrow::schema({
+          Text("type_name", false), i32("data_type", false), i32("column_size"),
+          Text("literal_prefix"), Text("literal_suffix"),
+          arrow::field("create_params", arrow::list(arrow::field("item", arrow::utf8(), false))),
+          i32("nullable", false), flag("case_sensitive", false), i32("searchable", false),
+          flag("unsigned_attribute"), flag("fixed_prec_scale", false), flag("auto_increment"),
+          Text("local_type_name"), i32("minimum_scale"), i32("maximum_scale"),
+          i32("sql_data_type", false), i32("datetime_subcode"), i32("num_prec_radix"),
+          i32("interval_precision"),
+      });
+    }
   }
   return nullptr;
 }

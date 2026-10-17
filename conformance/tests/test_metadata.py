@@ -135,3 +135,15 @@ def test_table_schema_reports_digits_comments_and_defaults(warp, session_id):
     assert (a[b"ARROW:FLIGHT:SQL:PRECISION"], b[b"ARROW:FLIGHT:SQL:PRECISION"]) == (b"10", b"19")
     assert a[b"ARROW:FLIGHT:SQL:REMARKS"] == b"the a"
     assert c[b"WARP:SQL:COLUMN_DEFAULT"] == b"'x'"
+
+
+def test_type_info_lists_types_in_flight_sql_form(warp, session_id):
+    every = metadata(warp=warp, session_id=session_id, kind="type-info")
+    assert every.schema.names[:3] == ["type_name", "data_type", "column_size"]
+    assert every.schema.field("create_params").type == pa.list_(pa.field("item", pa.string(), nullable=False))
+    codes = every.column("data_type").to_pylist()
+    assert codes == sorted(codes), "ordered by data_type"
+    assert {"integer", "varchar", "boolean"} <= set(every.column("type_name").to_pylist())
+    integers = metadata(warp=warp, session_id=session_id, kind="type-info", data_type="4")
+    assert set(integers.column("data_type").to_pylist()) == {4}
+    assert "integer" in integers.column("type_name").to_pylist()

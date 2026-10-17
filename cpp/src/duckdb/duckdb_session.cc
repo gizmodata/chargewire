@@ -4,6 +4,7 @@
 #include <arrow/c/bridge.h>
 #include <arrow/ipc/writer.h>
 
+#include <algorithm>
 #include <map>
 
 #include "duckdb_sql.hpp"
@@ -325,8 +326,89 @@ int64_t DuckDBSession::Ingest(const warpsql::IngestTarget& target,
 
 // ---- Metadata (spec §10), with Arrow Flight SQL's result schemas ----
 
+namespace {
+
+// The types DuckDB offers clients (Flight SQL's GetXdbcTypeInfo, JDBC's getTypeInfo),
+// with JDBC type codes as GizmoSQL 1.x reports them, ordered by data_type as JDBC asks.
+std::shared_ptr<arrow::RecordBatchReader> TypeInfo(std::optional<int32_t> data_type) {
+  struct Type {
+    const char* name;
+    int32_t code;
+    std::optional<int32_t> size;
+    bool quoted;
+    std::vector<const char*> params;
+    bool fixed_scale;
+  };
+  // java.sql.Types: BIT -7, TINYINT -6, BIGINT -5, LONGVARCHAR -1, VARBINARY -3, DECIMAL 3,
+  // INTEGER 4, SMALLINT 5, FLOAT 6, DOUBLE 8, VARCHAR 12, BOOLEAN 16, DATE 91, TIME 92,
+  // TIMESTAMP 93, OTHER 1111, TIMESTAMP_WITH_TIMEZONE 2014.
+  static const std::vector<Type> kTypes = {
+      {"bigint", -5, 19, false, {}, false},    {"hugeint", -5, 38, false, {}, false},
+      {"blob", -3, std::nullopt, true, {}, false},
+      {"tinyint", -6, 3, false, {}, false},    {"text", -1, std::nullopt, true, {}, false},
+      {"decimal", 3, 38, false, {"precision", "scale"}, true},
+      {"integer", 4, 10, false, {}, false},    {"smallint", 5, 5, false, {}, false},
+      {"float", 6, 7, false, {}, false},       {"double", 8, 15, false, {}, false},
+      {"varchar", 12, std::nullopt, true, {}, false},
+      {"boolean", 16, 1, false, {}, false},    {"date", 91, 10, true, {}, false},
+      {"time", 92, 15, true, {}, false},       {"timestamp", 93, 26, true, {}, false},
+      {"interval", 1111, std::nullopt, true, {}, false},
+      {"uuid", 1111, 36, true, {}, false},
+      {"timestamp with time zone", 2014, 32, true, {}, false},
+  };
+  const auto schema = warpsql::MetadataSchema(MetadataKind::kTypeInfo);
+  std::unique_ptr<arrow::RecordBatchBuilder> builder =
+      arrow::RecordBatchBuilder::Make(schema, arrow::default_memory_pool()).ValueOrDie();
+  auto text = [&](int i) { return builder->GetFieldAs<arrow::StringBuilder>(i); };
+  auto i32 = [&](int i) { return builder->GetFieldAs<arrow::Int32Builder>(i); };
+  auto flag = [&](int i) { return builder->GetFieldAs<arrow::BooleanBuilder>(i); };
+  auto check = [](const arrow::Status& status) {
+    if (!status.ok()) throw Error(ErrorCode::kExecutionError, status.ToString());
+  };
+  auto maybe = [&](arrow::Int32Builder* b, std::optional<int32_t> v) {
+    check(v ? b->Append(*v) : b->AppendNull());
+  };
+  std::vector<Type> types = kTypes;
+  std::stable_sort(types.begin(), types.end(),
+                   [](const Type& a, const Type& b) { return a.code < b.code; });
+  for (const Type& type : types) {
+    if (data_type && *data_type != type.code) continue;
+    check(text(0)->Append(type.name));
+    check(i32(1)->Append(type.code));
+    maybe(i32(2), type.size);
+    check(type.quoted ? text(3)->Append("'") : text(3)->AppendNull());
+    check(type.quoted ? text(4)->Append("'") : text(4)->AppendNull());
+    auto* params = builder->GetFieldAs<arrow::ListBuilder>(5);
+    check(params->Append());
+    for (const char* param : type.params) {
+      check(static_cast<arrow::StringBuilder*>(params->value_builder())->Append(param));
+    }
+    check(i32(6)->Append(1));                         // nullable: typeNullable
+    check(flag(7)->Append(type.quoted && type.code != 91 && type.code != 92 && type.code != 93 &&
+                          type.code != 2014 && type.code != 1111));  // text compares by case
+    check(i32(8)->Append(3));                         // searchable: typeSearchable
+    check(type.quoted ? flag(9)->AppendNull() : flag(9)->Append(false));
+    check(flag(10)->Append(type.fixed_scale));
+    check(flag(11)->Append(false));
+    check(text(12)->Append(type.name));
+    maybe(i32(13), type.fixed_scale ? std::optional<int32_t>(0) : std::nullopt);
+    maybe(i32(14), type.fixed_scale ? std::optional<int32_t>(38) : std::nullopt);
+    check(i32(15)->Append(type.code));
+    check(i32(16)->AppendNull());
+    maybe(i32(17), type.quoted ? std::nullopt : std::optional<int32_t>(10));
+    check(i32(18)->AppendNull());
+  }
+  auto batch = builder->Flush().ValueOrDie();
+  return arrow::RecordBatchReader::Make({batch}, schema).ValueOrDie();
+}
+
+}  // namespace
+
 std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::Metadata(
     MetadataKind kind, const warpsql::MetadataFilter& filter) {
+  if (kind == MetadataKind::kTypeInfo) {
+    return TypeInfo(filter.data_type);
+  }
   // Filters are bound as parameters, never spliced into the SQL: one VARCHAR value (or
   // VARCHAR NULL) per named parameter.
   std::vector<std::string> names;
@@ -340,6 +422,8 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::Metadata(
 
   std::string sql;
   switch (kind) {
+    case MetadataKind::kTypeInfo:
+      break;  // answered above
     case MetadataKind::kCatalogs:
       // duckdb_databases() names the attached catalogs without opening them;
       // information_schema.schemata would list every schema of every catalog, which for

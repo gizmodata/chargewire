@@ -850,6 +850,7 @@ Task<Response> Api::Metadata(Request& request, const std::string& session_id,
       {"imported-keys", MetadataKind::kImportedKeys},
       {"exported-keys", MetadataKind::kExportedKeys},
       {"cross-reference", MetadataKind::kCrossReference},
+      {"type-info", MetadataKind::kTypeInfo},
   };
   auto found = kKinds.find(kind_name);
   if (found == kKinds.end()) {
@@ -885,6 +886,9 @@ Task<Response> Api::Metadata(Request& request, const std::string& session_id,
     }
   }
   filter.include_schema = query("include_schema").value_or("false") == "true";
+  if (auto data_type = query("data_type")) {
+    filter.data_type = static_cast<int32_t>(ParseInt(*data_type, "data_type"));
+  }
   // Primary and imported keys without a table cover every table the principal sees, so
   // a client lists all constraints in one request (spec §10).
   if (kind == MetadataKind::kExportedKeys && !filter.table) {

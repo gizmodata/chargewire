@@ -94,6 +94,8 @@ struct MetadataFilter {
   std::optional<std::string> fk_catalog;
   std::optional<std::string> fk_db_schema;
   std::optional<std::string> fk_table;
+  // type-info: only this data type (Flight SQL's data_type code)
+  std::optional<int32_t> data_type;
 };
 
 enum class MetadataKind {
@@ -105,6 +107,7 @@ enum class MetadataKind {
   kImportedKeys,
   kExportedKeys,
   kCrossReference,
+  kTypeInfo,
 };
 
 // The exact result schema every backend returns for `kind` (Arrow Flight SQL's).
