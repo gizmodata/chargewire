@@ -58,6 +58,8 @@ class ValueFactory {
 
  private:
   Value Null(duckdb_v2_logical_type_handle type);
+  // The DuckDB type an Arrow type binds as; empty when there is none.
+  LogicalType TypeFor(const arrow::DataType& type);
   Value FromJsonScalar(const boost::json::value& item);
   Value FromArrow(const arrow::Array& array, int64_t row, duckdb_v2_logical_type_handle null_type);
 

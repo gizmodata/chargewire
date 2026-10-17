@@ -187,3 +187,44 @@ def test_preparing_inside_a_transaction_leaves_it_usable(warp, session_id):
                           headers=warp.headers()).status_code == 204
     other = warp.new_session()
     assert warp.query(session_id=other, sql="SELECT count(*) AS n FROM prepared_tx").to_pylist() == [{"n": 2}]
+
+
+def test_prepared_parameter_schema_describes_rich_types(warp, session_id):
+    doc = prepare(warp=warp, session_id=session_id,
+                  sql="SELECT CAST(? AS DECIMAL(10, 2)) AS d, CAST(? AS UUID) AS u, "
+                      "CAST(? AS INTEGER[]) AS l, CAST(? AS INTERVAL) AS i")
+    types = [field.type for field in schema_of(encoded=doc["parameter_schema"])]
+    assert types == [pa.decimal128(10, 2), pa.string(), pa.list_(pa.int32()), pa.month_day_nano_interval()]
+
+
+def test_arrow_null_parameter_keeps_its_arrow_type(warp, session_id):
+    # DuckDB can't type the parameter of `? + 1`; a typed Arrow NULL still binds.
+    doc = prepare(warp=warp, session_id=session_id, sql="SELECT ? + 1 AS b")
+    response = execute(warp=warp, session_id=session_id, prepared_id=doc["prepared_id"],
+                       arrow=pa.table({"p": pa.array([None], type=pa.int32())}), accept_arrow=True)
+    assert response.status_code == 200, response.text
+    assert read_table(content=response.content).column("b").to_pylist() == [None]
+
+
+def test_list_and_interval_arrow_parameters(warp, session_id):
+    doc = prepare(warp=warp, session_id=session_id,
+                  sql="SELECT CAST(? AS INTEGER[]) AS l, CAST(? AS INTERVAL) AS i")
+    rows = pa.table({
+        "l": pa.array([[1, 2], [], None], type=pa.list_(pa.int32())),
+        "i": pa.array([pa.MonthDayNano([1, 2, 3000]), None, pa.MonthDayNano([0, 0, 0])],
+                      type=pa.month_day_nano_interval()),
+    })
+    response = execute(warp=warp, session_id=session_id, prepared_id=doc["prepared_id"], arrow=rows,
+                       accept_arrow=True)
+    assert response.status_code == 200, response.text
+    table = read_table(content=response.content)
+    assert table.column("l").to_pylist() == [[1, 2], [], None]
+    assert table.column("i").to_pylist() == [pa.MonthDayNano([1, 2, 3000]), None, pa.MonthDayNano([0, 0, 0])]
+
+
+def test_sub_microsecond_interval_parameter_is_refused(warp, session_id):
+    doc = prepare(warp=warp, session_id=session_id, sql="SELECT CAST(? AS INTERVAL) AS i")
+    response = execute(warp=warp, session_id=session_id, prepared_id=doc["prepared_id"],
+                       arrow=pa.table({"i": pa.array([pa.MonthDayNano([0, 0, 1])],
+                                                     type=pa.month_day_nano_interval())}))
+    assert_problem(response=response, status=415, code="unsupported_arrow_type")

@@ -23,10 +23,37 @@ DUCKDB_V2_LOGICAL_TYPE_ID TypeId(duckdb_v2_logical_type_handle type) {
   return id;
 }
 
+// Parameter `index` of a parameterized type (DECIMAL width/scale, LIST element type).
+Value TypeParam(duckdb_v2_logical_type_handle type, idx_t index) {
+  duckdb_v2_identifier_t name{};  // borrowed; unused
+  Value value;
+  Call([&](auto* e) { return duckdb_v2_logical_type_get_param(type, index, &name, value.out(), e); });
+  return value;
+}
+
 // An Arrow type for a parameter's DuckDB type, for the parameter schema clients read.
-// Types without a simple Arrow counterpart are described as null ("unknown").
-std::shared_ptr<arrow::DataType> ArrowTypeFor(DUCKDB_V2_LOGICAL_TYPE_ID id) {
-  switch (id) {
+// Types without an Arrow counterpart the parameters accept are described as null
+// ("unknown").
+std::shared_ptr<arrow::DataType> ArrowTypeFor(duckdb_v2_logical_type_handle type) {
+  switch (TypeId(type)) {
+    case DUCKDB_V2_LOGICAL_TYPE_ID_DECIMAL: {
+      uint8_t width = 0, scale = 0;
+      Call([&](auto* e) { return duckdb_v2_value_get_utinyint(TypeParam(type, 0).get(), &width, e); });
+      Call([&](auto* e) { return duckdb_v2_value_get_utinyint(TypeParam(type, 1).get(), &scale, e); });
+      return arrow::decimal128(width, scale);
+    }
+    case DUCKDB_V2_LOGICAL_TYPE_ID_UUID: return arrow::utf8();  // as results carry it
+    case DUCKDB_V2_LOGICAL_TYPE_ID_INTERVAL: return arrow::month_day_nano_interval();
+    case DUCKDB_V2_LOGICAL_TYPE_ID_LIST: {
+      LogicalType child;
+      Call([&](auto* e) { return duckdb_v2_value_get_type(TypeParam(type, 0).get(), child.out(), e); });
+      auto element = ArrowTypeFor(child.get());
+      return element->id() == arrow::Type::NA ? arrow::null() : arrow::list(std::move(element));
+    }
+    default:
+      break;
+  }
+  switch (TypeId(type)) {
     case DUCKDB_V2_LOGICAL_TYPE_ID_BOOLEAN: return arrow::boolean();
     case DUCKDB_V2_LOGICAL_TYPE_ID_TINYINT: return arrow::int8();
     case DUCKDB_V2_LOGICAL_TYPE_ID_SMALLINT: return arrow::int16();
@@ -113,7 +140,7 @@ std::shared_ptr<arrow::Schema> ParameterTypes::ArrowSchema() const {
   arrow::FieldVector fields;
   for (std::size_t i = 0; i < types_.size(); i++) {
     std::string name = names_[i].empty() ? std::to_string(i + 1) : names_[i];
-    fields.push_back(arrow::field(std::move(name), ArrowTypeFor(TypeId(types_[i].get()))));
+    fields.push_back(arrow::field(std::move(name), ArrowTypeFor(types_[i].get())));
   }
   return arrow::schema(std::move(fields));
 }
@@ -207,9 +234,94 @@ BoundValues ValueFactory::FromArrowRow(const arrow::RecordBatch& batch, int64_t 
   return out;
 }
 
+namespace {
+
+// DuckDB's name for the type an Arrow type binds as ("INTEGER[]", "DECIMAL(10, 2)"); empty
+// when there is none.
+std::string TypeText(const arrow::DataType& type) {
+  std::string text;
+  switch (type.id()) {
+    case arrow::Type::BOOL: text = "BOOLEAN"; break;
+    case arrow::Type::INT8: text = "TINYINT"; break;
+    case arrow::Type::INT16: text = "SMALLINT"; break;
+    case arrow::Type::INT32: text = "INTEGER"; break;
+    case arrow::Type::INT64: text = "BIGINT"; break;
+    case arrow::Type::UINT8: text = "UTINYINT"; break;
+    case arrow::Type::UINT16: text = "USMALLINT"; break;
+    case arrow::Type::UINT32: text = "UINTEGER"; break;
+    case arrow::Type::UINT64: text = "UBIGINT"; break;
+    case arrow::Type::FLOAT: text = "FLOAT"; break;
+    case arrow::Type::DOUBLE: text = "DOUBLE"; break;
+    case arrow::Type::STRING:
+    case arrow::Type::LARGE_STRING:
+    case arrow::Type::STRING_VIEW: text = "VARCHAR"; break;
+    case arrow::Type::BINARY:
+    case arrow::Type::LARGE_BINARY:
+    case arrow::Type::BINARY_VIEW:
+    case arrow::Type::FIXED_SIZE_BINARY: text = "BLOB"; break;
+    case arrow::Type::DATE32:
+    case arrow::Type::DATE64: text = "DATE"; break;
+    case arrow::Type::TIME32: text = "TIME"; break;
+    case arrow::Type::TIME64:
+      text = static_cast<const arrow::Time64Type&>(type).unit() == arrow::TimeUnit::NANO ? "TIME_NS" : "TIME";
+      break;
+    case arrow::Type::TIMESTAMP: {
+      const auto& ts = static_cast<const arrow::TimestampType&>(type);
+      if (!ts.timezone().empty()) {
+        text = ts.unit() == arrow::TimeUnit::NANO ? "TIMESTAMP_NS WITH TIME ZONE" : "TIMESTAMPTZ";
+      } else {
+        switch (ts.unit()) {
+          case arrow::TimeUnit::SECOND: text = "TIMESTAMP_S"; break;
+          case arrow::TimeUnit::MILLI: text = "TIMESTAMP_MS"; break;
+          case arrow::TimeUnit::MICRO: text = "TIMESTAMP"; break;
+          case arrow::TimeUnit::NANO: text = "TIMESTAMP_NS"; break;
+        }
+      }
+      break;
+    }
+    case arrow::Type::DECIMAL128: {
+      const auto& decimal = static_cast<const arrow::Decimal128Type&>(type);
+      text = std::format("DECIMAL({}, {})", decimal.precision(), decimal.scale());
+      break;
+    }
+    case arrow::Type::INTERVAL_MONTH_DAY_NANO: text = "INTERVAL"; break;
+    case arrow::Type::LIST:
+    case arrow::Type::LARGE_LIST: {
+      const std::string element = TypeText(*static_cast<const arrow::BaseListType&>(type).value_type());
+      if (!element.empty()) text = element + "[]";
+      break;
+    }
+    case arrow::Type::EXTENSION:
+      if (static_cast<const arrow::ExtensionType&>(type).extension_name() == "arrow.uuid") {
+        text = "UUID";
+      }
+      break;
+    default:
+      break;
+  }
+  return text;
+}
+
+}  // namespace
+
+LogicalType ValueFactory::TypeFor(const arrow::DataType& type) {
+  const std::string text = TypeText(type);
+  if (text.empty()) return {};
+  LogicalType out;
+  const duckdb_v2_str str = Str(text);
+  Call([&](auto* e) { return duckdb_v2_factory_create_type_from_text(factory_, &str, out.out(), e); });
+  return out;
+}
+
 Value ValueFactory::FromArrow(const arrow::Array& array, int64_t row,
                               duckdb_v2_logical_type_handle null_type) {
   if (array.IsNull(row)) {
+    // Without a type from the statement, the NULL takes its Arrow column's type.
+    LogicalType from_arrow;
+    if (null_type == nullptr) {
+      from_arrow = TypeFor(*array.type());
+      null_type = from_arrow ? from_arrow.get() : nullptr;
+    }
     return Null(null_type);
   }
   Value value;
@@ -359,6 +471,45 @@ Value ValueFactory::FromArrow(const arrow::Array& array, int64_t row,
       }
       throw Error(ErrorCode::kUnsupportedArrowType,
                   std::format("Arrow parameters of type {} are not supported", type.ToString()));
+    }
+    case arrow::Type::INTERVAL_MONTH_DAY_NANO: {
+      const auto v = static_cast<const arrow::MonthDayNanoIntervalArray&>(array).Value(row);
+      if (v.nanoseconds % 1000 != 0) {
+        throw Error(ErrorCode::kUnsupportedArrowType,
+                    "an interval parameter has sub-microsecond precision, which DuckDB doesn't keep");
+      }
+      const duckdb_v2_interval_t interval{v.months, v.days, v.nanoseconds / 1000};
+      make([&](auto* out, auto* e) { return duckdb_v2_value_create_interval(factory_, &interval, out, e); });
+      break;
+    }
+    case arrow::Type::LIST:
+    case arrow::Type::LARGE_LIST: {
+      const auto& list = static_cast<const arrow::BaseListType&>(type);
+      LogicalType element = TypeFor(*list.value_type());
+      if (!element) {
+        throw Error(ErrorCode::kUnsupportedArrowType,
+                    std::format("Arrow parameters of type {} are not supported", type.ToString()));
+      }
+      std::shared_ptr<arrow::Array> values;
+      int64_t offset = 0, length = 0;
+      if (type.id() == arrow::Type::LIST) {
+        const auto& lists = static_cast<const arrow::ListArray&>(array);
+        values = lists.values(); offset = lists.value_offset(row); length = lists.value_length(row);
+      } else {
+        const auto& lists = static_cast<const arrow::LargeListArray&>(array);
+        values = lists.values(); offset = lists.value_offset(row); length = lists.value_length(row);
+      }
+      std::vector<Value> children;
+      for (int64_t i = 0; i < length; i++) {
+        children.push_back(FromArrow(*values, offset + i, element.get()));
+      }
+      std::vector<duckdb_v2_value_handle> handles;
+      for (const auto& child : children) handles.push_back(child.get());
+      make([&](auto* out, auto* e) {
+        return duckdb_v2_value_create_list(factory_, element.get(), handles.empty() ? nullptr : handles.data(),
+                                           handles.size(), out, e);
+      });
+      break;
     }
     case arrow::Type::NA:
       return Null(null_type);
