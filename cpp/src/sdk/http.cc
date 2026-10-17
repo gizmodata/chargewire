@@ -3,15 +3,12 @@
 #include <boost/asio/ssl.hpp>
 #include <boost/url.hpp>
 
-#include <poll.h>
-#include <sys/socket.h>
-
 #include <cctype>
-#include <cerrno>
 #include <cstring>
 #include <optional>
 
 #include "ids.hpp"
+#include "platform.hpp"
 #include "tls_stream.hpp"
 
 namespace warpsql::detail {
@@ -65,18 +62,7 @@ class ChunkWriter : public BodyWriter {
     co_await WriteAll(stream_, http::make_chunk(pieces));
   }
 
-  bool ClientGone() override {
-    const int fd = beast::get_lowest_layer(stream_).socket().native_handle();
-#ifdef POLLRDHUP
-    // Linux reports the peer's shutdown even when bytes (a TLS close_notify) are pending.
-    pollfd entry{fd, POLLRDHUP, 0};
-    return ::poll(&entry, 1, 0) > 0 && (entry.revents & (POLLRDHUP | POLLHUP | POLLERR)) != 0;
-#else
-    char byte = 0;
-    const ssize_t got = ::recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
-    return got == 0 || (got < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR);
-#endif
-  }
+  bool ClientGone() override { return PeerClosed(beast::get_lowest_layer(stream_).socket()); }
 
  private:
   Stream& stream_;
@@ -446,7 +432,7 @@ class HttpServer::Impl {
   uint16_t Bind() {
     const tcp::endpoint endpoint(net::ip::make_address(options_.host), options_.port);
     acceptor_.open(endpoint.protocol());
-    acceptor_.set_option(net::socket_base::reuse_address(true));
+    PrepareListener(acceptor_);
     acceptor_.bind(endpoint);
     acceptor_.listen(net::socket_base::max_listen_connections);
     return acceptor_.local_endpoint().port();

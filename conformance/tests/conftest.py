@@ -23,6 +23,7 @@ import secrets
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -50,6 +51,17 @@ class ServerUnderTest:
         if self.process is not None and self.process.poll() is not None:
             pytest.fail(reason=f"the server died (exit code {self.process.returncode}):\n"
                                f"{self.log_tail()}", pytrace=False)
+
+
+# How the suite asks a server it started to stop, as `kill` does with SIGTERM: on Windows
+# a console Ctrl+Break event, which reaches only a process started in its own process
+# group (Ctrl+C can't be sent to one).
+if sys.platform == "win32":
+    STOP_SIGNAL = signal.CTRL_BREAK_EVENT
+    POPEN_FLAGS = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+else:
+    STOP_SIGNAL = signal.SIGTERM
+    POPEN_FLAGS = {}
 
 
 def free_port() -> int:
@@ -84,7 +96,8 @@ def start_server(binary: str, extra_args: list[str] | None = None) -> ServerUnde
     with log.open(mode="ab") as out:
         process = subprocess.Popen(
             args=[binary, "--host", "127.0.0.1", "--port", str(port), *(extra_args or [])],
-            env={**os.environ, password_env: password}, stdout=out, stderr=subprocess.STDOUT)
+            env={**os.environ, password_env: password}, stdout=out, stderr=subprocess.STDOUT,
+            **POPEN_FLAGS)
     server = ServerUnderTest(base_url=f"http://127.0.0.1:{port}", username=username,
                              password=password, process=process, log=log)
     try:
@@ -101,8 +114,8 @@ def stop_server(server: ServerUnderTest) -> int | None:
         return 0
     if server.process.poll() is not None:
         return server.process.returncode
-    server.process.send_signal(signal.SIGTERM)
-    server.process.send_signal(signal.SIGTERM)  # the second signal stops without draining
+    server.process.send_signal(STOP_SIGNAL)
+    server.process.send_signal(STOP_SIGNAL)  # the second signal stops without draining
     try:
         return server.process.wait(timeout=20)
     except subprocess.TimeoutExpired:

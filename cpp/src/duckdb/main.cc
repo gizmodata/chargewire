@@ -8,7 +8,6 @@
 // The password comes from the environment, never the command line, so it doesn't show
 // in process listings.
 
-#include <csignal>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -16,6 +15,7 @@
 
 #include "duckdb_backend.hpp"
 #include "warpsql/server.hpp"
+#include "warpsql/stop_signals.hpp"
 
 namespace {
 
@@ -84,12 +84,9 @@ int main(int argc, char** argv) {
     Usage("set WARP_DUCKDB_PASSWORD");
   }
 
-  // Block the stop signals before any thread starts, so only sigwait() below sees them.
-  sigset_t stop_signals;
-  sigemptyset(&stop_signals);
-  sigaddset(&stop_signals, SIGINT);
-  sigaddset(&stop_signals, SIGTERM);
-  pthread_sigmask(SIG_BLOCK, &stop_signals, nullptr);
+  // Before any thread starts, so only stop_signals.Wait() below sees the stop requests
+  // (SIGINT/SIGTERM; on Windows, the console's Ctrl+C/Ctrl+Break/close events).
+  warpsql::StopSignals stop_signals;
 
   try {
     auto backend = std::make_shared<warpduckdb::DuckDBBackend>(flags.backend);
@@ -102,11 +99,10 @@ int main(int argc, char** argv) {
 
     // First signal: drain (finish running work, refuse new work). Second: stop now.
     std::thread([&server, &stop_signals, drain = flags.drain_seconds] {
-      int signal = 0;
-      sigwait(&stop_signals, &signal);
+      stop_signals.Wait();
       std::cout << "draining (up to " << drain << " s); signal again to stop now" << std::endl;
       server.Drain(std::chrono::seconds(drain));
-      sigwait(&stop_signals, &signal);
+      stop_signals.Wait();
       server.Stop();
     }).detach();
 

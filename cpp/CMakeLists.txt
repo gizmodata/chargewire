@@ -7,6 +7,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(FetchContent)
 
+# Warnings, as each compiler spells them.
+if(MSVC)
+  set(WARPSQL_WARNINGS /W3)
+else()
+  set(WARPSQL_WARNINGS -Wall -Wextra)
+endif()
+
 # Boost 1.92: Beast (HTTP over Asio), JSON and URL. Only these are built.
 set(BOOST_INCLUDE_LIBRARIES beast json url)
 set(BOOST_ENABLE_CMAKE ON)
@@ -28,7 +35,33 @@ set(WARPSQL_ARROW_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/.deps/arrow-install"
 set(WARPSQL_DUCKDB_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/.deps/duckdb-install"
     CACHE PATH "DuckDB install prefix (with duckdb_v2.h)")
 find_package(Arrow CONFIG REQUIRED PATHS "${WARPSQL_ARROW_PREFIX}" NO_DEFAULT_PATH)
-find_library(DUCKDB_LIBRARY duckdb PATHS "${WARPSQL_DUCKDB_PREFIX}/lib" NO_DEFAULT_PATH REQUIRED)
+if(WIN32)
+  # DuckDB's DLL exports its C API only, and an embedding server may use DuckDB's C++
+  # internals too (Hardcharger's access control does): on Windows, DuckDB is linked
+  # statically, with what its shared library links (DuckDB_EXTENSIONS, plus HTTP and
+  # extension loading), registered before main() as DuckDB's own static programs do.
+  find_package(DuckDB CONFIG REQUIRED PATHS "${WARPSQL_DUCKDB_PREFIX}" NO_DEFAULT_PATH)
+  set(WARPSQL_DUCKDB_LINKED httplib loadable_extensions ${DuckDB_EXTENSIONS})
+  set(DUCKDB_LIBRARY duckdb_static)
+  set(DECLARATIONS "")
+  set(REGISTRATIONS "")
+  foreach(name IN LISTS WARPSQL_DUCKDB_LINKED)
+    if(TARGET ${name}_extension)
+      list(APPEND DUCKDB_LIBRARY ${name}_extension)
+    else()
+      list(APPEND DUCKDB_LIBRARY duckdb_${name})
+    endif()
+    string(APPEND DECLARATIONS
+           "int32_t duckdb_extension_${name}_describe(duckdb_extension_descriptor *descriptor);\n")
+    string(APPEND REGISTRATIONS
+           "    duckdb_register_static_extension(duckdb_extension_${name}_describe);\n")
+  endforeach()
+  set(ANCHOR warpsql_duckdb_static_extensions)
+  configure_file(src/duckdb/static_extensions.cc.in
+                 "${CMAKE_CURRENT_BINARY_DIR}/generated/static_extensions.cc" @ONLY)
+else()
+  find_library(DUCKDB_LIBRARY duckdb PATHS "${WARPSQL_DUCKDB_PREFIX}/lib" NO_DEFAULT_PATH REQUIRED)
+endif()
 
 # The SDK: everything the protocol requires, independent of any engine.
 add_library(warpsql
@@ -41,16 +74,25 @@ add_library(warpsql
   src/sdk/ipc.cc
   src/sdk/json.cc
   src/sdk/metadata.cc
+  src/sdk/platform.cc
   src/sdk/server.cc
   src/sdk/sessions.cc
   src/sdk/signal.cc
   src/sdk/statements.cc
+  src/sdk/stop_signals.cc
   src/sdk/tls_stream.cc
   src/sdk/upload.cc)
 target_include_directories(warpsql PUBLIC include PRIVATE src/sdk)
 target_link_libraries(warpsql PUBLIC Boost::beast Boost::json Boost::url Arrow::arrow_static
                                      OpenSSL::SSL OpenSSL::Crypto)
-target_compile_options(warpsql PRIVATE -Wall -Wextra)
+target_compile_options(warpsql PRIVATE ${WARPSQL_WARNINGS})
+if(WIN32)
+  # Windows 10 and later; no min/max macros; Beast's and DuckDB's objects outgrow the
+  # default section count; sources are UTF-8.
+  target_compile_definitions(warpsql PUBLIC _WIN32_WINNT=0x0A00 NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_compile_options(warpsql PUBLIC $<$<CXX_COMPILER_ID:MSVC>:/bigobj /utf-8 /Zc:__cplusplus>)
+  target_link_libraries(warpsql PUBLIC ws2_32 mswsock)
+endif()
 
 # The client library: the protocol's client side (sign-in, sessions, statements on the
 # streamed and status-document paths, prepared statements, ingest, metadata, cancel,
@@ -61,7 +103,7 @@ add_library(warpsql_client
 target_include_directories(warpsql_client PUBLIC include PRIVATE src/client)
 target_link_libraries(warpsql_client PUBLIC Boost::beast Boost::json Boost::url Arrow::arrow_static
                                             OpenSSL::SSL OpenSSL::Crypto)
-target_compile_options(warpsql_client PRIVATE -Wall -Wextra)
+target_compile_options(warpsql_client PRIVATE ${WARPSQL_WARNINGS})
 
 # The DuckDB backend: DuckDB 2.0 behind the SDK, through its v2 C API only. Servers
 # built on it extend DuckDBBackend and DuckDBSession.
@@ -72,14 +114,19 @@ add_library(warpsql_duckdb
   src/duckdb/duckdb_upload.cc
   src/duckdb/duckdb_values.cc)
 target_include_directories(warpsql_duckdb PUBLIC src/duckdb "${WARPSQL_DUCKDB_PREFIX}/include")
-target_link_libraries(warpsql_duckdb PUBLIC warpsql "${DUCKDB_LIBRARY}")
-target_compile_options(warpsql_duckdb PRIVATE -Wall -Wextra)
+target_link_libraries(warpsql_duckdb PUBLIC warpsql ${DUCKDB_LIBRARY})
+target_compile_options(warpsql_duckdb PRIVATE ${WARPSQL_WARNINGS})
+if(WIN32)
+  target_sources(warpsql_duckdb PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/static_extensions.cc")
+  target_compile_definitions(warpsql_duckdb PUBLIC DUCKDB_STATIC_BUILD)
+  target_link_options(warpsql_duckdb INTERFACE "/INCLUDE:${ANCHOR}")
+endif()
 
 # The reference server.
 add_executable(warp-duckdb src/duckdb/main.cc)
 target_link_libraries(warp-duckdb PRIVATE warpsql_duckdb)
 set_target_properties(warp-duckdb PROPERTIES BUILD_RPATH "${WARPSQL_DUCKDB_PREFIX}/lib")
-target_compile_options(warp-duckdb PRIVATE -Wall -Wextra)
+target_compile_options(warp-duckdb PRIVATE ${WARPSQL_WARNINGS})
 
 # The client library's tests (googletest 1.18.0): unit tests, and live tests against
 # warp-duckdb (they start it themselves; WARPSQL_TEST_SERVER_BINARY names another).

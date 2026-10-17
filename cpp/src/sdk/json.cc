@@ -3,6 +3,8 @@
 #include <ctime>
 #include <format>
 
+#include "platform.hpp"
+
 namespace warpsql::detail {
 
 json::object ParseObject(std::string_view body) {
@@ -40,8 +42,7 @@ std::string Rfc3339(WallClock::time_point time) {
   const auto millis =
       std::chrono::floor<std::chrono::milliseconds>(time.time_since_epoch()).count() % 1000;
   const std::time_t seconds = WallClock::to_time_t(time);
-  std::tm utc{};
-  gmtime_r(&seconds, &utc);
+  const std::tm utc = UtcTime(seconds);
   char buffer[32];
   // Format the written length, not the array: some libc++ versions format a char array
   // as all of its elements, NULs and uninitialized bytes included.
