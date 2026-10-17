@@ -144,7 +144,7 @@ struct StatementOptions {
   // Split results (spec §6.10): up to this many partitions, read at once over separate
   // connections (sent only to a server with the result_partitions capability). With
   // any_order the batches come as they arrive; without, in the result's order.
-  int result_partitions = 1;           // Warp-Result-Partitions
+  int result_partitions = 8;           // Warp-Result-Partitions (1: one stream)
   bool any_order = false;              // Warp-Result-Order: any
 };
 
@@ -185,6 +185,11 @@ struct IngestOptions {
   bool temporary = false;
   std::string idempotency_key;
   std::string query_tag;
+  // A partitioned ingest (spec §8.3): an upload of two batches or more goes over up to
+  // this many connections at once, committed as one, on a server with the
+  // partitioned_ingest capability. 1: one stream (§8.1). Rows then land in no defined
+  // order; use 1 to keep the upload's order.
+  int parts = 8;
 };
 
 struct TablesRequest {

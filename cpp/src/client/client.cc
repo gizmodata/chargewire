@@ -395,25 +395,25 @@ class ClientCore {
   std::mutex auth_mutex;
   std::unique_ptr<Transport> auth_transport;
 
-  // Whether the server splits results (capability result_partitions), asked once.
-  bool OffersPartitions() {
+  // Whether the server lists `capability` in its discovery document (asked once).
+  bool Offers(std::string_view capability) {
     std::lock_guard lock(auth_mutex);
-    if (!offers_partitions) {
+    if (!capabilities) {
       if (!auth_transport) auth_transport = NewTransport();
       Reply reply = auth_transport->Exchange(Request(http::verb::get, options.base_path, false));
-      bool offered = false;
+      capabilities.emplace();
       if (auto object = reply.status == 200 ? ParseObject(reply.body) : std::nullopt) {
         if (auto* caps = object->if_contains("capabilities"); caps != nullptr && caps->is_array()) {
           for (const auto& cap : caps->as_array()) {
-            offered = offered || (cap.is_string() && cap.as_string() == "result_partitions");
+            if (cap.is_string()) capabilities->push_back(std::string(cap.as_string()));
           }
         }
       }
-      offers_partitions = offered;
     }
-    return *offers_partitions;
+    return std::find(capabilities->begin(), capabilities->end(), capability) != capabilities->end();
   }
-  std::optional<bool> offers_partitions;
+  bool OffersPartitions() { return Offers("result_partitions"); }
+  std::optional<std::vector<std::string>> capabilities;
 };
 
 // ---- SessionCore ----
@@ -1250,24 +1250,150 @@ std::unique_ptr<PreparedStatement> Session::Prepare(const std::string& sql) {
                                              String(answer, "result_kind"));
 }
 
+namespace {
+
+// An upload's batches, shared by the threads that send a partitioned ingest's parts:
+// each takes the next batch (the first ones may have been read ahead already).
+class SharedBatches {
+ public:
+  SharedBatches(arrow::RecordBatchReader& source, std::vector<std::shared_ptr<arrow::RecordBatch>> ahead)
+      : source_(source), ahead_(ahead.begin(), ahead.end()) {}
+  std::shared_ptr<arrow::Schema> schema() const { return source_.schema(); }
+  arrow::Status Next(std::shared_ptr<arrow::RecordBatch>* batch) {
+    std::lock_guard lock(mutex_);
+    if (!ahead_.empty()) {
+      *batch = std::move(ahead_.front());
+      ahead_.pop_front();
+      return arrow::Status::OK();
+    }
+    return source_.ReadNext(batch);
+  }
+
+ private:
+  arrow::RecordBatchReader& source_;
+  std::deque<std::shared_ptr<arrow::RecordBatch>> ahead_;
+  std::mutex mutex_;
+};
+
+// One part's (or one stream's) batches: from SharedBatches.
+class PartBatches : public arrow::RecordBatchReader {
+ public:
+  explicit PartBatches(SharedBatches& shared) : shared_(shared) {}
+  std::shared_ptr<arrow::Schema> schema() const override { return shared_.schema(); }
+  arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch>* batch) override { return shared_.Next(batch); }
+
+ private:
+  SharedBatches& shared_;
+};
+
+// A partitioned ingest (spec §8.3): open, send the parts at once, commit.
+int64_t IngestParts(SessionCore& core, const std::string& table, SharedBatches& shared,
+                    const IngestOptions& options) {
+  json::object target{{"table", table}, {"mode", options.mode.empty() ? "create_append" : options.mode},
+                      {"temporary", options.temporary}};
+  if (!options.catalog.empty()) target["catalog"] = options.catalog;
+  if (!options.schema.empty()) target["schema"] = options.schema;
+  json::value body = std::move(target);
+  auto open = core.client->Request(http::verb::post, core.Path("/ingests"), true);
+  ClientCore::SetJson(open, body);
+  open.set("Idempotency-Key", options.idempotency_key.empty() ? RandomKey() : options.idempotency_key);
+  Reply opened = core.transport->Exchange(std::move(open));
+  if (opened.status != 201 && opened.status != 200) throw ProblemOf(opened);
+  auto doc = ParseObject(opened.body);
+  const std::string ingest_id = doc ? String(*doc, "ingest_id") : std::string();
+  if (ingest_id.empty()) throw Error(opened.status, "protocol_error", "the ingest answer has no ingest_id");
+  const std::string base = core.Path("/ingests/" + ingest_id);
+
+  const int parts = std::clamp(options.parts, 1, 256);
+  std::mutex mutex;
+  std::optional<Error> failure;
+  std::vector<std::thread> senders;
+  for (int part = 0; part < parts; part++) {
+    senders.emplace_back([&, part] {
+      try {
+        auto transport = core.client->NewTransport();
+        auto request = core.client->Request(http::verb::post, base + "/parts/" + std::to_string(part), true);
+        request.set(http::field::content_type, kArrowStream);
+        request.set("Idempotency-Key", RandomKey());
+        if (!options.query_tag.empty()) request.set("Warp-Query-Tag", options.query_tag);
+        PartBatches rows(shared);
+        StreamChunks chunks(rows);
+        ChunkSource source = [&chunks] { return chunks(); };
+        Reply reply = transport->Exchange(std::move(request), &source);
+        if (reply.status != 200) throw ProblemOf(reply);
+      } catch (const Error& e) {
+        std::lock_guard lock(mutex);
+        if (!failure) failure = e;
+      } catch (const std::exception& e) {
+        std::lock_guard lock(mutex);
+        if (!failure) failure = Error(0, "client_error", std::string("a part's upload failed: ") + e.what());
+      }
+    });
+  }
+  for (auto& sender : senders) sender.join();
+  auto abort = [&] {
+    try {
+      core.CallJson(http::verb::delete_, base, nullptr, {204, 404});  // nothing is written
+    } catch (const Error&) {
+    }
+  };
+  if (failure) {
+    abort();
+    throw *failure;
+  }
+  json::value commit = json::object{{"parts", parts}};
+  try {
+    json::object answer = core.CallJson(http::verb::post, base + "/commit", &commit, {200});
+    return Integer(answer, "rows_ingested").value_or(0);
+  } catch (const Error&) {
+    // The answer may have been lost after the commit: ask before aborting.
+    try {
+      json::object state = core.CallJson(http::verb::get, base, nullptr, {200});
+      if (String(state, "state") == "committed") return Integer(state, "rows_ingested").value_or(0);
+    } catch (const Error&) {
+    }
+    abort();
+    throw;
+  }
+}
+
+}  // namespace
+
 int64_t Session::Ingest(const std::string& table, arrow::RecordBatchReader& data, const IngestOptions& options) {
   core_->CheckOpen();
-  std::string target = core_->Path("/ingest") + "?table=" + detail::UrlEncode(table);
-  if (!options.catalog.empty()) target += "&catalog=" + detail::UrlEncode(options.catalog);
-  if (!options.schema.empty()) target += "&schema=" + detail::UrlEncode(options.schema);
-  if (!options.mode.empty()) target += "&mode=" + detail::UrlEncode(options.mode);
-  if (options.temporary) target += "&temporary=true";
-  auto request = core_->client->Request(http::verb::post, target, true);
-  request.set(http::field::content_type, kArrowStream);
-  request.set("Idempotency-Key", options.idempotency_key.empty() ? RandomKey() : options.idempotency_key);
-  if (!options.query_tag.empty()) request.set("Warp-Query-Tag", options.query_tag);
-  StreamChunks chunks(data);
-  ChunkSource source = [&chunks] { return chunks(); };
-  Reply reply = core_->transport->Exchange(std::move(request), &source);
-  if (reply.status != 200) throw ProblemOf(reply);
-  auto object = ParseObject(reply.body);
-  if (!object) throw Error(reply.status, "protocol_error", "the ingest answer is not JSON");
-  return Integer(*object, "rows_ingested").value_or(0);
+  // Read up to two batches ahead: an upload of one batch (or none) goes as one stream.
+  std::vector<std::shared_ptr<arrow::RecordBatch>> ahead;
+  const bool may_split = options.parts > 1 && core_->client->Offers("partitioned_ingest");
+  while (may_split && ahead.size() < 2) {
+    std::shared_ptr<arrow::RecordBatch> batch;
+    if (auto status = data.ReadNext(&batch); !status.ok()) {
+      throw Error(0, "bad_request", "cannot read the rows to ingest: " + status.ToString());
+    }
+    if (!batch) break;
+    ahead.push_back(std::move(batch));
+  }
+  const bool split = may_split && ahead.size() >= 2;
+  SharedBatches shared(data, std::move(ahead));
+  if (!split) {
+    std::string target = core_->Path("/ingest") + "?table=" + detail::UrlEncode(table);
+    if (!options.catalog.empty()) target += "&catalog=" + detail::UrlEncode(options.catalog);
+    if (!options.schema.empty()) target += "&schema=" + detail::UrlEncode(options.schema);
+    if (!options.mode.empty()) target += "&mode=" + detail::UrlEncode(options.mode);
+    if (options.temporary) target += "&temporary=true";
+    auto request = core_->client->Request(http::verb::post, target, true);
+    request.set(http::field::content_type, kArrowStream);
+    request.set("Idempotency-Key", options.idempotency_key.empty() ? RandomKey() : options.idempotency_key);
+    if (!options.query_tag.empty()) request.set("Warp-Query-Tag", options.query_tag);
+    PartBatches rows(shared);
+    StreamChunks chunks(rows);
+    ChunkSource source = [&chunks] { return chunks(); };
+    Reply reply = core_->transport->Exchange(std::move(request), &source);
+    if (reply.status != 200) throw ProblemOf(reply);
+    auto object = ParseObject(reply.body);
+    if (!object) throw Error(reply.status, "protocol_error", "the ingest answer is not JSON");
+    return Integer(*object, "rows_ingested").value_or(0);
+  }
+  return IngestParts(*core_, table, shared, options);
 }
 
 std::shared_ptr<arrow::Table> Session::Catalogs() { return core_->Metadata("catalogs", {}); }

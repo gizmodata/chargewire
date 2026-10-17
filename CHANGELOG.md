@@ -32,9 +32,31 @@ spec's version is the repository's version.
   for interleaved results), and a failed partition fails the result with the statement's
   error. `StatementDocument::partition_order`.
 - `WARPSQL_STREAM_STATS=1`: the SDK logs each result stream's and statement's stage times.
+- Partitioned ingest (spec §8.3, capability `partitioned_ingest`): one ingest opened
+  with `POST …/ingests`, fed by up to 256 parts uploaded at once over separate
+  connections, and committed atomically with `POST …/commit`; all or nothing (a failed
+  or broken part fails the whole ingest), rows in no defined order, every part bound to
+  the session and its principal, retried parts answered from their Idempotency-Key,
+  and an idle ingest aborted after `ServerOptions::ingest_idle_timeout` (120 s). New
+  error codes `ingest_not_found`, `ingest_incomplete`, `ingest_part_exists`,
+  `ingest_expired`. The SDK reads every part through one `IngestBatches` reader, so the
+  engine inserts from all parts in parallel in one transaction, with each part's body in
+  a bounded queue. Conformance: `test_partitioned_ingest.py`.
+- `libwarpsql_client` sends a large upload as a partitioned ingest:
+  `IngestOptions::parts` (default 8) on a server with `partitioned_ingest`, when the
+  upload has two batches or more; `parts = 1` keeps one ordered stream. A failed part
+  aborts the ingest (`DELETE`), so nothing is written.
+- `session_ended` problems always carry `reason` (spec §5.6): `Error::SessionEnded()`
+  and the `session_ended_reason` constants (`killed`, `credentials_changed`,
+  `principal_dropped`, `token_expired`). Conformance tests for idle eviction and token
+  expiry.
 
 ### Changed
 
+- `libwarpsql_client` asks for split results by default:
+  `StatementOptions::result_partitions` is 8 (was 1). The server decides: a result of
+  fewer than two batches still comes as one stream, and a server without
+  `result_partitions` ignores the request. `result_partitions = 1` keeps one stream.
 - TLS: the SDK's own TLS stream (`TlsStream`) encrypts whole gathered writes (up to
   1 MiB) at once and sends them while it encrypts the next, instead of Asio's
   record-at-a-time `ssl::stream`. A TLS result stream went from about a third of

@@ -469,8 +469,20 @@ TEST_F(Live, AFailureInTheMiddleOfAStreamIsTheStatementsError) {
   // Batches stream before the error: the body ends without the end-of-stream marker
   // (spec §6.6) and the reader reports the statement document's error.
   session_->Execute("SET threads = 1");  // in order, so the first batches come before the error
-  auto result = session_->Execute(
-      "SELECT CASE WHEN i < 3000000 THEN i ELSE error('boom at ' || i) END AS v FROM range(4000000) t(i)");
+  const std::string failing =
+      "SELECT CASE WHEN i < 3000000 THEN i ELSE error('boom at ' || i) END AS v FROM range(4000000) t(i)";
+  // Split (the default): the error ends the reader too, never a clean end.
+  try {
+    auto split = session_->Execute(failing);
+    while (auto batch = split.reader->Next()) {
+    }
+    FAIL() << "the split result ended normally";
+  } catch (const wc::Error& e) {
+    EXPECT_NE(std::string(e.what()).find("boom at"), std::string::npos) << e.code() << ": " << e.what();
+  }
+  wc::StatementOptions one_stream;
+  one_stream.result_partitions = 1;
+  auto result = session_->Execute(failing, one_stream);
   ASSERT_TRUE(result.HasRows());
   int64_t rows = 0;
   try {
@@ -580,6 +592,45 @@ TEST_F(Live, IngestCreatesAppendsAndReplaces) {
   // Temporary: another session doesn't see it.
   auto other = client_->CreateSession();
   EXPECT_THROW(other->Execute("SELECT * FROM ingested_temp"), wc::Error);
+}
+
+TEST_F(Live, ALargeIngestGoesInPartsAndCommitsOnce) {
+  // 64 batches over 4 parts (spec §8.3): every row once, nothing visible before the commit.
+  std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
+  auto schema = arrow::schema({arrow::field("v", arrow::int64()), arrow::field("s", arrow::utf8())});
+  int64_t next = 0;
+  for (int b = 0; b < 64; b++) {
+    arrow::Int64Builder values;
+    arrow::StringBuilder labels;
+    for (int i = 0; i < 10000; i++, next++) {
+      EXPECT_TRUE(values.Append(next).ok());
+      EXPECT_TRUE((next % 9 == 0 ? labels.AppendNull() : labels.Append("v" + std::to_string(next))).ok());
+    }
+    batches.push_back(arrow::RecordBatch::Make(schema, 10000, {values.Finish().ValueOrDie(), labels.Finish().ValueOrDie()}));
+  }
+  session_->Execute("DROP TABLE IF EXISTS ingested_parts");
+  wc::IngestOptions options;
+  options.mode = "create";
+  options.parts = 4;
+  EXPECT_EQ(session_->Ingest("ingested_parts", *arrow::RecordBatchReader::Make(batches).ValueOrDie(), options), 640000);
+  EXPECT_EQ(Scalar(*session_, "SELECT count(DISTINCT v) FROM ingested_parts"), 640000);
+  EXPECT_EQ(Scalar(*session_, "SELECT sum(v) FROM ingested_parts"), 640000LL * 639999 / 2);
+  EXPECT_EQ(Scalar(*session_, "SELECT count(s) FROM ingested_parts"), 640000 - 71112);
+  // A failing partitioned ingest leaves nothing: create into a table that exists.
+  try {
+    session_->Ingest("ingested_parts", *arrow::RecordBatchReader::Make(batches).ValueOrDie(), options);
+    FAIL() << "created a table that exists";
+  } catch (const wc::Error& e) {
+    EXPECT_EQ(e.sqlstate(), "42P07") << e.code() << ": " << e.what();
+  }
+  EXPECT_EQ(Scalar(*session_, "SELECT count(*) FROM ingested_parts"), 640000);
+  // parts = 1 keeps the upload's order.
+  options.parts = 1;
+  options.mode = "replace";
+  EXPECT_EQ(session_->Ingest("ingested_parts", *arrow::RecordBatchReader::Make(batches).ValueOrDie(), options), 640000);
+  auto first = session_->Execute("SELECT v FROM ingested_parts LIMIT 3").reader->ToTable();
+  EXPECT_EQ(first->column(0)->ToString(), arrow::ChunkedArray(arrow::ArrayVector{
+      std::static_pointer_cast<arrow::Int64Array>(batches[0]->column(0))->Slice(0, 3)}).ToString());
 }
 
 TEST_F(Live, CancelRunningFromAnotherThreadCancelsTheStatement) {
