@@ -473,8 +473,7 @@ class HttpServer::Impl {
       beast::tcp_stream stream(std::move(socket));
       if (!tls_) {
         co_await ServeRequests(stream, limits_, handler_);
-        boost::system::error_code ignored;
-        stream.socket().shutdown(tcp::socket::shutdown_both, ignored);
+        co_await EndConnection(stream);
         co_return;
       }
       TlsStream tls_stream(std::move(stream), tls_->native_handle());

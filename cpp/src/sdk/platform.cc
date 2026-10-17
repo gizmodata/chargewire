@@ -1,5 +1,11 @@
 #include "platform.hpp"
 
+#include <boost/asio/redirect_error.hpp>
+#include <boost/asio/use_awaitable.hpp>
+
+#include <array>
+#include <chrono>
+
 #ifdef _WIN32
 #include <winsock2.h>
 #else
@@ -48,6 +54,30 @@ void PrepareListener(boost::asio::ip::tcp::acceptor& acceptor) {
 #else
   (void)acceptor;
 #endif
+}
+
+boost::asio::awaitable<void> EndConnection(boost::beast::tcp_stream& stream) {
+  boost::system::error_code ec;
+#ifdef _WIN32
+  constexpr auto kLinger = std::chrono::seconds(2);
+  constexpr std::size_t kMaxDrained = 256 * 1024 * 1024;
+  stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, ec);
+  if (!ec) {
+    std::array<char, 64 * 1024> sink;
+    std::size_t drained = 0;
+    stream.expires_after(kLinger);
+    while (drained < kMaxDrained) {
+      const std::size_t got = co_await stream.async_read_some(
+          boost::asio::buffer(sink), boost::asio::redirect_error(boost::asio::use_awaitable, ec));
+      if (ec) {
+        break;  // end of stream, reset, or the linger time is up
+      }
+      drained += got;
+    }
+  }
+#endif
+  stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
+  co_return;
 }
 
 std::tm UtcTime(std::time_t seconds) {
