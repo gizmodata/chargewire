@@ -9,6 +9,19 @@ spec's version is the repository's version.
 
 ### Added
 
+- The C++ client library (`libwarpsql_client`, `cpp/include/warpsql/client.hpp`):
+  discovery and health, sign-in (password, renewed before its token expires; token
+  exchange), sessions and their options, transactions, statements on the streamed path
+  (rows read as they arrive, an incomplete stream reported with the statement's own
+  error, spec §6.6) and on the status-document path (submit, long-poll, fetch, re-read a
+  retained result), bind parameters, prepared statements (JSON or Arrow parameter
+  batches), cancellation from another thread (the running statement, or the session's
+  when its id isn't known yet), bulk ingest as one chunked Arrow stream, the metadata
+  endpoints, TLS with the system's or given roots and host-name checks, and mutual TLS.
+  Tested by `cpp/tests/client_test.cc`: unit tests and live tests against warp-duckdb.
+- The server-info document carries `server_arrow_version` (Flight SQL's
+  `FLIGHT_SQL_SERVER_ARROW_VERSION`).
+
 - Draft 0.1.0 of the protocol spec (`spec/warp-sql.md`): discovery and health,
   token authentication (password, token exchange, browser sign-in), sessions,
   transactions, statements with a one-round-trip streamed path and an async

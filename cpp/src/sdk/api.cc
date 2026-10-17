@@ -5,6 +5,7 @@
 #include <format>
 
 #include <arrow/table.h>
+#include <arrow/util/config.h>  // ARROW_VERSION_STRING
 
 #include "ids.hpp"
 #include "ipc.hpp"
@@ -858,6 +859,7 @@ Task<Response> Api::Metadata(Request& request, const std::string& session_id,
         {"protocol_version", "1"},
         {"sql_identifier_quote_char", "\""},
         {"sql_transactions_supported", true},
+        {"server_arrow_version", ARROW_VERSION_STRING},
     };
     for (const auto& item : state_.backend->ServerInfo()) {
       info[item.key()] = item.value();

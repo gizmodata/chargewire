@@ -4,6 +4,11 @@
   on Boost.Beast with C++20 coroutines. An engine implements `warpsql::Backend` (see
   `include/warpsql/backend.hpp`); the SDK owns authentication, handles bound to their
   principal, retries, retention, streaming, cancellation and draining.
+- **`libwarpsql_client`** (`include/warpsql/client.hpp`, `src/client/`): the client side,
+  synchronous, on Boost.Beast: sign-in, sessions, the streamed and status-document
+  statement paths, prepared statements, ingest, metadata, cancellation from another
+  thread, TLS and mutual TLS. It needs Arrow, Boost and OpenSSL, not DuckDB. Hardcharger's
+  command-line client is built on it.
 - **`warp-duckdb`** (`src/duckdb/`): the reference server, DuckDB 2.0 through its v2 C API
   only. It is what the conformance suite and the drivers test against.
 
@@ -30,6 +35,15 @@ certificates. The first SIGTERM drains (running work finishes, new work is refus
 second one stops at once.
 
 ## Test
+
+The client library's tests (unit, and live against `warp-duckdb`, which they start):
+
+```bash
+cmake -S . -B build -G Ninja -DWARPSQL_BUILD_TESTS=ON && cmake --build build
+./build/warpsql-client-tests
+```
+
+The conformance suite:
 
 ```bash
 cd ../conformance

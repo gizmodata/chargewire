@@ -50,6 +50,17 @@ target_link_libraries(warpsql PUBLIC Boost::beast Boost::json Boost::url Arrow::
                                      OpenSSL::SSL OpenSSL::Crypto)
 target_compile_options(warpsql PRIVATE -Wall -Wextra)
 
+# The client library: the protocol's client side (sign-in, sessions, statements on the
+# streamed and status-document paths, prepared statements, ingest, metadata, cancel,
+# TLS and mutual TLS). It needs Arrow, Boost and OpenSSL, not DuckDB.
+add_library(warpsql_client
+  src/client/client.cc
+  src/client/transport.cc)
+target_include_directories(warpsql_client PUBLIC include PRIVATE src/client)
+target_link_libraries(warpsql_client PUBLIC Boost::beast Boost::json Boost::url Arrow::arrow_static
+                                            OpenSSL::SSL OpenSSL::Crypto)
+target_compile_options(warpsql_client PRIVATE -Wall -Wextra)
+
 # The DuckDB backend: DuckDB 2.0 behind the SDK, through its v2 C API only. Servers
 # built on it extend DuckDBBackend and DuckDBSession.
 add_library(warpsql_duckdb
@@ -67,3 +78,21 @@ add_executable(warp-duckdb src/duckdb/main.cc)
 target_link_libraries(warp-duckdb PRIVATE warpsql_duckdb)
 set_target_properties(warp-duckdb PROPERTIES BUILD_RPATH "${WARPSQL_DUCKDB_PREFIX}/lib")
 target_compile_options(warp-duckdb PRIVATE -Wall -Wextra)
+
+# The client library's tests (googletest 1.18.0): unit tests, and live tests against
+# warp-duckdb (they start it themselves; WARPSQL_TEST_SERVER_BINARY names another).
+option(WARPSQL_BUILD_TESTS "Build the client library's tests" OFF)
+if(WARPSQL_BUILD_TESTS)
+  set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+  set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.18.0.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  FetchContent_MakeAvailable(googletest)
+  add_executable(warpsql-client-tests tests/client_test.cc)
+  target_link_libraries(warpsql-client-tests PRIVATE warpsql_client GTest::gtest_main)
+  target_compile_definitions(warpsql-client-tests PRIVATE
+                             WARPSQL_TEST_DEFAULT_SERVER="$<TARGET_FILE:warp-duckdb>")
+  add_dependencies(warpsql-client-tests warp-duckdb)
+endif()
