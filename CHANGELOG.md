@@ -33,6 +33,10 @@ spec's version is the repository's version.
   incomplete-stream signalling, ZSTD results, cancellation, timeouts, idempotent
   submission, CORS allow-list, header limits and graceful drain.
 - Reference server `warp-duckdb`: DuckDB 2.0 through its v2 C API only.
+- Prepared statements (§7) with JSON or Arrow bind parameters (one execution per row),
+  streaming bulk ingest (§8: the body flows to the engine through a bounded queue; every
+  batch is checked with `ValidateFull()`; sub-microsecond intervals and durations are
+  refused rather than truncated), and metadata (§10) with Flight SQL's exact schemas.
 - Conformance suite (`conformance/`): 46 black-box tests; fails, never skips, without a
   server.
 

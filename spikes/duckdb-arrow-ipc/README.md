@@ -80,8 +80,12 @@ views).
 
 - **IPC with Arrow C++**, built with IPC only. Every incoming batch goes through
   `ValidateFull()` before DuckDB sees it.
-- **Default Arrow setting: `arrow_lossless_conversion = true`, without list views.**
-  It keeps UUID, JSON, TIMETZ offsets and HUGEINT exactly, and Arrow JS reads it.
+- **Default Arrow setting: DuckDB's default, not lossless** (corrected 2026-10-17 while
+  building the server). Lossless keeps UUID, JSON and TIMETZ exact, but it turns HUGEINT
+  into opaque bytes, and every integer `SUM` in DuckDB returns HUGEINT, so clients
+  couldn't compute with sums. The default sends HUGEINT as `decimal128(38, 0)`, as
+  GizmoSQL 1.x does; a session can opt into lossless with the
+  `arrow_lossless_conversion` option.
 - **Refuse uploads DuckDB would truncate** (sub-microsecond intervals and durations)
   with `unsupported_arrow_type` and a reason.
 - **Compression stays opt-in** (spec §8.2): Arrow JS decodes compressed IPC only with a

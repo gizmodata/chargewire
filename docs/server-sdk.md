@@ -102,8 +102,9 @@ branch. Arrow C++'s full validation also refuses a malformed upload (DuckDB's in
 HUGEINT decimals) that nanoarrow passed through into storage. The remaining failures
 are DuckDB's (sub-microsecond intervals are truncated; its default Arrow setting
 changes several types) and Arrow JS's (no list views; `get()` throws on infinite
-timestamps). The server defaults to `arrow_lossless_conversion = true` without list
-views, and refuses uploads DuckDB would truncate.
+timestamps). The server keeps DuckDB's default Arrow mapping (lossless mode makes every
+integer `SUM` opaque bytes), offers lossless as a session option, and refuses uploads
+DuckDB would truncate.
 
 ## GizmoSQL 2.0 on this SDK (decided 2026-10-16)
 
