@@ -1,0 +1,9 @@
+.deps/
+.venv/
+build/
+out/
+node_modules/
+__pycache__/
+.deps-build.log
+.cache/
+*.log

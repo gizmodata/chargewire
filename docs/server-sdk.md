@@ -83,41 +83,60 @@ class Backend {
 
 ## Dependencies
 
-The point of Warp SQL is a small build. The SDK should need only:
+The point of Warp SQL is a small build. The SDK needs only:
 
-- **nanoarrow** with its IPC library for reading and writing Arrow IPC streams.
-  nanoarrow 0.9.0 has an IPC encoder and writer (`src/nanoarrow/ipc/encoder.c`,
-  `writer.c`) and an optional ZSTD codec (`NANOARROW_IPC_WITH_ZSTD`). Not Arrow C++.
-- **An HTTP/1.1 server library** (to be chosen; cpp-httplib is already in GizmoSQL
-  1.x for its OAuth endpoint).
+- **nanoarrow** with its IPC library for reading and writing Arrow IPC streams. Not
+  Arrow C++. Writing compressed IPC (ZSTD, LZ4) landed on nanoarrow's main branch on
+  2026-09-09 (apache/arrow-nanoarrow#935) and is not in a release yet (0.9.0 can only
+  read compressed IPC), so the SDK pins a main commit until the next release.
+- **An HTTP/1.1 server library** (to be chosen).
 - **OpenSSL** for TLS.
-- **zstd** (optional) for compression.
+- **zstd and lz4** for compression.
 
 No gRPC, no protobuf, no abseil, no c-ares, no re2.
 
-### The first spike
+### The nanoarrow spike (done 2026-10-16)
 
-Before the SDK depends on nanoarrow, prove it on the real engine:
+[`spikes/nanoarrow-duckdb`](../spikes/nanoarrow-duckdb/README.md) proved nanoarrow on
+DuckDB 2.0: every DuckDB type round-trips value for value, with and without
+compression, read back by pyarrow and by Arrow JS. Three gaps to close: nanoarrow's IPC
+has no view layouts or run-end encoding yet (contribute upstream; refuse until then),
+DuckDB's INTERVAL truncates sub-microsecond values, and DuckDB's default Arrow export
+of HUGEINT is invalid (a DuckDB bug to report). The server defaults to
+`arrow_lossless_conversion = true` without views.
 
-1. Take a DuckDB result as an `ArrowArrayStream` and write it with nanoarrow's IPC
-   writer.
-2. Read it back with pyarrow and with Arrow JS, and compare **values**, not only
-   column types, for every type DuckDB can return: all integer widths, decimals of
-   each width, every temporal type and interval kind, strings and string views,
-   binary, UUID, lists, structs, maps, unions, dictionaries, GeoArrow extension
-   types, and nulls in each.
-3. Repeat with ZSTD buffer compression on.
-4. Do the reverse for ingest: write each type with pyarrow, read it with nanoarrow,
-   ingest it into DuckDB, and compare.
+## GizmoSQL 2.0 on this SDK (decided 2026-10-16)
 
-Any type that fails is either fixed upstream or refused explicitly
-(`unsupported_arrow_type`); none falls back to text.
+- **DuckDB 2.0 only**, through its **v2 C API** (`duckdb_v2.h`). It covers everything
+  the server needs: statements executed as Arrow with stepping, interrupt and progress
+  (`duckdb_v2_statement_execute_arrow`, `…_arrow_result_step`,
+  `…_connection_interrupt`, `…_connection_progress_get`), parameter schemas
+  (`…_statement_bind`), settings, table descriptions, log sinks, and custom table
+  functions (bulk ingest is one, `warp_upload()`, fed by the v2 Arrow importer).
+- **One exception: the RBAC plan inspector.** The v2 API has no planner or binder hooks,
+  and RBAC must see every table and column a bound plan touches. That module alone uses
+  DuckDB's C++ internals, built against the exact pinned DuckDB; nothing else includes
+  a DuckDB header beyond `duckdb_v2.h`. If DuckDB adds a plan-level "objects accessed"
+  hook to the C API, the exception goes away.
+- **A standalone server**, not a DuckDB extension. GizmoSQL embeds DuckDB, and the C API
+  boundary keeps DuckDB upgrades cheap.
+- **Asynchronous inside too.** Statements run on an engine worker pool that no HTTP
+  request owns. The HTTP layer only submits, waits on state changes and copies batches
+  out, so a slow reader or a long-poll never holds a query thread.
+
+## Clients
+
+- **ADBC: [`gizmodata/warp-sql-adbc`](https://github.com/gizmodata/warp-sql-adbc)**, a
+  generic Go driver for any Warp SQL server, with the same shape as `gizmosql-adbc`
+  (Go driver + cgo C exports + Python bindings). One driver serves every ADBC language.
+- **JavaScript**: separate. It must read timestamps as raw int64 values (DuckDB writes
+  infinite timestamps as the int64 extremes, which Arrow JS's `get()` refuses), and it
+  registers a ZSTD codec with Arrow JS's `compressionRegistry` before asking for
+  compressed results.
 
 ## Open questions
 
-- **Client library.** One ADBC driver gives every ADBC language (C/C++, Python, Go,
-  Java, R, C#, Rust) access through the driver manager. Should it be C++ on
-  nanoarrow plus libcurl, or Go? The JS client is separate either way.
 - **Where results are retained.** Memory with a cap, then local disk; shared object
   storage for clusters so a handle survives a node.
-- **Threading model** for long-polls and many concurrent result streams.
+- **HTTP library** and the threading model for many concurrent long-polls and result
+  streams.

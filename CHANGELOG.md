@@ -20,3 +20,16 @@ spec's version is the repository's version.
   requirement; engines override "not implemented" backend methods.
 - GizmoSQL 1.x parity plan (`docs/gizmosql-parity.md`): every Flight SQL operation
   and every 1.x integration test file mapped to Warp SQL.
+- nanoarrow spike (`spikes/nanoarrow-duckdb`): DuckDB 2.0's v2 C API plus nanoarrow
+  IPC, no Arrow C++ and no DuckDB internals, with a 1,247-case type harness (export,
+  copy, ingest, DuckDB round trip, Arrow JS). Every DuckDB type round-trips; the gaps
+  found (nanoarrow view/REE layouts, DuckDB interval precision, DuckDB's HUGEINT
+  export) are listed in its README.
+
+### Changed
+
+- Server SDK design: GizmoSQL 2.0 targets DuckDB 2.0's v2 C API only (the RBAC plan
+  inspector is the one module allowed DuckDB internals), runs as a standalone server,
+  and keeps statement execution off HTTP request threads. ADBC client:
+  `gizmodata/warp-sql-adbc` (Go). Corrected: nanoarrow 0.9.0 cannot write compressed
+  IPC; that is on nanoarrow main only.
