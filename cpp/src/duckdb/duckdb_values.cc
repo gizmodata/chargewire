@@ -324,6 +324,12 @@ Value ValueFactory::FromArrow(const arrow::Array& array, int64_t row,
     }
     return Null(null_type);
   }
+  // A dictionary-encoded parameter (pandas categoricals, Arrow's string dictionaries)
+  // binds as the value its index names.
+  if (array.type_id() == arrow::Type::DICTIONARY) {
+    const auto& dictionary = static_cast<const arrow::DictionaryArray&>(array);
+    return FromArrow(*dictionary.dictionary(), dictionary.GetValueIndex(row), null_type);
+  }
   Value value;
   auto make = [&](auto&& fn) { Call([&](auto* e) { return fn(value.out(), e); }); };
   const auto& type = *array.type();

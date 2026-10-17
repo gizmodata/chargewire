@@ -518,6 +518,7 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::TablesWithSchemas(
         }
       }
     }
+    const std::string default_key = ColumnDefaultMetadataKey();
     arrow::FieldVector fields;
     for (const auto& field : table_schema->fields()) {
       auto it = columns.find(field->name());
@@ -540,8 +541,8 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::TablesWithSchemas(
         keys.push_back("ARROW:FLIGHT:SQL:REMARKS");
         values.push_back(column.remarks);
       }
-      if (!column.default_sql.empty()) {
-        keys.push_back("WARP:SQL:COLUMN_DEFAULT");  // Flight SQL has no key for it (spec §10)
+      if (!column.default_sql.empty() && !default_key.empty()) {
+        keys.push_back(default_key);  // Flight SQL has no key for it (spec §10)
         values.push_back(column.default_sql);
       }
       fields.push_back(field->WithNullable(column.nullable)

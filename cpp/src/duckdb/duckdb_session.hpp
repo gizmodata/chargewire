@@ -37,6 +37,9 @@ class DuckDBSession : public warpsql::EngineSession {
 
  protected:
   duckdb_v2_connection_handle connection() const { return connection_.get(); }
+  // The field metadata key that carries a column's default in table schemas
+  // (metadata/tables?include_schema=true; Flight SQL has none); empty: not reported.
+  virtual std::string ColumnDefaultMetadataKey() const { return "WARP:SQL:COLUMN_DEFAULT"; }
 
  private:
   void EndTransaction(std::string_view sql);

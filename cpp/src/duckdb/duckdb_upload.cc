@@ -1,6 +1,7 @@
 #include "duckdb_upload.hpp"
 
 #include <arrow/array.h>
+#include <arrow/builder.h>
 #include <arrow/c/bridge.h>
 #include <arrow/record_batch.h>
 
@@ -216,6 +217,76 @@ class PrecisionGuard : public arrow::RecordBatchReader {
   std::optional<std::string> failure_;
 };
 
+// DuckDB misreads Arrow day_time intervals, so top-level ones are sent on as
+// month_day_nano intervals, which carry the same days and milliseconds exactly.
+class DayTimeAsMonthDayNano : public arrow::RecordBatchReader {
+ public:
+  explicit DayTimeAsMonthDayNano(std::shared_ptr<arrow::RecordBatchReader> source) : source_(std::move(source)) {
+    arrow::FieldVector fields;
+    for (const auto& field : source_->schema()->fields()) {
+      fields.push_back(field->type()->id() == arrow::Type::INTERVAL_DAY_TIME
+                           ? field->WithType(arrow::month_day_nano_interval())
+                           : field);
+    }
+    schema_ = arrow::schema(fields, source_->schema()->metadata());
+  }
+
+  static bool Needed(const arrow::Schema& schema) {
+    for (const auto& field : schema.fields()) {
+      if (field->type()->id() == arrow::Type::INTERVAL_DAY_TIME) return true;
+    }
+    return false;
+  }
+
+  std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
+
+  arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch>* batch) override {
+    std::shared_ptr<arrow::RecordBatch> in;
+    ARROW_RETURN_NOT_OK(source_->ReadNext(&in));
+    if (in == nullptr) {
+      *batch = nullptr;
+      return arrow::Status::OK();
+    }
+    auto columns = in->columns();
+    for (auto& column : columns) {
+      if (column->type_id() != arrow::Type::INTERVAL_DAY_TIME) continue;
+      const auto& values = static_cast<const arrow::DayTimeIntervalArray&>(*column);
+      arrow::MonthDayNanoIntervalBuilder builder;
+      ARROW_RETURN_NOT_OK(builder.Reserve(values.length()));
+      for (int64_t i = 0; i < values.length(); i++) {
+        if (values.IsNull(i)) {
+          ARROW_RETURN_NOT_OK(builder.AppendNull());
+        } else {
+          const auto v = values.GetValue(i);
+          ARROW_RETURN_NOT_OK(builder.Append({0, v.days, int64_t{v.milliseconds} * 1000000}));
+        }
+      }
+      ARROW_ASSIGN_OR_RAISE(column, builder.Finish());
+    }
+    *batch = arrow::RecordBatch::Make(schema_, in->num_rows(), columns);
+    return arrow::Status::OK();
+  }
+
+ private:
+  std::shared_ptr<arrow::RecordBatchReader> source_;
+  std::shared_ptr<arrow::Schema> schema_;
+};
+
+// Arrow types DuckDB can't store faithfully: refused with the reason, before any table
+// is touched, rather than failing inside DuckDB or arriving changed.
+void RefuseUnsupported(const arrow::DataType& type, bool nested) {
+  if (type.id() == arrow::Type::HALF_FLOAT) {
+    throw Error(ErrorCode::kUnsupportedArrowType,
+                "Arrow type halffloat has no DuckDB equivalent for bulk ingest; send float32 instead");
+  }
+  if (type.id() == arrow::Type::INTERVAL_DAY_TIME && nested) {
+    throw Error(ErrorCode::kUnsupportedArrowType,
+                "a day_time interval nested in another type cannot be ingested (DuckDB misreads it); "
+                "send month_day_nano intervals instead");
+  }
+  for (const auto& child : type.fields()) RefuseUnsupported(*child->type(), true);
+}
+
 bool TableExists(duckdb_v2_connection_handle connection, const std::string& rendered) {
   const duckdb_v2_str text = Str(rendered);
   QName name;
@@ -249,8 +320,19 @@ int64_t Ingest(duckdb_v2_connection_handle connection, const warpsql::IngestTarg
   if (target.temporary && (!target.catalog.empty() || !target.schema.empty())) {
     throw Error(ErrorCode::kBadRequest, "a temporary table takes no catalog or schema");
   }
+  for (const auto& field : rows->schema()->fields()) RefuseUnsupported(*field->type(), false);
   const std::string name = QualifiedName({target.catalog, target.schema, target.table});
-  const std::string source = "SELECT * FROM " + std::string(kFunction) + "()";
+  // A column of Arrow type null (all values missing, so no type to infer) becomes
+  // VARCHAR rather than DuckDB's NULL type, which nothing could be appended to later.
+  std::string replace;
+  for (const auto& field : rows->schema()->fields()) {
+    if (field->type()->id() == arrow::Type::NA) {
+      const std::string column = QualifiedName({field->name()});
+      replace += (replace.empty() ? "" : ", ") + ("CAST(" + column + " AS VARCHAR) AS " + column);
+    }
+  }
+  const std::string source = "SELECT *" + (replace.empty() ? std::string() : " REPLACE (" + replace + ")") +
+                             " FROM " + std::string(kFunction) + "()";
   auto mode = target.mode;
   if (mode == warpsql::IngestMode::kCreateAppend) {
     mode = TableExists(connection, name) ? warpsql::IngestMode::kAppend
@@ -268,6 +350,9 @@ int64_t Ingest(duckdb_v2_connection_handle connection, const warpsql::IngestTarg
     case warpsql::IngestMode::kCreateAppend: break;  // resolved above
   }
 
+  if (DayTimeAsMonthDayNano::Needed(*rows->schema())) {
+    rows = std::make_shared<DayTimeAsMonthDayNano>(std::move(rows));
+  }
   auto guard = std::make_shared<PrecisionGuard>(std::move(rows));
   ArrowArrayStream stream{};
   auto exported = arrow::ExportRecordBatchReader(guard, &stream);
