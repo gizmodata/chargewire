@@ -621,6 +621,19 @@ buffer them. A deployment that offers ingest must lift the body-size limit for t
 path and SHOULD disable request buffering, or uploads fail with `413` after the whole
 body has been sent.
 
+### 8.2 Compression
+
+Two independent layers, both optional:
+
+- **HTTP content coding.** Standard `Accept-Encoding` / `Content-Encoding`
+  (`gzip`, `zstd`, …). Browsers decode it transparently.
+- **Arrow buffer compression.** The Arrow IPC format's own per-buffer compression.
+  A client sends `Warp-IPC-Compression: zstd` to accept it; the server says what it
+  used in the response's `Warp-IPC-Compression` header. Servers with capability
+  `ipc_compression_zstd` MUST be able to produce and read it. Uploads MAY use it.
+
+Uncompressed Arrow MUST always be accepted.
+
 ### 8.3 Partitioned ingest
 
 Capability: `partitioned_ingest`. One TCP connection carries what one network flow
@@ -644,7 +657,11 @@ into one ingest, which the server commits as one transaction.
    If a part from 0 to n-1 has not finished (or another part number was used), the
    answer is `409` with code `ingest_incomplete` and the ingest stays open: the client
    can upload what is missing and commit again.
-4. **Abort** with `DELETE …/ingests/{ingest_id}`: `204`, and nothing is written.
+   A commit whose answer was lost is safe to send again: it answers with the same
+   result.
+4. **Abort** with `DELETE …/ingests/{ingest_id}`: `204`, and nothing is written. An
+   abort that arrives once the server is already committing may come too late to stop
+   it; the ingest's document then says `committed`, and that is the outcome.
 
 `GET …/ingests/{ingest_id}` returns the ingest's document: `state` (`open`,
 `committing`, `committed`, `failed`, `aborted`), `parts` (the part numbers finished,
@@ -671,19 +688,6 @@ server MAY abort an ingest that has had no request for a while (the server's cho
 at least a minute) with code `ingest_expired`. While an ingest is open its session MAY
 run nothing else: other statements on the session wait until it is committed or
 aborted.
-
-### 8.2 Compression
-
-Two independent layers, both optional:
-
-- **HTTP content coding.** Standard `Accept-Encoding` / `Content-Encoding`
-  (`gzip`, `zstd`, …). Browsers decode it transparently.
-- **Arrow buffer compression.** The Arrow IPC format's own per-buffer compression.
-  A client sends `Warp-IPC-Compression: zstd` to accept it; the server says what it
-  used in the response's `Warp-IPC-Compression` header. Servers with capability
-  `ipc_compression_zstd` MUST be able to produce and read it. Uploads MAY use it.
-
-Uncompressed Arrow MUST always be accepted.
 
 ## 9. Security
 

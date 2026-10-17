@@ -191,8 +191,10 @@ class Server::Impl {
       }
       for (const auto& ingest : session->Ingests()) {
         if (ingest->Expired(ingest_cutoff)) {
-          // Kept, so its requests get ingest_expired; nothing of it was written.
+          // Kept for a while, so its requests get ingest_expired; nothing of it was written.
           ingest->Abort(Error(ErrorCode::kIngestExpired, "the ingest had no request for too long and was aborted"));
+        } else if (ingest->Forgettable(ingest_cutoff)) {
+          session->RemoveIngest(ingest->id());  // finished, and unasked about for as long
         }
       }
       session->ForgetFinished(now, state_.options.finished_statement_ttl,

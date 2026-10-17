@@ -218,6 +218,7 @@ void IngestOperation::Fail(const Error& error) {
 
 void IngestOperation::Abort(const Error& why) {
   std::lock_guard lock(mutex_);
+  Touch();
   if (state_ == State::kCommitted) return;
   FailLocked(why);
   state_ = State::kAborted;
@@ -231,6 +232,12 @@ bool IngestOperation::Finished() const {
 bool IngestOperation::Expired(Clock::time_point cutoff) const {
   std::lock_guard lock(mutex_);
   return state_ == State::kOpen && active_uploads_ == 0 && last_activity_ < cutoff;
+}
+
+bool IngestOperation::Forgettable(Clock::time_point cutoff) const {
+  std::lock_guard lock(mutex_);
+  const bool finished = state_ == State::kCommitted || state_ == State::kFailed || state_ == State::kAborted;
+  return finished && active_uploads_ == 0 && last_activity_ < cutoff;
 }
 
 json::object IngestOperation::Document() const {
@@ -270,9 +277,14 @@ void IngestOperation::EngineDone(std::optional<int64_t> rows, std::exception_ptr
       rows_ingested_ = rows;
       state_ = State::kCommitted;
     }
+    // The engine is done with every part: let go of their readers and buffers (an upload
+    // still sending holds its own queue, now refusing more).
     for (auto& [n, part] : parts_) {
       if (part.queue) part.queue->StopReading();
+      part.queue.reset();
+      part.reader.reset();
     }
+    Touch();
   }
   changed_.Notify();
 }

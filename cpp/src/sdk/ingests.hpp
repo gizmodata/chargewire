@@ -56,6 +56,9 @@ class IngestOperation : public std::enable_shared_from_this<IngestOperation> {
   // Fails the ingest with `error` (the first failure wins).
   void Fail(const Error& error);
   bool Expired(Clock::time_point cutoff) const;
+  // Finished, and nothing has asked about it since `cutoff`: the session may forget it
+  // (until then a retried commit or a GET still gets its outcome).
+  bool Forgettable(Clock::time_point cutoff) const;
   // Committed, failed or aborted.
   bool Finished() const;
   json::object Document() const;
