@@ -69,6 +69,10 @@ json::object Problem(const Error& error, std::string_view request_id) {
   if (!error.sqlstate().empty()) {
     problem["sqlstate"] = error.sqlstate();
   }
+  if (error.code() == ErrorCode::kSessionEnded) {
+    // Spec §5.6: a session_ended error always says why.
+    problem["reason"] = error.reason().empty() ? std::string(session_ended_reason::kKilled) : error.reason();
+  }
   return problem;
 }
 

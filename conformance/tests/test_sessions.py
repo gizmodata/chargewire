@@ -97,3 +97,64 @@ def test_session_create_reports_the_option_failure_by_kind(warp):
     invalid = warp.http.post(url="/warp/v1/sessions", headers=warp.headers(),
                              json={"options": {"autocommit": "maybe"}})
     assert_problem(response=invalid, status=400, code="invalid_option_value")
+
+
+# ---- Sessions that no longer exist (spec §5.6), each from a server of the test's own ----
+
+import os
+import time
+
+import pytest
+
+from conftest import start_server, stop_server
+from test_discovery_auth import assert_problem
+from warp import Warp
+
+
+def own_server(*args: str):
+    binary = os.environ.get("WARP_SQL_TEST_SERVER_BINARY")
+    if not binary:
+        pytest.fail(reason="these tests start a server of their own: set WARP_SQL_TEST_SERVER_BINARY")
+    return start_server(binary=binary, extra_args=list(args))
+
+
+def test_an_idle_session_is_not_found_and_never_recreated():
+    flag = os.environ.get("WARP_SQL_TEST_SERVER_IDLE_FLAG", "--session-idle-timeout-seconds")
+    server = own_server(flag, "1")
+    try:
+        warp = Warp(base_url=server.base_url, username=server.username, password=server.password)
+        sid = warp.new_session()
+        deadline = time.monotonic() + 30
+        while True:
+            response = warp.submit(session_id=sid, sql="SELECT 1", arrow=True)
+            if response.status_code == 404:
+                break
+            assert time.monotonic() < deadline, "the idle session was never evicted"
+            time.sleep(1.5)  # no request for longer than the idle timeout
+        assert_problem(response=response, status=404, code="session_not_found")
+        assert_problem(response=warp.http.get(url=warp.session_url(sid), headers=warp.headers()),
+                       status=404, code="session_not_found")
+        warp.close()
+    finally:
+        assert stop_server(server=server) == 0, server.log_tail()
+
+
+def test_an_expired_token_is_refused_until_the_client_signs_in_again():
+    flag = os.environ.get("WARP_SQL_TEST_SERVER_TOKEN_LIFETIME_FLAG", "--token-lifetime-seconds")
+    server = own_server(flag, "2")
+    try:
+        warp = Warp(base_url=server.base_url, username=server.username, password=server.password)
+        sid = warp.new_session()
+        time.sleep(3)
+        response = warp.submit(session_id=sid, sql="SELECT 1", arrow=True)
+        assert response.status_code == 401, response.text
+        problem = response.json()
+        assert problem["code"] in ("invalid_token", "session_ended"), problem
+        if problem["code"] == "session_ended":
+            assert problem["reason"] == "token_expired", problem
+        assert "Bearer" in response.headers.get("www-authenticate", "")
+        warp.token = warp.login()
+        assert warp.http.post(url="/warp/v1/sessions", headers=warp.headers(), json={}).status_code == 201
+        warp.close()
+    finally:
+        assert stop_server(server=server) == 0, server.log_tail()

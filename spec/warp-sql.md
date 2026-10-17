@@ -273,7 +273,7 @@ client can decide whether to start over. Drivers SHOULD create a new session, re
 the options they set, and report the loss of temporary state.
 
 A session the server ended for a reason the client must know about gets `401` with
-code `session_ended` and a `reason`:
+code `session_ended` and a `reason` field in the problem document (§11), one of:
 
 | `reason` | When |
 |---|---|
