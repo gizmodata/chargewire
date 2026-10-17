@@ -59,9 +59,13 @@ warpsql::ServerIdentity DuckDBBackend::Identity() {
   return {"warp-duckdb", "0.1.0 (DuckDB " + version_ + ")"};
 }
 
-std::unique_ptr<warpsql::EngineSession> DuckDBBackend::OpenSession(const warpsql::Principal&,
-                                                                   const json::object& options) {
-  auto session = std::make_unique<DuckDBSession>(instance_.get());
+std::unique_ptr<warpsql::EngineSession> DuckDBBackend::NewSession(const warpsql::Principal&) {
+  return std::make_unique<DuckDBSession>(instance_.get());
+}
+
+std::unique_ptr<warpsql::EngineSession> DuckDBBackend::OpenSession(
+    const warpsql::Principal& principal, const json::object& options) {
+  auto session = NewSession(principal);
   if (!options.empty()) {
     auto errors = session->SetOptions(options);
     if (!errors.empty()) {
@@ -100,7 +104,7 @@ warpsql::Principal StaticPasswordAuthenticator::AuthenticatePassword(std::string
   if (!user_ok || !password_ok) {
     throw Error(ErrorCode::kInvalidCredentials, "the user name or password is not correct");
   }
-  return warpsql::Principal{std::string(username)};
+  return warpsql::Principal{std::string(username), "admin", "password", {}};
 }
 
 }  // namespace warpduckdb

@@ -221,7 +221,8 @@ std::shared_ptr<Session> SessionRegistry::Find(const std::string& id,
                                                const Principal& principal) const {
   std::lock_guard lock(mutex_);
   auto it = sessions_.find(id);
-  if (it == sessions_.end() || it->second->owner() != principal || it->second->closed()) {
+  if (it == sessions_.end() || !it->second->owner().SameIdentity(principal) ||
+      it->second->closed()) {
     throw Error(ErrorCode::kSessionNotFound, "no such session");
   }
   return it->second;

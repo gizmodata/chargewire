@@ -17,14 +17,14 @@ Principal Authenticator::ExchangeToken(std::string_view) {
 
 namespace warpsql::detail {
 
-TokenStore::Issued TokenStore::Issue(const Principal& principal) {
+TokenService::Issued TokenStore::Issue(const Principal& principal) {
   std::string token = NewSecret();
   std::lock_guard lock(mutex_);
   by_hash_[Sha256Hex(token)] = Entry{principal, Clock::now() + lifetime_};
   return {std::move(token), lifetime_};
 }
 
-Principal TokenStore::Validate(std::string_view token) const {
+Principal TokenStore::Validate(std::string_view token) {
   if (!token.empty()) {
     std::lock_guard lock(mutex_);
     auto it = by_hash_.find(Sha256Hex(token));

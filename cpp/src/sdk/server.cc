@@ -36,14 +36,15 @@ ErrorCode CodeForStatus(http::status status) {
 class Server::Impl {
  public:
   Impl(ServerOptions options, std::shared_ptr<Backend> backend,
-       std::shared_ptr<Authenticator> authenticator)
+       std::shared_ptr<Authenticator> authenticator, std::shared_ptr<TokenService> tokens)
       : engine_pool_(static_cast<std::size_t>(ThreadCount(options.engine_threads, 2))),
         state_{options,
                std::move(backend),
                std::move(authenticator),
                io_,
                engine_pool_,
-               TokenStore(options.token_lifetime),
+               tokens,
+               tokens ? nullptr : std::make_shared<TokenStore>(options.token_lifetime),
                {},
                {},
                RetainedQuota(options.retained_bytes_per_principal)},
@@ -63,7 +64,11 @@ class Server::Impl {
                            return response;
                          }},
               [this](Request& request) { return api_.Handle(request); }),
-        sweep_timer_(io_) {}
+        sweep_timer_(io_) {
+    if (!state_.tokens) {
+      state_.tokens = state_.in_memory_tokens;
+    }
+  }
 
   ~Impl() { Stop(); }
 
@@ -145,7 +150,9 @@ class Server::Impl {
   }
 
   void Sweep() {
-    state_.tokens.Sweep();
+    if (state_.in_memory_tokens) {
+      state_.in_memory_tokens->Sweep();
+    }
     state_.idempotency.Sweep();
     const auto now = WallClock::now();
     const auto idle_cutoff = Clock::now() - state_.options.session_idle_timeout;
@@ -176,9 +183,10 @@ class Server::Impl {
 };
 
 Server::Server(ServerOptions options, std::shared_ptr<Backend> backend,
-               std::shared_ptr<Authenticator> authenticator)
+               std::shared_ptr<Authenticator> authenticator,
+               std::shared_ptr<TokenService> tokens)
     : impl_(std::make_unique<Impl>(std::move(options), std::move(backend),
-                                   std::move(authenticator))) {}
+                                   std::move(authenticator), std::move(tokens))) {}
 
 Server::~Server() = default;
 

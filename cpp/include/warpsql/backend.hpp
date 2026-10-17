@@ -14,6 +14,7 @@
 #include <arrow/record_batch.h>
 #include <boost/json.hpp>
 
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -26,10 +27,15 @@
 
 namespace warpsql {
 
-// The identity an access token establishes (spec §9.1).
+// The identity an access token establishes (spec §9.1). Handles belong to a principal
+// by name; the other fields are what the server's authorization reads.
 struct Principal {
   std::string name;
-  bool operator==(const Principal&) const = default;
+  std::string role;               // e.g. "admin", "user", "readonly"; empty if unused
+  std::string auth_method;        // how the principal signed in, e.g. "password"
+  boost::json::object claims;     // anything else the server carries (e.g. catalog access)
+
+  bool SameIdentity(const Principal& other) const { return name == other.name; }
 };
 
 // What running one statement produced: rows, or the count of rows it changed.
@@ -160,8 +166,24 @@ class Backend {
   virtual boost::json::object ServerInfo() { return {}; }
 };
 
-// Turns credentials into a principal (spec §4.1). The SDK issues and checks the
-// access tokens itself.
+// Issues and checks the bearer tokens the server hands out (spec §4.1-§4.2). The SDK's
+// default keeps random tokens in memory; a server that runs several replicas, or must
+// accept its tokens after a restart, supplies signed ones (e.g. JWTs).
+class TokenService {
+ public:
+  virtual ~TokenService() = default;
+
+  struct Issued {
+    std::string token;
+    std::chrono::seconds expires_in;
+  };
+  virtual Issued Issue(const Principal& principal) = 0;
+  // The principal a token belongs to. Throws Error(kInvalidToken) when it is missing,
+  // malformed, forged or expired.
+  virtual Principal Validate(std::string_view token) = 0;
+};
+
+// Turns credentials into a principal (spec §4.1).
 class Authenticator {
  public:
   virtual ~Authenticator() = default;

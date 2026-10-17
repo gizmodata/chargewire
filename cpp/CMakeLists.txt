@@ -21,11 +21,14 @@ FetchContent_MakeAvailable(Boost)
 find_package(OpenSSL 3 REQUIRED)
 
 # Arrow C++ (IPC only) and DuckDB 2.0, built by scripts/build-arrow.sh and
-# scripts/build-duckdb.sh at pinned versions.
-set(WARPSQL_DEPS "${CMAKE_CURRENT_SOURCE_DIR}/.deps")
-find_package(Arrow CONFIG REQUIRED PATHS "${WARPSQL_DEPS}/arrow-install" NO_DEFAULT_PATH)
-find_library(DUCKDB_LIBRARY duckdb PATHS "${WARPSQL_DEPS}/duckdb-install/lib" NO_DEFAULT_PATH
-             REQUIRED)
+# scripts/build-duckdb.sh at pinned versions. A project that includes this one can
+# point at its own builds.
+set(WARPSQL_ARROW_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/.deps/arrow-install"
+    CACHE PATH "Arrow C++ install prefix")
+set(WARPSQL_DUCKDB_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/.deps/duckdb-install"
+    CACHE PATH "DuckDB install prefix (with duckdb_v2.h)")
+find_package(Arrow CONFIG REQUIRED PATHS "${WARPSQL_ARROW_PREFIX}" NO_DEFAULT_PATH)
+find_library(DUCKDB_LIBRARY duckdb PATHS "${WARPSQL_DUCKDB_PREFIX}/lib" NO_DEFAULT_PATH REQUIRED)
 
 # The SDK: everything the protocol requires, independent of any engine.
 add_library(warpsql
@@ -47,15 +50,20 @@ target_link_libraries(warpsql PUBLIC Boost::beast Boost::json Boost::url Arrow::
                                      OpenSSL::SSL OpenSSL::Crypto)
 target_compile_options(warpsql PRIVATE -Wall -Wextra)
 
-# The reference server: the SDK in front of DuckDB 2.0, through its v2 C API only.
-add_executable(warp-duckdb
+# The DuckDB backend: DuckDB 2.0 behind the SDK, through its v2 C API only. Servers
+# built on it extend DuckDBBackend and DuckDBSession.
+add_library(warpsql_duckdb
   src/duckdb/duckdb_backend.cc
   src/duckdb/duckdb_session.cc
   src/duckdb/duckdb_sql.cc
   src/duckdb/duckdb_upload.cc
-  src/duckdb/duckdb_values.cc
-  src/duckdb/main.cc)
-target_include_directories(warp-duckdb PRIVATE src/duckdb "${WARPSQL_DEPS}/duckdb-install/include")
-target_link_libraries(warp-duckdb PRIVATE warpsql "${DUCKDB_LIBRARY}")
-set_target_properties(warp-duckdb PROPERTIES BUILD_RPATH "${WARPSQL_DEPS}/duckdb-install/lib")
+  src/duckdb/duckdb_values.cc)
+target_include_directories(warpsql_duckdb PUBLIC src/duckdb "${WARPSQL_DUCKDB_PREFIX}/include")
+target_link_libraries(warpsql_duckdb PUBLIC warpsql "${DUCKDB_LIBRARY}")
+target_compile_options(warpsql_duckdb PRIVATE -Wall -Wextra)
+
+# The reference server.
+add_executable(warp-duckdb src/duckdb/main.cc)
+target_link_libraries(warp-duckdb PRIVATE warpsql_duckdb)
+set_target_properties(warp-duckdb PROPERTIES BUILD_RPATH "${WARPSQL_DUCKDB_PREFIX}/lib")
 target_compile_options(warp-duckdb PRIVATE -Wall -Wextra)

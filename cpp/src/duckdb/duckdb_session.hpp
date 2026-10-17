@@ -32,6 +32,9 @@ class DuckDBSession : public warpsql::EngineSession {
   void Commit() override;
   void Rollback() override;
 
+ protected:
+  duckdb_v2_connection_handle connection() const { return connection_.get(); }
+
  private:
   void EndTransaction(std::string_view sql);
   std::shared_ptr<arrow::RecordBatchReader> TablesWithSchemas(

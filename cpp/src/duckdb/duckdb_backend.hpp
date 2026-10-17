@@ -27,6 +27,14 @@ class DuckDBBackend : public warpsql::Backend {
   void CheckHealth() override;
   boost::json::object ServerInfo() override;
 
+  duckdb_v2_instance_handle instance() const { return instance_.get(); }
+  const std::string& duckdb_version() const { return version_; }
+
+ protected:
+  // Creates the engine side of a session; servers built on this backend return their
+  // own DuckDBSession subclass.
+  virtual std::unique_ptr<warpsql::EngineSession> NewSession(const warpsql::Principal& principal);
+
  private:
   Environment environment_;
   Instance instance_;

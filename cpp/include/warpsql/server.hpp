@@ -45,8 +45,11 @@ struct ServerOptions {
 
 class Server {
  public:
+  // `tokens` may be null: the SDK then issues random in-memory tokens, valid for
+  // `options.token_lifetime` on this process only.
   Server(ServerOptions options, std::shared_ptr<Backend> backend,
-         std::shared_ptr<Authenticator> authenticator);
+         std::shared_ptr<Authenticator> authenticator,
+         std::shared_ptr<TokenService> tokens = nullptr);
   ~Server();
   Server(const Server&) = delete;
   Server& operator=(const Server&) = delete;

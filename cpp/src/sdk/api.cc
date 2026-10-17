@@ -343,7 +343,7 @@ Task<Response> Api::IssueToken(Request& request) {
   } else {
     throw Error(ErrorCode::kBadRequest, std::format("unsupported grant_type '{}'", grant_type));
   }
-  const auto issued = state_.tokens.Issue(principal);
+  const auto issued = state_.tokens->Issue(principal);
   co_return JsonResponse(http::status::ok,
                          json::object{{"access_token", issued.token},
                                       {"token_type", "Bearer"},
@@ -351,7 +351,7 @@ Task<Response> Api::IssueToken(Request& request) {
 }
 
 Principal Api::Authenticate(const Request& request) const {
-  return state_.tokens.Validate(BearerToken(request.Header("Authorization")));
+  return state_.tokens->Validate(BearerToken(request.Header("Authorization")));
 }
 
 std::shared_ptr<Session> Api::OwnSession(const Request& request, const std::string& session_id) {

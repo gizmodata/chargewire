@@ -36,7 +36,8 @@ struct ServerState {
   net::io_context& io;
   net::thread_pool& engine_pool;
 
-  TokenStore tokens;
+  std::shared_ptr<TokenService> tokens;
+  std::shared_ptr<TokenStore> in_memory_tokens;  // when the server brought no TokenService
   SessionRegistry sessions;
   IdempotencyStore idempotency;
   RetainedQuota quota;

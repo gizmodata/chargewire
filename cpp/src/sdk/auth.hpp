@@ -13,18 +13,13 @@
 
 namespace warpsql::detail {
 
-class TokenStore {
+// The default TokenService: random tokens, kept (as SHA-256) in memory.
+class TokenStore : public TokenService {
  public:
   explicit TokenStore(std::chrono::seconds lifetime) : lifetime_(lifetime) {}
 
-  struct Issued {
-    std::string token;
-    std::chrono::seconds expires_in;
-  };
-  Issued Issue(const Principal& principal);
-
-  // The principal a bearer token belongs to. Throws Error(kInvalidToken).
-  Principal Validate(std::string_view token) const;
+  Issued Issue(const Principal& principal) override;
+  Principal Validate(std::string_view token) override;
 
   // Drops expired tokens.
   void Sweep();
