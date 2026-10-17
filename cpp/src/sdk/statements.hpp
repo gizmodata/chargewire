@@ -72,6 +72,7 @@ class Statement {
   json::object Document(std::optional<double> progress) const;
   StatementState state() const;
   bool IsTerminal() const;
+  bool CancelRequested() const;
   // True once the statement has produced its outcome (rows or update) or ended.
   bool HasOutcome() const;
   bool HasRows() const;
@@ -135,6 +136,7 @@ class Statement {
 
   bool finish_if_abandoned_ = false;
   bool abandoned_ = false;  // unretained, reader gone: batches are counted, not kept
+  bool abandon_pending_ = false;  // abandoned before the outcome was known
   bool waiting_for_reader_ = false;
   bool read_claimed_ = false;  // unretained: the one read has started
   bool reader_active_ = false;

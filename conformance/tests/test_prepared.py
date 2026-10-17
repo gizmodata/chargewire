@@ -152,3 +152,21 @@ def test_query_for_no_parameter_rows_returns_no_rows(warp, session_id):
     table = read_table(content=response.content)
     assert table.num_rows == 0
     assert table.schema.names == ["v"]
+
+
+def test_prepared_statements_with_typed_parameters_close_cleanly(warp):
+    # Preparing and closing statements whose parameters have rich types, in sessions
+    # that then end, must leave the server healthy (a server once destroyed parameter
+    # types it didn't own here; the harness fails the run if the server dies).
+    sqls = ["SELECT CAST(? AS INTEGER) AS a", "SELECT ? + 1 AS b", "SELECT CAST(? AS DECIMAL(10, 2)) AS c",
+            "SELECT CAST(? AS UUID) AS d", "SELECT CAST(? AS INTEGER[]) AS e"]
+    for _ in range(5):
+        session_id = warp.new_session()
+        for sql in sqls:
+            doc = prepare(warp=warp, session_id=session_id, sql=sql)
+            closed = warp.http.delete(url=f"{warp.session_url(session_id)}/prepared/{doc['prepared_id']}",
+                                      headers=warp.headers())
+            assert closed.status_code == 204, closed.text
+        prepare(warp=warp, session_id=session_id, sql="SELECT CAST(? AS DECIMAL(18, 4)) AS kept")
+        warp.http.delete(url=warp.session_url(session_id), headers=warp.headers())
+    assert warp.query(session_id=warp.new_session(), sql="SELECT 42 AS ok").to_pylist() == [{"ok": 42}]

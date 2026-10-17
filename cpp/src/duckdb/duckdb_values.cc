@@ -73,10 +73,12 @@ ParameterTypes ParameterTypes::Load(duckdb_v2_connection_handle connection,
   Call([&](auto* e) { return duckdb_v2_schema_get_count(parameters.get(), &count, e); });
   for (idx_t i = 0; i < count; i++) {
     duckdb_v2_identifier_t name{};
-    LogicalType type;
+    duckdb_v2_logical_type_handle borrowed = nullptr;  // the schema's: never destroy it
     Call([&](auto* e) {
-      return duckdb_v2_schema_get_field(parameters.get(), i, &name, type.out(), e);
+      return duckdb_v2_schema_get_field(parameters.get(), i, &name, &borrowed, e);
     });
+    LogicalType type;  // our own copy outlives the schema
+    Call([&](auto* e) { return duckdb_v2_logical_type_copy(borrowed, type.out(), e); });
     const auto id = TypeId(type.get());
     if (id == DUCKDB_V2_LOGICAL_TYPE_ID_INVALID || id == DUCKDB_V2_LOGICAL_TYPE_ID_SQLNULL ||
         id == DUCKDB_V2_LOGICAL_TYPE_ID_UNKNOWN || id == DUCKDB_V2_LOGICAL_TYPE_ID_ANY) {

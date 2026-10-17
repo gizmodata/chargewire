@@ -11,7 +11,10 @@ password from an environment variable, such as `warp-duckdb`:
     WARP_SQL_TEST_SERVER_PASSWORD_ENV=WARP_DUCKDB_PASSWORD   (the default)
     WARP_SQL_TEST_SERVER_USERNAME=warp                       (the default)
 
-The suite fails, never skips, when it has no reachable server.
+The suite fails, never skips, when it has no reachable server. A server it started must
+also survive every test and stop cleanly (exit code 0) at the end: a crash, including
+one a sanitizer reports at shutdown, fails the run with the end of the server's log
+(kept in WARP_SQL_TEST_SERVER_LOG, or a temporary file).
 """
 
 import dataclasses
@@ -20,7 +23,9 @@ import secrets
 import signal
 import socket
 import subprocess
+import tempfile
 import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -34,6 +39,17 @@ class ServerUnderTest:
     username: str
     password: str
     process: subprocess.Popen | None = None
+    log: Path | None = None
+
+    def log_tail(self, lines: int = 60) -> str:
+        if self.log is None or not self.log.exists():
+            return ""
+        return "\n".join(self.log.read_text(errors="replace").splitlines()[-lines:])
+
+    def check_alive(self) -> None:
+        if self.process is not None and self.process.poll() is not None:
+            pytest.fail(reason=f"the server died (exit code {self.process.returncode}):\n"
+                               f"{self.log_tail()}", pytrace=False)
 
 
 def free_port() -> int:
@@ -63,12 +79,14 @@ def start_server(binary: str, extra_args: list[str] | None = None) -> ServerUnde
     password = secrets.token_urlsafe(nbytes=12) + ":p@ss:word"
     password_env = os.environ.get("WARP_SQL_TEST_SERVER_PASSWORD_ENV", "WARP_DUCKDB_PASSWORD")
     username = os.environ.get("WARP_SQL_TEST_SERVER_USERNAME", "warp")
-    process = subprocess.Popen(
-        args=[binary, "--host", "127.0.0.1", "--port", str(port), *(extra_args or [])],
-        env={**os.environ, password_env: password},
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    log = Path(os.environ.get("WARP_SQL_TEST_SERVER_LOG")
+               or tempfile.mkstemp(prefix="warp-sql-server-", suffix=".log")[1])
+    with log.open(mode="ab") as out:
+        process = subprocess.Popen(
+            args=[binary, "--host", "127.0.0.1", "--port", str(port), *(extra_args or [])],
+            env={**os.environ, password_env: password}, stdout=out, stderr=subprocess.STDOUT)
     server = ServerUnderTest(base_url=f"http://127.0.0.1:{port}", username=username,
-                             password=password, process=process)
+                             password=password, process=process, log=log)
     try:
         wait_until_up(base_url=server.base_url)
     except BaseException:
@@ -77,15 +95,19 @@ def start_server(binary: str, extra_args: list[str] | None = None) -> ServerUnde
     return server
 
 
-def stop_server(server: ServerUnderTest) -> None:
-    if server.process is None or server.process.poll() is not None:
-        return
+def stop_server(server: ServerUnderTest) -> int | None:
+    """Stops the server; returns its exit code (None if it had to be killed)."""
+    if server.process is None:
+        return 0
+    if server.process.poll() is not None:
+        return server.process.returncode
     server.process.send_signal(signal.SIGTERM)
     server.process.send_signal(signal.SIGTERM)  # the second signal stops without draining
     try:
-        server.process.wait(timeout=20)
+        return server.process.wait(timeout=20)
     except subprocess.TimeoutExpired:
         server.process.kill()
+        return None
 
 
 @pytest.fixture(scope="session")
@@ -94,7 +116,10 @@ def server():
     if binary:
         started = start_server(binary=binary)
         yield started
-        stop_server(server=started)
+        code = stop_server(server=started)
+        if code != 0:
+            pytest.fail(reason=f"the server did not stop cleanly (exit code {code}):\n"
+                               f"{started.log_tail()}", pytrace=False)
         return
     url = os.environ.get("WARP_SQL_TEST_URL")
     if not url:
@@ -110,6 +135,7 @@ def warp(server):
     client = Warp(base_url=server.base_url, username=server.username, password=server.password)
     yield client
     client.close()
+    server.check_alive()
 
 
 @pytest.fixture

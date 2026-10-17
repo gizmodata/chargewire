@@ -482,7 +482,8 @@ void Api::Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> state
       StatementOutcome outcome = work(session->engine());
       if (outcome.rows) {
         statement->SetRows(outcome.rows->schema(), outcome.finish_if_abandoned);
-        for (;;) {
+        // A read deleted before it started producing stops before its first batch.
+        for (; !statement->CancelRequested();) {
           auto next = outcome.rows->Next();
           if (!next.ok()) {
             throw Error(ErrorCode::kExecutionError, next.status().message());

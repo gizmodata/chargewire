@@ -79,6 +79,13 @@ void Statement::SetRows(std::shared_ptr<arrow::Schema> schema, bool finish_if_ab
     std::lock_guard lock(mutex_);
     kind_ = Kind::kRows;
     finish_if_abandoned_ = finish_if_abandoned;
+    if (abandon_pending_) {  // deleted before anyone knew whether it writes
+      if (finish_if_abandoned) {
+        abandoned_ = true;
+      } else if (cancel_reason_ == CancelReason::kNone) {
+        cancel_reason_ = CancelReason::kClient;
+      }
+    }
     schema_ = std::move(schema);
     schema_base64_ = std::move(encoded);
   }
@@ -194,6 +201,13 @@ bool Statement::RequestCancel(CancelReason reason) {
 bool Statement::AbandonRead() {
   {
     std::lock_guard lock(mutex_);
+    if (IsTerminalLocked()) {
+      return true;  // nothing left to stop
+    }
+    if (kind_ == Kind::kUnknown) {
+      abandon_pending_ = true;  // SetRows decides, once the engine says whether it writes
+      return true;
+    }
     if (!finish_if_abandoned_) {
       return false;
     }
@@ -233,6 +247,11 @@ void Statement::DropBatches() {
 StatementState Statement::state() const {
   std::lock_guard lock(mutex_);
   return state_;
+}
+
+bool Statement::CancelRequested() const {
+  std::lock_guard lock(mutex_);
+  return cancel_reason_ != CancelReason::kNone;
 }
 
 bool Statement::IsTerminal() const {

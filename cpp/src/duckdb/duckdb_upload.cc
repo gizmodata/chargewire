@@ -94,10 +94,10 @@ void Bind(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_function_bin
     Call([&](auto* e) { return duckdb_v2_schema_get_count(columns.get(), &count, e); });
     for (idx_t i = 0; i < count; i++) {
       duckdb_v2_identifier_t name{};
-      LogicalType type;
-      Call([&](auto* e) { return duckdb_v2_schema_get_field(columns.get(), i, &name, type.out(), e); });
+      duckdb_v2_logical_type_handle type = nullptr;  // borrowed from the schema: never destroy it
+      Call([&](auto* e) { return duckdb_v2_schema_get_field(columns.get(), i, &name, &type, e); });
       Call([&](auto* e) {
-        return duckdb_v2_table_function_bind_add_result_column(result, &name, type.get(), e);
+        return duckdb_v2_table_function_bind_add_result_column(result, &name, type, e);
       });
     }
     duckdb_v2_opaque bind_data{scan.release(), [](void* p) { delete static_cast<Scan*>(p); },
