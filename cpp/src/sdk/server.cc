@@ -1,5 +1,7 @@
 #include "warpsql/server.hpp"
 
+#include <openssl/crypto.h>
+
 #include <thread>
 
 #include "api.hpp"
@@ -222,5 +224,7 @@ void Server::Drain(std::chrono::seconds grace) { impl_->Drain(grace); }
 void Server::Stop() { impl_->Stop(); }
 
 void Server::Wait() { impl_->Wait(); }
+
+void InitializeProcess() { OPENSSL_init_crypto(OPENSSL_INIT_NO_ATEXIT, nullptr); }
 
 }  // namespace warpsql

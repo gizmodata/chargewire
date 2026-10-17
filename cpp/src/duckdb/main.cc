@@ -77,6 +77,7 @@ Flags ParseFlags(int argc, char** argv) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  warpsql::InitializeProcess();
   Flags flags = ParseFlags(argc, argv);
   const char* password = std::getenv("WARP_DUCKDB_PASSWORD");
   if (password == nullptr || *password == '\0') {

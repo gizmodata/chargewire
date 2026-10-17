@@ -53,6 +53,11 @@ struct ServerOptions {
   std::vector<std::string> cors_allowed_origins;  // empty: no cross-origin access
 };
 
+// Call first in main(), before anything uses OpenSSL. It keeps OpenSSL from freeing its
+// global state at exit: a thread that finishes after that (an engine or HTTP worker
+// still winding down) would otherwise crash in its thread-local RNG cleanup.
+void InitializeProcess();
+
 class Server {
  public:
   // `tokens` may be null: the SDK then issues random in-memory tokens, valid for
