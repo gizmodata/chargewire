@@ -1,22 +1,48 @@
-# Warp SQL
+<p align="center">
+  <a href="spec/warp-sql.md">
+    <img src="docs/assets/warp-sql-banner.svg" alt="Warp SQL: an open protocol for SQL over HTTP, powered by Apache Arrow. By GizmoData." width="100%">
+  </a>
+</p>
 
-**An open protocol for SQL over HTTP, powered by Apache Arrow.**
+<p align="center">
+  <a href="spec/warp-sql.md"><img src="https://img.shields.io/badge/spec-draft%200.1.0-31a8db.svg" alt="Spec: draft 0.1.0"></a>
+  <a href="conformance/tests"><img src="https://img.shields.io/badge/conformance-99%20tests-brightgreen.svg" alt="Conformance: 99 tests"></a>
+  <a href="spec/warp-sql.md#21-transport"><img src="https://img.shields.io/badge/transport-HTTP%2F1.1%20%2B%20TLS-f15a24.svg" alt="Transport: HTTP/1.1 + TLS"></a>
+  <a href="https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format"><img src="https://img.shields.io/badge/wire%20format-Arrow%20IPC-f15a24.svg" alt="Wire format: Arrow IPC"></a>
+  <img src="https://img.shields.io/badge/gRPC-not%20needed-lightgrey.svg" alt="No gRPC">
+  <br>
+  <a href="https://github.com/gizmodata/hardcharger"><img src="https://img.shields.io/badge/server-Hardcharger-f15a24.svg" alt="Server: Hardcharger"></a>
+  <a href="cpp/README.md"><img src="https://img.shields.io/badge/reference%20server-warp--duckdb-fff000.svg?logo=duckdb&logoColor=black" alt="Reference server: warp-duckdb"></a>
+  <a href="https://github.com/gizmodata/warp-sql-adbc"><img src="https://img.shields.io/badge/ADBC%20driver-Go%20%7C%20Python-blue.svg?logo=Go" alt="ADBC driver"></a>
+  <a href="https://github.com/gizmodata/warp-sql-jdbc"><img src="https://img.shields.io/badge/JDBC%20driver-Java-red.svg?logo=openjdk" alt="JDBC driver"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-brightgreen.svg" alt="Apache 2.0 license"></a>
+  <a href="https://gizmodata.com"><img src="https://img.shields.io/badge/by-GizmoData-f15a24.svg" alt="GizmoData"></a>
+</p>
 
-Warp SQL lets any HTTP client run SQL against a database server and get Arrow data
-back: a browser `fetch`, `curl`, or any language's standard HTTP library. No gRPC,
-no protobuf, no generated code.
+<h3 align="center">Run SQL from anything that speaks HTTP. Get Arrow back.</h3>
 
-- **Arrow on the wire.** Results, query parameters and bulk uploads are Arrow IPC
-  streams (`application/vnd.apache.arrow.stream`), so every Arrow library can read
-  them directly. Control messages are small JSON documents.
-- **Long queries survive real networks.** Submit a query, get a handle, poll it,
-  and fetch the result later. A dropped download resumes from the batch where it
-  stopped. No request has to outlive a proxy timeout.
-- **Short queries stay one round trip.** One `POST` can run a query and stream its
-  result.
-- **Safe by construction.** Every handle is bound to the identity that created it
-  and checked on every use; credentials are bearer tokens, never cookies.
-- **Engine-neutral and open.** Apache-2.0 licensed. Any engine can implement it.
+---
+
+## ⚡ What is Warp SQL?
+
+Warp SQL is an open protocol that lets any HTTP client run SQL against a database server
+and get [Apache Arrow](https://arrow.apache.org) data back: a browser `fetch`, `curl`, or
+any language's standard HTTP library. No gRPC, no protobuf, no generated code.
+
+- 🏹 **Arrow on the wire.** Results, query parameters and bulk uploads are Arrow IPC
+  streams (`application/vnd.apache.arrow.stream`), so every Arrow library reads them
+  directly. Control messages are small JSON documents.
+- 🚀 **Short queries stay one round trip.** One `POST` runs a query and streams its result.
+- 🌐 **Long queries survive real networks.** Submit a query, get a handle, poll it and fetch
+  the result later. A dropped download resumes from the batch where it stopped, and no
+  request has to outlive a proxy timeout.
+- 🔐 **Safe by construction.** Every handle is bound to the identity that created it and
+  checked on every use. Credentials are bearer tokens, never cookies. Results and metadata
+  follow the caller's authorization.
+- 🧩 **Engine-neutral and open.** Apache-2.0 licensed: any engine can implement it, and a
+  black-box conformance suite tells you when you have.
+
+## 👀 A quick look
 
 ```bash
 # Get a token, open a session, run a query, read the result with pyarrow.
@@ -36,40 +62,132 @@ curl -s https://db.example.com/warp/v1/sessions/$SESSION/statements \
 python -c "import pyarrow.ipc as ipc; print(ipc.open_stream(source='result.arrows').read_all())"
 ```
 
-*(Runs against `warp-duckdb`, the reference server in [`cpp/`](cpp/README.md).)*
+Every server describes itself at `GET /warp`, so a client knows what it may use:
 
-## Status
+```json
+{
+  "protocol": "warp-sql",
+  "protocol_versions": ["1"],
+  "draft": "0.1.0",
+  "server": {"name": "warp-duckdb", "version": "0.1.0 (DuckDB v2.0.0-dev88520)"},
+  "capabilities": ["prepared_statements", "transactions", "ingest", "result_retention",
+                   "long_poll", "ipc_compression_zstd"],
+  "auth": {"grant_types": ["password"]}
+}
+```
 
-**Draft 0.1.0.** The protocol is being designed in the open; expect changes until
-1.0.0. GizmoSQL 2.0 is the first server, and its acceptance bar is that it passes
-every GizmoSQL 1.x test over Warp SQL alone ([parity plan](docs/gizmosql-parity.md)).
+*(Both run against `warp-duckdb`, the reference server in [`cpp/`](cpp/README.md).)*
 
-## Contents
+## 🔄 How it works
+
+```mermaid
+sequenceDiagram
+  participant C as Client
+  participant S as Warp SQL server
+  C->>S: POST /warp/v1/auth/token
+  S-->>C: bearer token
+  C->>S: POST /warp/v1/sessions
+  S-->>C: session_id
+  alt short query: one round trip
+    C->>S: POST …/statements  (Accept: Arrow stream)
+    S-->>C: Arrow IPC stream
+  else long query: submit, poll, fetch
+    C->>S: POST …/statements  (Prefer: respond-async)
+    S-->>C: 201 statement document
+    C->>S: GET …/statements/{id}  (long-poll)
+    S-->>C: succeeded: result partitions
+    C->>S: GET …/statements/{id}/result?from_batch=N
+    S-->>C: Arrow IPC stream (resumable)
+  end
+```
+
+## 📦 What the protocol covers
+
+| | Spec |
+|---|---|
+| 🔎 Discovery, health and capabilities | [§3](spec/warp-sql.md#3-discovery-and-health) |
+| 🔑 Token sign-in (password, token exchange), browser sign-in | [§4](spec/warp-sql.md#4-authentication) |
+| 🗂️ Sessions with options, and transactions | [§5](spec/warp-sql.md#5-sessions) |
+| ▶️ Statements: streamed or submit/poll/fetch, positional and named bind parameters | [§6](spec/warp-sql.md#6-statements) |
+| ♻️ Retained, resumable results; errors mid-stream; idempotent submission | [§6.5–6.7](spec/warp-sql.md#65-retention-and-resumption) |
+| 🛑 Cancellation (statement and session) and timeouts | [§6.8–6.9](spec/warp-sql.md#68-cancel-and-close) |
+| 🧪 Prepared statements with JSON or Arrow parameter batches | [§7](spec/warp-sql.md#7-prepared-statements) |
+| 📥 Streaming bulk ingest, with zstd | [§8](spec/warp-sql.md#8-bulk-ingest) |
+| 🔐 Security model: principals, bound handles, governed results | [§9](spec/warp-sql.md#9-security) |
+| 📚 Metadata with Flight SQL's result schemas, so driver code carries over | [§10](spec/warp-sql.md#10-metadata) |
+| ⚠️ Problem-document errors and graceful shutdown | [§11](spec/warp-sql.md#11-errors) |
+| 🧭 Versioning rules | [§12](spec/warp-sql.md#12-versioning) |
+
+Results are described as **partitions**, each with a location, so a distributed engine can
+hand a client several streams to fetch in parallel without changing the protocol
+([docs/distributed.md](docs/distributed.md)).
+
+## 🌍 Implementations
+
+| | Project |
+|---|---|
+| Server | [**Hardcharger**](https://github.com/gizmodata/hardcharger): GizmoData's DuckDB 2.0 server |
+| Reference server | [`warp-duckdb`](cpp/README.md) (this repo): DuckDB 2.0 through its v2 C API |
+| Server SDK | [`libwarpsql`](cpp/README.md) (C++20, this repo): engines implement a `Backend`; the SDK owns authentication, handle binding, streaming, retention, cancellation and draining |
+| ADBC driver | [`warp-sql-adbc`](https://github.com/gizmodata/warp-sql-adbc): Go, with Python bindings, loadable by any ADBC driver manager |
+| JDBC driver | [`warp-sql-jdbc`](https://github.com/gizmodata/warp-sql-jdbc): pure Java |
+
+## ✅ Conformance
+
+The suite in [`conformance/`](conformance/tests) is black-box: it talks to a server only
+through the protocol, so any implementation can run it. It starts the server itself (and
+fails, never skips, without one):
+
+```bash
+cd conformance
+uv venv .venv && uv pip install --python .venv/bin/python -e .
+WARP_SQL_TEST_SERVER_BINARY=../cpp/build/warp-duckdb .venv/bin/python -m pytest -q
+```
+
+For another server, tell the suite which variable carries its administrator's password
+(`WARP_SQL_TEST_SERVER_PASSWORD_ENV`) and the user name (`WARP_SQL_TEST_SERVER_USERNAME`),
+or point it at a running server with `WARP_SQL_TEST_URL`.
+
+## 🛠️ Build the SDK and reference server
+
+```bash
+cd cpp
+./scripts/build-duckdb.sh     # DuckDB 2.0 at the pinned commit
+./scripts/build-arrow.sh      # Arrow C++, IPC only
+OPENSSL_ROOT_DIR=$(brew --prefix openssl@3) cmake -S . -B build -G Ninja
+cmake --build build
+WARP_DUCKDB_PASSWORD='…' ./build/warp-duckdb --database my.duckdb --port 31337
+```
+
+See [cpp/README.md](cpp/README.md) for TLS, mTLS and the other options.
+
+## 🗺️ Status and roadmap
+
+**Draft 0.1.0.** The protocol is designed in the open, and may still change until 1.0.0.
+
+1. ~~Spec draft.~~
+2. ~~Spike: which Arrow library does the IPC, checked value by value for every DuckDB
+   type.~~ Arrow C++ with IPC only ([results](spikes/duckdb-arrow-ipc/README.md)).
+3. ~~Reference server SDK (C++) and conformance suite.~~
+4. ~~ADBC (Go, Python) and JDBC drivers.~~
+5. ~~A production server on the SDK~~: [Hardcharger](https://github.com/gizmodata/hardcharger),
+   which runs GizmoSQL 1.x's test battery over Warp SQL alone.
+6. Parallel multi-partition results and a JavaScript client. **In progress.**
+7. Spec 1.0.0: [Appendix A](spec/warp-sql.md#appendix-a-open-items-before-10) lists the open items.
+
+## 📂 In this repo
 
 | Path | What |
 |---|---|
 | [`spec/warp-sql.md`](spec/warp-sql.md) | The protocol specification |
-| [`docs/server-sdk.md`](docs/server-sdk.md) | Design of the reference C++ server library (engines override "bare" methods, as with Flight SQL's server base class) |
-| [`cpp/`](cpp/README.md) | The C++ server SDK (`libwarpsql`) and the DuckDB reference server (`warp-duckdb`) |
-| [`conformance/`](conformance/tests) | Black-box conformance tests any Warp SQL server can run |
-| [`docs/gizmosql-parity.md`](docs/gizmosql-parity.md) | How GizmoSQL 1.x's Flight SQL surface and tests map onto Warp SQL |
+| [`docs/server-sdk.md`](docs/server-sdk.md) | Design of the C++ server SDK |
+| [`docs/distributed.md`](docs/distributed.md) | How partitioned results leave room for distributed query |
+| [`docs/gizmosql-parity.md`](docs/gizmosql-parity.md) | How GizmoSQL 1.x's Flight SQL surface maps onto Warp SQL |
+| [`cpp/`](cpp/README.md) | `libwarpsql` and `warp-duckdb` |
+| [`conformance/`](conformance/tests) | The conformance suite |
 | [`CHANGELOG.md`](CHANGELOG.md) | Changes by version |
 
-## Roadmap
-
-1. Spec draft (this).
-2. ~~Spike: which Arrow library does the IPC, checked value by value for every DuckDB
-   type.~~ Done: Arrow C++ with IPC only ([results](spikes/duckdb-arrow-ipc/README.md)).
-3. Reference server SDK (C++) and a conformance test suite. **In progress**: sessions,
-   statements, bind parameters, async results, retention, resumption, cancellation,
-   timeouts and idempotency work and pass the suite; prepared statements with Arrow
-   parameters, ingest and metadata are next.
-4. Clients: [`warp-sql-adbc`](https://github.com/gizmodata/warp-sql-adbc) (generic Go
-   ADBC driver) and a JavaScript client.
-5. GizmoSQL 2.0 on the SDK, passing the 1.x test suite.
-6. Spec 1.0.0.
-
-## Relationship to Apache Arrow
+## 🏹 Relationship to Apache Arrow
 
 Warp SQL is an independent project; it is not part of, or endorsed by, the Apache
 Software Foundation. It uses the Arrow IPC format and borrows Arrow Flight SQL's
@@ -81,6 +199,13 @@ Apache Arrow, Arrow, Apache, the Apache logo, and the Apache Arrow project logo 
 either registered trademarks or trademarks of The Apache Software Foundation in the
 United States and other countries.
 
-## License
+## 📄 License
 
-[Apache License 2.0](LICENSE).
+Apache License 2.0; see [LICENSE](LICENSE).
+
+---
+
+<p align="center">
+  <a href="https://gizmodata.com"><img src="docs/assets/gizmodata-logo.png" alt="GizmoData" width="56"></a><br>
+  <sub>Warp SQL is developed by <a href="https://gizmodata.com">GizmoData</a></sub>
+</p>
