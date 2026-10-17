@@ -95,6 +95,8 @@ name (`timeout_ms`, `idle_timeout_s`).
 | `Warp-Retain-Result` | submit, execute | `true` or `false`: keep the result for re-reading (§6.5) |
 | `Warp-Query-Tag` | submit, execute, ingest | A JSON object recorded with the statement for observability |
 | `Warp-IPC-Compression` | any request that returns Arrow | `zstd` or `none`: Arrow buffer compression the client accepts (§8) |
+| `Warp-Result-Partitions` | submit, execute | The most partitions the client reads at once (§6.10) |
+| `Warp-Result-Order` | submit, execute | `preserve` or `any`: whether the client needs rows in order (§6.10) |
 
 Servers MUST accept request headers totalling at least 16 KiB (identity tokens can
 be large) and MUST answer a larger header block with `431 Request Header Fields Too
@@ -107,6 +109,7 @@ Large` (code `headers_too_large`). The limit SHOULD be configurable.
 | `Warp-Request-Id` | every response | The `request_id` of this request (§11), also in the server's logs |
 | `Warp-Statement-Id` | statement responses | The statement the response belongs to |
 | `Warp-IPC-Compression` | Arrow responses | The Arrow buffer compression used: `zstd` or `none` (§8.2) |
+| `Warp-Result-Partitions`, `Warp-Result-Order` | streamed results | How a split result is spread over partitions (§6.10) |
 
 ## 3. Discovery and health
 
@@ -121,7 +124,7 @@ These endpoints need no authentication.
   "draft": "0.1.0",
   "server": {"name": "GizmoSQL", "version": "2.0.0"},
   "capabilities": ["prepared_statements", "transactions", "ingest", "result_retention",
-                   "long_poll", "ipc_compression_zstd", "oauth_browser"],
+                   "long_poll", "ipc_compression_zstd", "result_partitions", "oauth_browser"],
   "auth": {"grant_types": ["password", "token_exchange"]}
 }
 ```
@@ -384,18 +387,19 @@ or, for a statement that returns no rows:
 UPDATE, DELETE) and absent otherwise (DDL, SET, …); clients report it as unknown.
 
 `partitions` lists the pieces of the result. Most results have one partition with
-`location: null`, meaning "this server". A server MAY split a result into several
-partitions, and a partition's `location` MAY be the base URL of another server that
-holds it (capability `partitioned_results`); the client fetches each partition from
-its location with the same access token and may do so in parallel. `location` is an
-absolute URL of the same form as a server's base (`https://worker-3.example:31337/warp`),
-and the partition is read at
+`location: null`, meaning "this server". A client that asks for it (§6.10) may get a
+result split into several partitions on this server, read concurrently over separate
+connections; the result then also carries `partition_order` (§6.10). A partition's
+`location` MAY be the base URL of another server that holds it (capability
+`partitioned_results`); the client fetches each partition from its location with the
+same access token and may do so in parallel. `location` is an absolute URL of the same
+form as a server's base (`https://worker-3.example:31337/warp`), and the partition is
+read at
 `{location}/v1/sessions/{session_id}/statements/{statement_id}/result?partition={index}`
 with the coordinator's session and statement ids (whether it carries its own token
-instead is §A.4). The order of rows
-across partitions is undefined unless the query's `ORDER BY` fixes it, in which case
-the server MUST return a single partition. `batches` and `rows` are known only once
-the partition is complete and MAY be `null` before that.
+instead is §A.4). A client that did not ask for partitions (§6.10) gets one partition
+on this server. `batches` and `rows` are known only once the partition is complete and
+MAY be `null` before that.
 
 ### 6.3 Status: `GET /warp/v1/sessions/{session_id}/statements/{statement_id}`
 
@@ -406,7 +410,8 @@ so the server MUST answer at once.
 
 ### 6.4 Results: `GET …/statements/{statement_id}/result`
 
-Query parameters: `partition` (default 0) and `from_batch` (default 0).
+Query parameters: `partition` (default 0) and `from_batch` (default 0, counting that
+partition's batches). A partition the result doesn't have is `404` (`not_found`).
 
 Returns `200` with an Arrow stream of that partition's record batches, starting at
 batch number `from_batch` (counting from 0). The stream always begins with the
@@ -487,6 +492,61 @@ whose response was lost, including DML.
 `Warp-Statement-Timeout: <ms>` limits how long the statement may run. When it
 expires the server cancels the statement (`cancel_reason: timeout`, error code
 `statement_timeout`). A server MAY enforce a maximum of its own.
+
+### 6.10 Partitioned results
+
+Capability: `result_partitions`. One TCP connection carries what one flow of the network
+allows; a client that reads a large result over several connections at once can go
+faster. It asks for that when it submits (or executes a prepared statement):
+
+| Request header | Meaning |
+|---|---|
+| `Warp-Result-Partitions: <n>` | The client reads up to `n` partitions of the result at once (1 to 256). Without it, or with `1`, the result has one partition. |
+| `Warp-Result-Order: preserve` or `any` | `any`: the client does not need the rows in result order. Default `preserve`. |
+
+The server MAY then split the result into `k` partitions, 1 ≤ `k` ≤ `n`; it keeps a
+small result in one (a result that turns out to have fewer than two batches, for
+example). The statement document's `result` lists all `k` partitions and, when `k` is
+more than 1, says how the rows are spread over them in `partition_order`:
+
+- `interleaved` (the client asked for `preserve`): the result's batches are dealt round
+  robin. Batch `j` of the result (counting from 0, in result order) is batch `j div k`
+  of partition `j mod k`. A client puts the result back in order by taking the next
+  batch of partition 0, then of partition 1, …, then of partition `k - 1`, and again
+  from partition 0, until a partition has no next batch; then every partition has
+  ended. Every partition has as many batches as partition 0 or one fewer, and no
+  partition contains an empty batch. A query whose `ORDER BY` fixes the order keeps it
+  this way.
+- `any` (the client asked for `any`): each batch is in exactly one partition, and the
+  rows' order means nothing, within a partition or across partitions.
+
+On the streamed path (§6.1) the `200` Arrow response is partition 0, and its headers say
+how the result is split: `Warp-Result-Partitions: <k>` and `Warp-Result-Order:
+interleaved` or `any` (both absent for one partition). The client reads partitions 1 to
+`k - 1` with `GET …/result?partition=<i>` (§6.4), each on its own connection, all at
+once. Until the server has decided how to split a running statement's result, its
+document lists partition 0 only and has no `partition_order`; a client that reads the
+result while the statement runs waits for `partition_order` or a finished statement.
+
+Every partition is an Arrow stream with the result's schema. A partition's stream ends
+with the end-of-stream marker only once the statement has produced all of its rows
+successfully. If the statement fails or is cancelled, every partition stream still
+open ends without the marker (§6.6), and a partition requested afterwards gets the
+statement's error. **A client MUST read every partition to its end-of-stream marker
+before it treats the result as complete**, and MUST read the partitions concurrently:
+the server produces an unretained result only as fast as its slowest partition is
+read, so reading one partition to its end before starting the next can stall the
+statement.
+
+Retention (§6.5) applies to each partition: a retained result's partitions can each be
+re-read, and resumed with `from_batch`, until the result expires. An unretained
+partition can be read once, from batch 0. If the reader of any partition of an
+unretained result disconnects before its end, the server SHOULD cancel the statement,
+and the other partitions then end without the marker. `DELETE` and cancel (§6.8) act on
+the whole statement, every partition at once.
+
+A server without the capability ignores both headers and returns one partition, so a
+client that sends them must still check how many partitions the result has.
 
 ## 7. Prepared statements
 

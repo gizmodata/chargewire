@@ -49,6 +49,9 @@ struct ServerOptions {
   // Applies when a request sets no Warp-Statement-Timeout. 0: none.
   std::chrono::milliseconds default_statement_timeout{0};
   std::size_t retained_bytes_per_principal = std::size_t{1} << 30;
+  // Partitioned results (spec §6.10): the most partitions one result is split into when
+  // a client asks (Warp-Result-Partitions). 1: never split.
+  std::size_t max_result_partitions = 32;
 
   std::vector<std::string> cors_allowed_origins;  // empty: no cross-origin access
 };

@@ -29,6 +29,11 @@ constexpr auto kClientCheck = std::chrono::seconds(1);
 // (compressing is slow, so more of them then), the bytes they may hold, and how much
 // encoded data is gathered into one write.
 constexpr std::size_t kEncodeWindow = 2;
+// How long a result that may be split waits for its second batch before it is read as
+// one partition (spec §6.10): the stream's schema message isn't held back longer.
+constexpr auto kSplitWait = std::chrono::seconds(5);
+// The most partitions a client may ask for (Warp-Result-Partitions).
+constexpr int64_t kMaxRequestedPartitions = 256;
 constexpr std::size_t kEncodeWindowZstd = 8;
 constexpr std::size_t kEncodeBytes = 64 * 1024 * 1024;
 constexpr std::size_t kGatherBytes = 1024 * 1024;
@@ -176,14 +181,16 @@ Task<Response> Api::Handle(Request& request) {
     response.headers.emplace_back("Vary", "Origin");
     response.headers.emplace_back(
         "Access-Control-Expose-Headers",
-        "Location, Warp-Statement-Id, Warp-IPC-Compression, Warp-Request-Id, Retry-After");
+        "Location, Warp-Statement-Id, Warp-IPC-Compression, Warp-Request-Id, Retry-After, "
+        "Warp-Result-Partitions, Warp-Result-Order");
     if (request.method == http::verb::options) {
       response.headers.emplace_back("Access-Control-Allow-Methods",
                                     "GET, POST, PATCH, DELETE, OPTIONS");
       response.headers.emplace_back(
           "Access-Control-Allow-Headers",
           "Authorization, Content-Type, Accept, Prefer, Idempotency-Key, "
-          "Warp-Statement-Timeout, Warp-Retain-Result, Warp-Query-Tag, Warp-IPC-Compression");
+          "Warp-Statement-Timeout, Warp-Retain-Result, Warp-Query-Tag, Warp-IPC-Compression, "
+          "Warp-Result-Partitions, Warp-Result-Order");
       response.headers.emplace_back("Access-Control-Max-Age", "600");
     }
   }
@@ -305,7 +312,7 @@ Task<Response> Api::Discovery(Request&) {
       {"server", {{"name", identity.name}, {"version", identity.version}}},
       {"capabilities",
        json::array{"prepared_statements", "transactions", "ingest", "result_retention",
-                   "long_poll", "ipc_compression_zstd"}},
+                   "long_poll", "ipc_compression_zstd", "result_partitions"}},
       {"auth", {{"grant_types", state_.authenticator->GrantTypes()}}},
   };
   co_return JsonResponse(http::status::ok, doc);
@@ -677,6 +684,22 @@ Task<Response> Api::Launch(Request& request, std::shared_ptr<Session> session, S
 
   Statement::Config config;
   config.retain = retain;
+  // Partitioned results (spec §6.10), when the client asks and the server allows.
+  if (const auto header = request.Header("Warp-Result-Partitions"); !header.empty()) {
+    const int64_t wanted = ParseInt(header, "Warp-Result-Partitions");
+    if (wanted < 1 || wanted > kMaxRequestedPartitions) {
+      throw Error(ErrorCode::kBadRequest,
+                  std::format("Warp-Result-Partitions must be between 1 and {}", kMaxRequestedPartitions));
+    }
+    config.partitions = std::min<std::size_t>(static_cast<std::size_t>(wanted),
+                                              std::max<std::size_t>(state_.options.max_result_partitions, 1));
+  }
+  if (const auto header = request.Header("Warp-Result-Order"); !header.empty()) {
+    if (header != "preserve" && header != "any") {
+      throw Error(ErrorCode::kBadRequest, "Warp-Result-Order must be preserve or any");
+    }
+    config.any_order = header == "any";
+  }
   config.retention = state_.options.result_ttl;
   config.reserve_bytes = [this, owner = session->owner().name](int64_t bytes) {
     return state_.quota.Change(owner, bytes);
@@ -696,19 +719,30 @@ Task<Response> Api::Launch(Request& request, std::shared_ptr<Session> session, S
                                    state_.options.max_wait);
   const auto deadline = Clock::now() + wait;
   uint64_t seen = statement->changed().version();
-  while (Clock::now() < deadline &&
-         !(streamed ? statement->HasOutcome() : statement->IsTerminal())) {
-    seen = co_await statement->changed().WaitChange(seen, deadline);
+  // A streamed answer that may be split waits until the split is decided too: its
+  // headers say how many partitions there are.
+  auto ready = [&] {
+    if (!streamed) return statement->IsTerminal();
+    return statement->HasOutcome() && (!statement->HasRows() || statement->PartitionCount());
+  };
+  const auto split_deadline = Clock::now() + kSplitWait;
+  while (Clock::now() < deadline && !ready()) {
+    if (streamed && statement->HasRows() && Clock::now() >= split_deadline) {
+      statement->SettleSplit();
+      continue;
+    }
+    seen = co_await statement->changed().WaitChange(seen, std::min(deadline, split_deadline > Clock::now() ? split_deadline : deadline));
   }
 
   // A statement that failed before producing anything is an error response (§6.1).
   if (statement->state() == StatementState::kFailed && !statement->HasRows()) {
     throw *statement->error();
   }
-  if (streamed && statement->HasRows() && statement->state() != StatementState::kFailed &&
+  if (streamed && statement->HasRows() && statement->PartitionCount() &&
+      statement->state() != StatementState::kFailed &&
       statement->state() != StatementState::kCancelled) {
-    statement->ClaimRead(0);
-    co_return ResultStream(session, statement, 0, request.Header("Warp-IPC-Compression"));
+    statement->ClaimRead(0, 0);
+    co_return ResultStream(session, statement, 0, 0, request.Header("Warp-IPC-Compression"));
   }
   Response response = JsonResponse(streamed ? http::status::ok : http::status::created,
                                    StatementDocument(*session, *statement));
@@ -1033,18 +1067,30 @@ Task<Response> Api::GetResult(Request& request, const std::string& session_id,
   if (auto it = request.query.find("from_batch"); it != request.query.end()) {
     from_batch = ParseInt(it->second, "from_batch");
   }
+  int64_t partition = 0;
   if (auto it = request.query.find("partition"); it != request.query.end()) {
-    if (ParseInt(it->second, "partition") != 0) {
-      throw Error(ErrorCode::kNotFound, "this result has one partition, 0");
+    partition = ParseInt(it->second, "partition");
+    if (partition < 0) {
+      throw Error(ErrorCode::kBadRequest, "partition must not be negative");
     }
   }
 
+  // The result is ready to read once its schema is known and, for a result that may be
+  // split, once the split is decided (spec §6.10).
+  auto ready = [&] {
+    return statement->IsTerminal() || (statement->HasOutcome() && (!statement->HasRows() || statement->PartitionCount()));
+  };
   const auto deadline = Clock::now() + state_.options.max_wait;
+  const auto split_deadline = Clock::now() + kSplitWait;
   uint64_t seen = statement->changed().version();
-  while (!statement->HasOutcome() && Clock::now() < deadline) {
-    seen = co_await statement->changed().WaitChange(seen, deadline);
+  while (!ready() && Clock::now() < deadline) {
+    if (statement->HasRows() && Clock::now() >= split_deadline) {
+      statement->SettleSplit();
+      continue;
+    }
+    seen = co_await statement->changed().WaitChange(seen, std::min(deadline, split_deadline > Clock::now() ? split_deadline : deadline));
   }
-  if (!statement->HasOutcome()) {
+  if (!ready()) {
     throw Error(ErrorCode::kResultNotReady, "the statement has not produced a result yet");
   }
   if (const auto state = statement->state();
@@ -1054,22 +1100,28 @@ Task<Response> Api::GetResult(Request& request, const std::string& session_id,
   if (!statement->HasRows()) {
     throw Error(ErrorCode::kBadRequest, "this statement returns no rows");
   }
-  statement->ClaimRead(from_batch);
-  co_return ResultStream(session, statement, from_batch, request.Header("Warp-IPC-Compression"));
+  statement->ClaimRead(static_cast<std::size_t>(partition), from_batch);
+  co_return ResultStream(session, statement, static_cast<std::size_t>(partition), from_batch,
+                         request.Header("Warp-IPC-Compression"));
 }
 
 Response Api::ResultStream(std::shared_ptr<Session> session, std::shared_ptr<Statement> statement,
-                           int64_t from_batch, std::string_view compression_header) {
+                           std::size_t partition, int64_t from_batch,
+                           std::string_view compression_header) {
   const IpcCompression compression = ParseIpcCompression(compression_header);
   Response response;
   response.status = http::status::ok;
   response.content_type = kArrowStream;
   response.headers.emplace_back("Warp-Statement-Id", statement->id());
   response.headers.emplace_back("Warp-IPC-Compression", std::string(IpcCompressionName(compression)));
+  if (const auto count = statement->PartitionCount(); count && *count > 1) {
+    response.headers.emplace_back("Warp-Result-Partitions", std::to_string(*count));
+    response.headers.emplace_back("Warp-Result-Order", std::string(statement->PartitionOrder()));
+  }
   response.headers.emplace_back("X-Content-Type-Options", "nosniff");
   response.headers.emplace_back("Cache-Control", "no-store");
 
-  response.stream = [this, session, statement, from_batch,
+  response.stream = [this, session, statement, partition, from_batch,
                      compression](BodyWriter& out) -> Task<bool> {
     // However the read ends, release it; an unretained result that wasn't read to the
     // end can never be read again, so its statement is cancelled (spec §6.5).
@@ -1077,14 +1129,15 @@ Response Api::ResultStream(std::shared_ptr<Session> session, std::shared_ptr<Sta
       Api* api;
       std::shared_ptr<Session> session;
       std::shared_ptr<Statement> statement;
+      std::size_t partition;
       bool complete = false;
       ~ReadGuard() {
-        statement->EndRead();
+        statement->EndRead(partition);
         if (!complete && !statement->retained() && !statement->AbandonRead()) {
           api->Cancel(session, statement, CancelReason::kClient);
         }
       }
-    } guard{this, session, statement};
+    } guard{this, session, statement, partition};
 
     IpcStreamEncoder encoder(statement->schema(), compression);
     co_await out.Write(encoder.Begin());
@@ -1093,7 +1146,7 @@ Response Api::ResultStream(std::shared_ptr<Session> session, std::shared_ptr<Sta
       int64_t index = from_batch;
       for (;;) {
         const uint64_t seen = statement->changed().version();
-        auto [step, batch] = statement->Read(index);
+        auto [step, batch] = statement->Read(partition, index);
         switch (step) {
           case ReadStep::kBatch:
             co_await out.Write(encoder.Write(*batch));
@@ -1114,7 +1167,7 @@ Response Api::ResultStream(std::shared_ptr<Session> session, std::shared_ptr<Sta
         }
       }
     }
-    const bool complete = co_await StreamBatches(*statement, from_batch, compression, out);
+    const bool complete = co_await StreamBatches(*statement, partition, from_batch, compression, out);
     guard.complete = complete;
     co_return complete;
   };
@@ -1127,8 +1180,8 @@ Response Api::ResultStream(std::shared_ptr<Session> session, std::shared_ptr<Sta
 // into large writes (with TLS, each is encrypted in one go). Each stage runs while the
 // others do, within bounds: the statement buffers a few batches, at most kEncodeWindow
 // (kEncodeBytes) are being encoded, and one write is in flight.
-Task<bool> Api::StreamBatches(Statement& statement, int64_t from_batch, IpcCompression compression,
-                              BodyWriter& out) {
+Task<bool> Api::StreamBatches(Statement& statement, std::size_t partition, int64_t from_batch,
+                              IpcCompression compression, BodyWriter& out) {
   struct Job {
     std::shared_ptr<arrow::RecordBatch> batch;
     std::size_t bytes = 0;
@@ -1136,6 +1189,7 @@ Task<bool> Api::StreamBatches(Statement& statement, int64_t from_batch, IpcCompr
     Clock::duration took{};
   };
   struct Stats {
+    std::size_t partition;
     Clock::time_point started = Clock::now();
     Clock::duration wait_rows{}, wait_encode{}, write{}, encode{};
     int64_t batches = 0, writes = 0;
@@ -1144,17 +1198,17 @@ Task<bool> Api::StreamBatches(Statement& statement, int64_t from_batch, IpcCompr
       if (!StreamStatsEnabled()) return;
       const double wall = Seconds(Clock::now() - started);
       std::fprintf(stderr,
-                   "warpsql stream: %lld batches, %.1f MB raw, %.1f MB sent, %.3f s "
+                   "warpsql stream: partition %zu, %lld batches, %.1f MB raw, %.1f MB sent, %.3f s "
                    "(%.0f MB/s sent): waiting for rows %.3f s, waiting for encoding %.3f s, "
                    "writing %.3f s in %lld writes (%.0f MB/s while writing), encoding %.3f s of CPU "
                    "(%.0f MB/s per thread)\n",
-                   static_cast<long long>(batches), raw / 1e6, sent / 1e6, wall,
+                   partition, static_cast<long long>(batches), raw / 1e6, sent / 1e6, wall,
                    wall > 0 ? sent / 1e6 / wall : 0.0, Seconds(wait_rows), Seconds(wait_encode),
                    Seconds(write), static_cast<long long>(writes),
                    Seconds(write) > 0 ? sent / 1e6 / Seconds(write) : 0.0, Seconds(encode),
                    Seconds(encode) > 0 ? raw / 1e6 / Seconds(encode) : 0.0);
     }
-  } stats;
+  } stats{partition};
   const std::size_t window = compression == IpcCompression::kZstd ? kEncodeWindowZstd : kEncodeWindow;
   std::deque<std::shared_ptr<Job>> encoding;
   std::size_t encoding_bytes = 0;
@@ -1180,7 +1234,7 @@ Task<bool> Api::StreamBatches(Statement& statement, int64_t from_batch, IpcCompr
     const uint64_t seen = statement.changed().version();
     while (!produced_all && encoding.size() < window &&
            (encoding.empty() || encoding_bytes < kEncodeBytes)) {
-      auto [step, batch] = statement.Read(index);
+      auto [step, batch] = statement.Read(partition, index);
       if (step == ReadStep::kFailed) {
         co_return false;  // no end-of-stream marker: the client sees an incomplete stream
       }

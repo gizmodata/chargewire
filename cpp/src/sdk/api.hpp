@@ -100,9 +100,10 @@ class Api {
   json::object SessionDocument(Session& session) const;
   json::object StatementDocument(Session& session, Statement& statement) const;
   Response ResultStream(std::shared_ptr<Session> session, std::shared_ptr<Statement> statement,
-                        int64_t from_batch, std::string_view compression_header);
-  Task<bool> StreamBatches(Statement& statement, int64_t from_batch, IpcCompression compression,
-                           BodyWriter& out);
+                        std::size_t partition, int64_t from_batch,
+                        std::string_view compression_header);
+  Task<bool> StreamBatches(Statement& statement, std::size_t partition, int64_t from_batch,
+                           IpcCompression compression, BodyWriter& out);
   void Cancel(const std::shared_ptr<Session>& session, const std::shared_ptr<Statement>& statement,
               CancelReason reason);
   // Interrupts the engine again every 100 ms until `statement` ends.

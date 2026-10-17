@@ -33,9 +33,13 @@ class Statement {
  public:
   struct Config {
     bool retain = false;
-    // An unretained result's producer runs ahead of its reader by this many bytes, and by
-    // at least two batches.
+    // An unretained result's producer runs ahead of its reader by this many bytes (split
+    // over the partitions), and by at least two batches per partition.
     std::size_t unretained_buffer_bytes = 32 * 1024 * 1024;
+    // Partitioned results (spec §6.10): the most partitions the client reads at once
+    // (and the server allows), and whether it lets go of the rows' order.
+    std::size_t partitions = 1;
+    bool any_order = false;
     std::chrono::seconds retention = std::chrono::seconds(3600);
     // Reserves (positive) or releases (negative) retained bytes against the owner's
     // quota; returns false when a reservation doesn't fit.
@@ -82,14 +86,25 @@ class Statement {
   std::optional<Error> error() const;
   std::shared_ptr<arrow::Schema> schema() const;
 
-  // Starts reading the result at `from_batch`. Throws result_not_resumable (an
-  // unretained result read before, or from a later batch) or result_expired.
-  void ClaimRead(int64_t from_batch);
-  // The batch at `index`. Reading an unretained result consumes it.
-  std::pair<ReadStep, std::shared_ptr<arrow::RecordBatch>> Read(int64_t index);
+  // How many partitions the result has, once that is decided: at once for a result the
+  // client asked to have in one partition, otherwise when the statement produces its
+  // second batch (a split result) or ends with fewer (one partition).
+  std::optional<std::size_t> PartitionCount() const;
+  // Decides on one partition now if the split isn't decided yet: a result whose second
+  // batch is slow to come isn't held back for it.
+  void SettleSplit();
+  // "interleaved" or "any" for a result in several partitions (spec §6.10).
+  std::string_view PartitionOrder() const;
+
+  // Starts reading partition `partition` at `from_batch`. Throws not_found (no such
+  // partition), result_not_resumable (an unretained partition read before, or from a
+  // later batch) or result_expired. Call once the partition count is decided.
+  void ClaimRead(std::size_t partition, int64_t from_batch);
+  // The batch at `index` of `partition`. Reading an unretained result consumes it.
+  std::pair<ReadStep, std::shared_ptr<arrow::RecordBatch>> Read(std::size_t partition, int64_t index);
   // Ends a read. For an unretained result that didn't reach the end, the caller
   // cancels the statement (spec §6.5).
-  void EndRead();
+  void EndRead(std::size_t partition);
 
   // Drops a retained result whose time is up. Returns true if it did.
   bool ExpireIfDue(WallClock::time_point now);
@@ -109,6 +124,22 @@ class Statement {
   void Terminate(StatementState state, std::optional<Error> error);  // mutex_ held
   void DropBatches();                                                // mutex_ held
   bool IsTerminalLocked() const;                                     // mutex_ held
+  // The partition the next batch goes to, and whether it has room for it.
+  std::size_t Route() const;                                         // mutex_ held
+  bool HasRoom() const;                                              // mutex_ held
+  bool AnyReaderActive() const;                                      // mutex_ held
+
+  // One partition's batches (spec §6.10); a result the client didn't ask to split has
+  // just partition 0.
+  struct Partition {
+    std::deque<std::shared_ptr<arrow::RecordBatch>> batches;
+    int64_t buffered_bytes = 0;  // of an unretained partition's batches, not yet read
+    int64_t first_index = 0;  // index of batches.front(); grows as an unretained read consumes
+    int64_t batch_count = 0;
+    int64_t row_count = 0;
+    bool read_claimed = false;  // unretained: the one read has started
+    bool reader_active = false;
+  };
 
   const std::string id_;
   const Config config_;
@@ -129,10 +160,9 @@ class Statement {
   std::shared_ptr<arrow::Schema> schema_;
   std::string schema_base64_;
 
-  std::deque<std::shared_ptr<arrow::RecordBatch>> batches_;
-  int64_t buffered_bytes_ = 0;  // of an unretained result's batches, not yet read
-  int64_t first_index_ = 0;  // index of batches_.front(); grows as an unretained read consumes
-  int64_t batch_count_ = 0;
+  std::vector<Partition> partitions_{1};
+  bool split_decided_ = false;  // partitions_ has its final size
+  int64_t batch_count_ = 0;  // over all partitions
   int64_t row_count_ = 0;
   int64_t reserved_bytes_ = 0;
   bool produced_all_ = false;
@@ -141,8 +171,6 @@ class Statement {
   bool abandoned_ = false;  // unretained, reader gone: batches are counted, not kept
   bool abandon_pending_ = false;  // abandoned before the outcome was known
   bool waiting_for_reader_ = false;
-  bool read_claimed_ = false;  // unretained: the one read has started
-  bool reader_active_ = false;
   bool expired_ = false;
   std::optional<WallClock::time_point> expires_at_;
 };
