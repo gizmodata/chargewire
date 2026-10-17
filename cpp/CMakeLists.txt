@@ -17,7 +17,7 @@ function(warpsql_windows_settings target)
   if(WIN32)
     target_compile_definitions(${target} PUBLIC _WIN32_WINNT=0x0A00 NOMINMAX WIN32_LEAN_AND_MEAN)
     target_compile_options(${target} PUBLIC $<$<CXX_COMPILER_ID:MSVC>:/bigobj /utf-8 /Zc:__cplusplus>)
-    target_link_libraries(${target} PUBLIC ws2_32 mswsock crypt32)
+    target_link_libraries(${target} PUBLIC ws2_32 crypt32)
   endif()
 endfunction()
 

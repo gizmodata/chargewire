@@ -122,10 +122,10 @@ Issued Issue(const std::string& common_name, const Issued* issuer, const std::ve
     }
   }
   EXPECT_GT(X509_sign(cert, issuer_key, EVP_sha256()), 0);
-  FILE* out = std::fopen(cert_path.c_str(), "w");
+  FILE* out = std::fopen(cert_path.string().c_str(), "w");
   PEM_write_X509(out, cert);
   std::fclose(out);
-  out = std::fopen(key_path.c_str(), "w");
+  out = std::fopen(key_path.string().c_str(), "w");
   PEM_write_PrivateKey(out, key, nullptr, nullptr, 0, nullptr, nullptr);
   std::fclose(out);
   return {cert, key};
