@@ -1,5 +1,6 @@
 #include "ipc.hpp"
 
+#include <arrow/buffer.h>
 #include <arrow/io/interfaces.h>
 #include <arrow/ipc/writer.h>
 #include <arrow/util/compression.h>
@@ -42,6 +43,24 @@ void Check(const arrow::Status& status) {
   }
 }
 
+// Forwards everything but the schema message, which the encoder sends itself, up front.
+class WithoutSchema : public arrow::ipc::internal::IpcPayloadWriter {
+ public:
+  explicit WithoutSchema(std::unique_ptr<arrow::ipc::internal::IpcPayloadWriter> inner)
+      : inner_(std::move(inner)) {}
+  arrow::Status Start() override { return inner_->Start(); }
+  arrow::Status WritePayload(const arrow::ipc::IpcPayload& payload) override {
+    if (payload.type == arrow::ipc::MessageType::SCHEMA) {
+      return arrow::Status::OK();
+    }
+    return inner_->WritePayload(payload);
+  }
+  arrow::Status Close() override { return inner_->Close(); }
+
+ private:
+  std::unique_ptr<arrow::ipc::internal::IpcPayloadWriter> inner_;
+};
+
 }  // namespace
 
 IpcCompression ParseIpcCompression(std::string_view header) {
@@ -62,27 +81,34 @@ class IpcStreamEncoder::Impl {
       Check(codec.status());
       options.codec = std::move(codec).ValueUnsafe();
     }
-    auto writer = arrow::ipc::MakeStreamWriter(sink_, schema_, options);
+    auto schema_message = arrow::ipc::SerializeSchema(*schema_);
+    Check(schema_message.status());
+    schema_message_ = (*schema_message)->ToString();
+    auto payloads = arrow::ipc::internal::MakePayloadStreamWriter(sink_.get(), options);
+    Check(payloads.status());
+    auto writer = arrow::ipc::internal::OpenRecordBatchWriter(
+        std::make_unique<WithoutSchema>(std::move(payloads).ValueUnsafe()), schema_, options);
     Check(writer.status());
     writer_ = std::move(writer).ValueUnsafe();
   }
 
-  // The writer emits the schema message together with the first batch (or with the
-  // end-of-stream marker when there are no batches), so batch numbers stay exact.
+  std::string Begin() { return std::exchange(schema_message_, {}); }
+
   std::string Write(const arrow::RecordBatch& batch) {
     Check(writer_->WriteRecordBatch(batch));
-    return sink_->Take();
+    return Begin() + sink_->Take();
   }
 
   std::string Finish() {
     Check(writer_->Close());
-    return sink_->Take();
+    return Begin() + sink_->Take();
   }
 
  private:
   std::shared_ptr<arrow::Schema> schema_;
   std::shared_ptr<CaptureStream> sink_;
-  std::shared_ptr<arrow::ipc::RecordBatchWriter> writer_;
+  std::string schema_message_;  // until sent
+  std::unique_ptr<arrow::ipc::RecordBatchWriter> writer_;
 };
 
 IpcStreamEncoder::IpcStreamEncoder(std::shared_ptr<arrow::Schema> schema,
@@ -90,6 +116,8 @@ IpcStreamEncoder::IpcStreamEncoder(std::shared_ptr<arrow::Schema> schema,
     : impl_(std::make_unique<Impl>(std::move(schema), compression)) {}
 
 IpcStreamEncoder::~IpcStreamEncoder() = default;
+
+std::string IpcStreamEncoder::Begin() { return impl_->Begin(); }
 
 std::string IpcStreamEncoder::Write(const arrow::RecordBatch& batch) {
   return impl_->Write(batch);

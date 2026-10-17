@@ -37,6 +37,11 @@ struct ServerOptions {
   std::chrono::seconds token_lifetime{3600};
   std::chrono::seconds session_idle_timeout{900};
   std::chrono::seconds result_ttl{3600};
+  // A finished statement is forgotten this long after it ends (and once its retained
+  // result has expired), or sooner when its session holds more finished statements
+  // than max_finished_statements_per_session; then it is 404 (spec §6.5).
+  std::chrono::seconds finished_statement_ttl{600};
+  std::size_t max_finished_statements_per_session = 1000;
   std::chrono::hours idempotency_window{24};
   std::chrono::seconds default_wait{5};  // submit without Prefer: wait / respond-async
   std::chrono::seconds max_wait{60};     // cap on Prefer: wait

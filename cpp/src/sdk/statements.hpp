@@ -91,6 +91,11 @@ class Statement {
   bool HoldsRetainedResult() const;
   // An unretained result nobody is reading, with its producer waiting for a reader.
   bool WaitingForReader() const;
+  // True when the statement has finished at least `keep` ago, nobody is reading it,
+  // and any retained result has expired: the session may forget it.
+  bool Forgettable(WallClock::time_point now, std::chrono::seconds keep) const;
+  // When the statement finished, if it has.
+  std::optional<WallClock::time_point> finished_at() const;
 
  private:
   void Terminate(StatementState state, std::optional<Error> error);  // mutex_ held

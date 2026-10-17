@@ -4,6 +4,10 @@
 #include <boost/beast/ssl.hpp>
 #include <boost/url.hpp>
 
+#include <poll.h>
+#include <sys/socket.h>
+
+#include <cerrno>
 #include <optional>
 
 #include "ids.hpp"
@@ -38,6 +42,19 @@ class ChunkWriter : public BodyWriter {
     beast::get_lowest_layer(stream_).expires_after(kWriteTimeout);
     co_await net::async_write(stream_, http::make_chunk(net::buffer(bytes.data(), bytes.size())),
                               net::use_awaitable);
+  }
+
+  bool ClientGone() override {
+    const int fd = beast::get_lowest_layer(stream_).socket().native_handle();
+#ifdef POLLRDHUP
+    // Linux reports the peer's shutdown even when bytes (a TLS close_notify) are pending.
+    pollfd entry{fd, POLLRDHUP, 0};
+    return ::poll(&entry, 1, 0) > 0 && (entry.revents & (POLLRDHUP | POLLHUP | POLLERR)) != 0;
+#else
+    char byte = 0;
+    const ssize_t got = ::recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+    return got == 0 || (got < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR);
+#endif
   }
 
  private:

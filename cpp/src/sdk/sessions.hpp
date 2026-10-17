@@ -48,6 +48,10 @@ class Session {
   std::shared_ptr<Statement> FindStatement(const std::string& id) const;
   void RemoveStatement(const std::string& id);
   std::vector<std::shared_ptr<Statement>> Statements() const;
+  // Forgets finished statements: those Forgettable(now, keep), then the oldest finished
+  // ones beyond `max_finished` (spec §6.5).
+  void ForgetFinished(WallClock::time_point now, std::chrono::seconds keep,
+                      std::size_t max_finished);
 
   void Touch();
   // No request since `cutoff`, nothing running, and no retained result kept.

@@ -1,5 +1,7 @@
 #include "sessions.hpp"
 
+#include <algorithm>
+
 #include "ids.hpp"
 
 namespace warpsql {
@@ -162,6 +164,32 @@ std::vector<std::shared_ptr<Statement>> Session::Statements() const {
     out.push_back(statement);
   }
   return out;
+}
+
+void Session::ForgetFinished(WallClock::time_point now, std::chrono::seconds keep,
+                             std::size_t max_finished) {
+  std::vector<std::shared_ptr<Statement>> forgotten;  // released outside the lock
+  std::lock_guard lock(mutex_);
+  std::vector<std::pair<WallClock::time_point, std::string>> finished;
+  for (auto it = statements_.begin(); it != statements_.end();) {
+    if (it->second->Forgettable(now, keep)) {
+      forgotten.push_back(std::move(it->second));
+      it = statements_.erase(it);
+      continue;
+    }
+    if (auto at = it->second->finished_at(); at && it->second->Forgettable(now, std::chrono::seconds(0))) {
+      finished.emplace_back(*at, it->first);
+    }
+    ++it;
+  }
+  if (finished.size() > max_finished) {
+    std::sort(finished.begin(), finished.end());
+    for (std::size_t i = 0; i < finished.size() - max_finished; ++i) {
+      auto it = statements_.find(finished[i].second);
+      forgotten.push_back(std::move(it->second));
+      statements_.erase(it);
+    }
+  }
 }
 
 void Session::Touch() {

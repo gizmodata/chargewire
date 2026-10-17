@@ -4,7 +4,8 @@ import time
 
 from test_discovery_auth import assert_problem
 
-SLOW = "SELECT count(*) FROM range(100000000000) t(i)"  # runs until stopped
+# count(*) over a range is answered without scanning it; a sum has to scan.
+SLOW = "SELECT sum(i) FROM range(100000000000) t(i)"  # runs until stopped
 
 
 def test_cancel_stops_a_running_statement(warp, session_id):

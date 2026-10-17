@@ -364,6 +364,19 @@ bool Statement::WaitingForReader() const {
   return waiting_for_reader_ && !reader_active_;
 }
 
+bool Statement::Forgettable(WallClock::time_point now, std::chrono::seconds keep) const {
+  std::lock_guard lock(mutex_);
+  if (!IsTerminalLocked() || reader_active_ || !finished_at_ || now < *finished_at_ + keep) {
+    return false;
+  }
+  return !expires_at_ || expired_ || now >= *expires_at_;
+}
+
+std::optional<WallClock::time_point> Statement::finished_at() const {
+  std::lock_guard lock(mutex_);
+  return finished_at_;
+}
+
 bool Statement::HoldsRetainedResult() const {
   std::lock_guard lock(mutex_);
   return config_.retain && !expired_ && !batches_.empty();

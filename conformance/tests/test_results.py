@@ -2,6 +2,7 @@
 compression."""
 
 import io
+import time
 
 import httpx
 import pyarrow as pa
@@ -87,12 +88,9 @@ def test_failure_mid_stream_leaves_the_stream_incomplete(warp, session_id):
         for chunk in response.iter_raw():
             body.extend(chunk)
     response.close()
-    # Whatever arrived (possibly nothing: the engine may fail before the first batch) is
-    # never a complete stream: there is no end-of-stream marker.
-    with pytest.raises(pa.ArrowInvalid):
-        reader = ipc.open_stream(source=io.BytesIO(initial_bytes=bytes(body)))
-        while True:
-            reader.read_next_batch()
+    # Whatever arrived (the schema, perhaps some batches) is never a complete stream: it
+    # lacks the end-of-stream marker (continuation token, then a zero length).
+    assert not bytes(body).endswith(b"\xff\xff\xff\xff\x00\x00\x00\x00")
     doc = warp.wait_done(session_id=session_id, statement_id=statement_id)
     assert doc["state"] == "failed"
     assert doc["error"]["code"] == "execution_error"
@@ -115,3 +113,46 @@ def test_result_of_a_statement_without_rows(warp, session_id):
     doc = warp.execute(session_id=session_id, sql="INSERT INTO no_rows VALUES (1)")
     response = warp.result(session_id=session_id, statement_id=doc["statement_id"])
     assert_problem(response=response, status=400, code="bad_request")
+
+
+def test_long_poll_on_a_finished_statement_answers_at_once(warp, session_id):
+    doc = warp.execute(session_id=session_id, sql="SELECT 1")
+    assert doc["state"] == "succeeded"
+    started = time.monotonic()
+    status = warp.status(session_id=session_id, statement_id=doc["statement_id"], wait=5)
+    assert status["state"] == "succeeded"
+    assert time.monotonic() - started < 2, "a finished statement's state can't change: no wait"
+
+
+def test_streamed_result_sends_its_schema_before_the_query_finishes(warp, session_id):
+    # An aggregate yields its one row only at the end; the schema still comes first, so
+    # the response isn't silent (and cut by proxy idle timeouts) while the query runs.
+    sql = "SELECT sum(i) AS total FROM range(100000000000) t(i)"
+    request = warp.http.build_request(
+        method="POST", url=f"{warp.session_url(session_id)}/statements",
+        headers=warp.headers(Accept=ARROW_STREAM), json={"sql": sql},
+        timeout=httpx.Timeout(timeout=120, read=15))
+    response = warp.http.send(request=request, stream=True)
+    try:
+        assert response.status_code == 200, response.read()
+        statement_id = response.headers["warp-statement-id"]
+        received = bytearray()
+        chunks = response.iter_raw()
+        while True:
+            received.extend(next(chunks))
+            if len(received) >= 8:
+                length = int.from_bytes(received[4:8], byteorder="little")
+                if len(received) >= 8 + length:
+                    break
+        message = ipc.read_message(source=pa.py_buffer(obj=bytes(received)))
+        assert message.type == "schema"
+        assert ipc.read_schema(obj=message).names == ["total"]
+        status = warp.status(session_id=session_id, statement_id=statement_id)
+        assert status["state"] == "running", status
+    finally:
+        response.close()
+    # The client gave up on an unretained result while the query ran: the server notices
+    # the closed connection and cancels the statement (spec §6.5).
+    doc = warp.wait_done(session_id=session_id, statement_id=statement_id, timeout=30)
+    assert doc["state"] == "cancelled", doc
+    assert doc["cancel_reason"] == "client"

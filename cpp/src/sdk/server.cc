@@ -179,6 +179,8 @@ class Server::Impl {
       for (const auto& statement : session->Statements()) {
         statement->ExpireIfDue(now);
       }
+      session->ForgetFinished(now, state_.options.finished_statement_ttl,
+                              state_.options.max_finished_statements_per_session);
       if (session->IdleSince(idle_cutoff)) {
         state_.sessions.Remove(session->id());
         session->Close(CancelReason::kSessionClosed);

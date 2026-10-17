@@ -391,7 +391,8 @@ the partition is complete and MAY be `null` before that.
 
 Returns the statement document. With `Prefer: wait=N` (capability `long_poll`) the
 server MAY hold the response until the state changes or N seconds pass, whichever is
-first.
+first. A statement that has finished (`succeeded`, `failed`, `cancelled`) can't change,
+so the server MUST answer at once.
 
 ### 6.4 Results: `GET …/statements/{statement_id}/result`
 
@@ -399,7 +400,9 @@ Query parameters: `partition` (default 0) and `from_batch` (default 0).
 
 Returns `200` with an Arrow stream of that partition's record batches, starting at
 batch number `from_batch` (counting from 0). The stream always begins with the
-schema message. A client MAY request the result while the statement is still
+schema message, which servers SHOULD send as soon as the schema is known rather than
+with the first batch: an aggregate produces its first batch only at the end, and a
+response that stays silent until then is cut by proxies' idle timeouts. A client MAY request the result while the statement is still
 running; the server streams batches as they are produced. If the statement has not
 produced its result's schema within the server's wait limit, the answer is `409` with
 code `result_not_ready`, and the client retries. A failed or cancelled statement's
@@ -422,8 +425,14 @@ lives.
 - Retained results are a resource the server MAY limit per principal; a statement
   that would exceed the limit fails with `429` and code `result_quota_exceeded`.
 - If the client disconnects while reading an **unretained** result, the server
-  SHOULD cancel the statement (`cancel_reason: client`). A retained result's
-  statement keeps running.
+  SHOULD cancel the statement (`cancel_reason: client`), including while the stream
+  is waiting for the statement's next batch. A retained result's statement keeps
+  running.
+- A finished statement is not kept forever. A server MAY forget one once at least 5
+  minutes have passed since it finished and its retained result, if any, has expired,
+  or sooner when the session holds more than 1,000 finished statements (oldest first);
+  requests for a forgotten statement get `404` (`not_found`). Clients that are done
+  with a statement SHOULD delete it (§6.8).
 
 ### 6.6 Errors during a result stream
 

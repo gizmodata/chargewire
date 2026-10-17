@@ -22,10 +22,13 @@ class IpcStreamEncoder {
   IpcStreamEncoder(std::shared_ptr<arrow::Schema> schema, IpcCompression compression);
   ~IpcStreamEncoder();
 
-  // One record batch (and any dictionary batches it needs); the first call also
-  // returns the schema message.
+  // The schema message, so a reader learns the columns before the first batch exists
+  // (a long aggregate's stream isn't silent until it ends). Write and Finish include it
+  // when Begin wasn't called.
+  std::string Begin();
+  // One record batch (and any dictionary batches it needs).
   std::string Write(const arrow::RecordBatch& batch);
-  // The end-of-stream marker (with the schema message if no batch was written).
+  // The end-of-stream marker.
   std::string Finish();
 
  private:

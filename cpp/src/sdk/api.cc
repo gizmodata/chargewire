@@ -16,8 +16,9 @@ namespace warpsql::detail {
 
 namespace {
 
-// How long a result reader waits for the next batch before checking again.
-constexpr auto kResultPoll = std::chrono::seconds(30);
+// How often a result stream waiting for its next batch checks that its client is still
+// there, so an abandoned query is cancelled rather than left running.
+constexpr auto kClientCheck = std::chrono::seconds(1);
 
 std::vector<std::string_view> Segments(std::string_view path) {
   std::vector<std::string_view> out;
@@ -898,11 +899,12 @@ Task<Response> Api::GetStatement(Request& request, const std::string& session_id
   auto statement = session->FindStatement(statement_id);
   const Preferences prefs = ParsePrefer(request.Header("Prefer"));
   if (prefs.wait) {
-    // Long-poll: hold until the state changes (spec §6.3).
+    // Long-poll: hold until the state changes (spec §6.3). A finished statement's
+    // state can't change, so it answers at once.
     const auto initial = statement->state();
     const auto deadline = Clock::now() + std::min(*prefs.wait, state_.options.max_wait);
     uint64_t seen = statement->changed().version();
-    while (statement->state() == initial && Clock::now() < deadline) {
+    while (!statement->IsTerminal() && statement->state() == initial && Clock::now() < deadline) {
       seen = co_await statement->changed().WaitChange(seen, deadline);
     }
   }
@@ -971,6 +973,7 @@ Response Api::ResultStream(std::shared_ptr<Session> session, std::shared_ptr<Sta
     } guard{this, session.get(), statement.get()};
 
     IpcStreamEncoder encoder(statement->schema(), compression);
+    co_await out.Write(encoder.Begin());
     int64_t index = from_batch;
     for (;;) {
       const uint64_t seen = statement->changed().version();
@@ -987,7 +990,10 @@ Response Api::ResultStream(std::shared_ptr<Session> session, std::shared_ptr<Sta
         case ReadStep::kFailed:
           co_return false;  // no end-of-stream marker: the client sees an incomplete stream
         case ReadStep::kWait:
-          co_await statement->changed().WaitChange(seen, Clock::now() + kResultPoll);
+          co_await statement->changed().WaitChange(seen, Clock::now() + kClientCheck);
+          if (out.ClientGone()) {
+            co_return false;  // the read is incomplete: an unretained statement is cancelled
+          }
           continue;
       }
     }

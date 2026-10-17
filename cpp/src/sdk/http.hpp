@@ -40,6 +40,9 @@ class BodyWriter {
  public:
   virtual ~BodyWriter() = default;
   virtual Task<void> Write(std::string_view bytes) = 0;
+  // True once the client has closed or reset the connection. Doesn't block or read, so
+  // a stream that has nothing to send yet can notice a client that gave up.
+  virtual bool ClientGone() { return false; }
 };
 
 struct Response {
