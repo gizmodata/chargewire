@@ -39,6 +39,10 @@ enum class ErrorCode {
   kServerDraining,
   kUnknownOption,
   kInvalidOptionValue,
+  kIngestNotFound,
+  kIngestIncomplete,
+  kIngestPartExists,
+  kIngestExpired,
 };
 
 // Why a session ended (spec §5.6), the `reason` of a session_ended error.

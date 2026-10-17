@@ -124,7 +124,8 @@ These endpoints need no authentication.
   "draft": "0.1.0",
   "server": {"name": "GizmoSQL", "version": "2.0.0"},
   "capabilities": ["prepared_statements", "transactions", "ingest", "result_retention",
-                   "long_poll", "ipc_compression_zstd", "result_partitions", "oauth_browser"],
+                   "long_poll", "ipc_compression_zstd", "result_partitions", "partitioned_ingest",
+                   "oauth_browser"],
   "auth": {"grant_types": ["password", "token_exchange"]}
 }
 ```
@@ -620,6 +621,57 @@ buffer them. A deployment that offers ingest must lift the body-size limit for t
 path and SHOULD disable request buffering, or uploads fail with `413` after the whole
 body has been sent.
 
+### 8.3 Partitioned ingest
+
+Capability: `partitioned_ingest`. One TCP connection carries what one network flow
+allows; a client with a large upload can send it over several connections at once
+into one ingest, which the server commits as one transaction.
+
+1. **Open** with `POST /warp/v1/sessions/{session_id}/ingests` and the target as a JSON
+   body: `{"table": …, "catalog": …, "schema": …, "mode": …, "temporary": …}` (the
+   fields mean what §8.1's query parameters mean). The answer is `201` with
+   `{"ingest_id": "i_…", "state": "open", "parts": []}` and a `Location`. An
+   `Idempotency-Key` makes a retried open safe (§6.7).
+2. **Upload parts** with `POST …/ingests/{ingest_id}/parts/{part}`, `part` a whole number
+   from 0 to 255 the client chooses, each body an Arrow stream as in §8.1. Parts are
+   sent at once, each on its own connection. Every part's stream MUST have the same
+   schema; the first part to arrive decides it, and a part with another schema fails
+   the ingest. The answer, once the server has read the whole part, is `200` with
+   `{"part": 3, "rows_received": 250000}`. The rows are not visible yet.
+3. **Commit** with `POST …/ingests/{ingest_id}/commit` and `{"parts": n}`: the parts are
+   0 to n-1. The server answers `200` with `{"rows_ingested": …}` once every row of
+   every part is written and committed, atomically: in one transaction, as §8.1 does.
+   If a part from 0 to n-1 has not finished (or another part number was used), the
+   answer is `409` with code `ingest_incomplete` and the ingest stays open: the client
+   can upload what is missing and commit again.
+4. **Abort** with `DELETE …/ingests/{ingest_id}`: `204`, and nothing is written.
+
+`GET …/ingests/{ingest_id}` returns the ingest's document: `state` (`open`,
+`committing`, `committed`, `failed`, `aborted`), `parts` (the part numbers finished,
+each with `rows_received`), and for a failed ingest `error`, a problem document.
+
+All or nothing: if any part fails (its data is invalid, it can't be written, its
+connection breaks before its body ends), the ingest fails: no row of any part remains,
+every request still running for it gets the error, and so do later part uploads and
+the commit. A part's rows may be written to the uncommitted transaction as they
+arrive, so a part cut off in the middle can't simply be sent again: the client starts
+the ingest over. A part whose *answer* was lost is safe to send again with the same
+`Idempotency-Key`: the server answers with the first upload's answer without reading
+the body again, and a part number that already finished, sent without the key, gets
+`409` with code `ingest_part_exists`.
+
+The rows of different parts arrive in no defined order, and a client MUST NOT rely on
+the order of rows within the table after a partitioned ingest. A client that needs the
+upload's order uses one part, or §8.1.
+
+Every request names the session, so every part is bound to the session's principal
+(§9.2): another principal's request gets `404` with code `session_not_found`, whatever
+the ingest id. An ingest belongs to its session: closing the session aborts it, and a
+server MAY abort an ingest that has had no request for a while (the server's choice,
+at least a minute) with code `ingest_expired`. While an ingest is open its session MAY
+run nothing else: other statements on the session wait until it is committed or
+aborted.
+
 ### 8.2 Compression
 
 Two independent layers, both optional:
@@ -751,12 +803,14 @@ modes meet (§8.1) and which clients map to "already exists" and "not found".
 | `session_ended` | 401 | §5.6 |
 | `permission_denied` | 403 | The principal lacks a privilege |
 | `read_only` | 403 | The server or session is read-only |
-| `session_not_found`, `statement_not_found`, `prepared_not_found` | 404 | No such handle, or not the caller's |
+| `session_not_found`, `statement_not_found`, `prepared_not_found`, `ingest_not_found` | 404 | No such handle, or not the caller's |
 | `not_found` | 404 | No such endpoint |
 | `method_not_allowed` | 405 | The endpoint exists but not for this method |
 | `result_not_ready` | 409 | The statement has no result schema yet (§6.4) |
 | `result_not_resumable` | 409 | §6.5 |
 | `result_expired` | 410 | §6.5 |
+| `ingest_incomplete`, `ingest_part_exists` | 409 | §8.3 |
+| `ingest_expired` | 410 | §8.3 |
 | `payload_too_large` | 413 | A JSON request body over the server's limit |
 | `unsupported_arrow_type` | 415 | §8.1 |
 | `session_elsewhere` | 421 | §5.6 |

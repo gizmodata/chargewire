@@ -56,6 +56,10 @@ class IngestBatches : public arrow::RecordBatchReader {
  public:
   // The next batch and its position in the upload (0, 1, …), or a null batch at the end.
   virtual arrow::Status NextIndexed(std::shared_ptr<arrow::RecordBatch>* batch, int64_t* index) = 0;
+  // Whether the batches' order is the upload's (one stream); false for a partitioned
+  // ingest (spec §8.3), whose parts arrive in no defined order. The positions are
+  // still distinct and increase for each thread that reads.
+  virtual bool Ordered() const { return true; }
   arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch>* batch) override {
     int64_t index = 0;
     return NextIndexed(batch, &index);

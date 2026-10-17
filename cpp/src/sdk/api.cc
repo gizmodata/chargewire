@@ -269,6 +269,29 @@ Task<Response> Api::Route(Request& request) {
     if (method != http::verb::post) throw wrong_method();
     co_return co_await Ingest(request, session_id);
   }
+  if (rest[2] == "ingests") {  // partitioned ingest (spec §8.3)
+    if (rest.size() == 3) {
+      if (method != http::verb::post) throw wrong_method();
+      co_return co_await OpenIngest(request, session_id);
+    }
+    const std::string ingest_id(rest[3]);
+    if (rest.size() == 4) {
+      switch (method) {
+        case http::verb::get: co_return co_await GetIngest(request, session_id, ingest_id);
+        case http::verb::delete_: co_return co_await AbortIngest(request, session_id, ingest_id);
+        default: throw wrong_method();
+      }
+    }
+    if (rest.size() == 5 && rest[4] == "commit") {
+      if (method != http::verb::post) throw wrong_method();
+      co_return co_await CommitIngest(request, session_id, ingest_id);
+    }
+    if (rest.size() == 6 && rest[4] == "parts") {
+      if (method != http::verb::post) throw wrong_method();
+      co_return co_await IngestPart(request, session_id, ingest_id, rest[5]);
+    }
+    throw Error(ErrorCode::kNotFound, "no such endpoint");
+  }
   if (rest.size() == 4 && rest[2] == "metadata") {
     if (method != http::verb::get) throw wrong_method();
     co_return co_await Metadata(request, session_id, rest[3]);
@@ -312,7 +335,7 @@ Task<Response> Api::Discovery(Request&) {
       {"server", {{"name", identity.name}, {"version", identity.version}}},
       {"capabilities",
        json::array{"prepared_statements", "transactions", "ingest", "result_retention",
-                   "long_poll", "ipc_compression_zstd", "result_partitions"}},
+                   "long_poll", "ipc_compression_zstd", "result_partitions", "partitioned_ingest"}},
       {"auth", {{"grant_types", state_.authenticator->GrantTypes()}}},
   };
   co_return JsonResponse(http::status::ok, doc);
@@ -851,6 +874,162 @@ Task<Response> Api::ClosePrepared(Request& request, const std::string& session_i
 }
 
 // ---- Bulk ingest (spec §8) ----
+
+namespace {
+
+// An ingest's target (spec §8.1), from query parameters or a JSON document's fields.
+IngestTarget ParseIngestTarget(const std::function<std::optional<std::string>(const char*)>& field) {
+  IngestTarget target;
+  target.table = field("table").value_or("");
+  if (target.table.empty()) {
+    throw Error(ErrorCode::kBadRequest, "the ingest's 'table' is required");
+  }
+  target.catalog = field("catalog").value_or("");
+  target.schema = field("schema").value_or("");
+  const std::string mode = field("mode").value_or("create_append");
+  if (mode == "create") target.mode = IngestMode::kCreate;
+  else if (mode == "append") target.mode = IngestMode::kAppend;
+  else if (mode == "replace") target.mode = IngestMode::kReplace;
+  else if (mode == "create_append") target.mode = IngestMode::kCreateAppend;
+  else throw Error(ErrorCode::kBadRequest, "mode must be create, append, replace or create_append");
+  const std::string temporary = field("temporary").value_or("false");
+  if (temporary != "true" && temporary != "false") {
+    throw Error(ErrorCode::kBadRequest, "temporary must be true or false");
+  }
+  target.temporary = temporary == "true";
+  return target;
+}
+
+// Waits on `signal` until `done` gives an answer (deadline long: an upload's rows).
+template <typename Fn>
+Task<std::invoke_result_t<Fn>> AwaitIngest(Signal& signal, Fn done) {
+  uint64_t seen = signal.version();
+  for (;;) {
+    if (auto answer = done()) co_return answer;
+    seen = co_await signal.WaitChange(seen, Clock::now() + std::chrono::seconds(5));
+  }
+}
+
+}  // namespace
+
+Task<Response> Api::OpenIngest(Request& request, const std::string& session_id) {
+  auto session = OwnSession(request, session_id);
+  RejectIfDraining();
+  const json::object body = ParseObject(request.body);
+  IngestTarget target = ParseIngestTarget([&](const char* name) -> std::optional<std::string> {
+    const json::value* value = body.if_contains(name);
+    if (value == nullptr || value->is_null()) return std::nullopt;
+    if (value->is_string()) return std::string(value->as_string());
+    if (value->is_bool()) return std::string(value->as_bool() ? "true" : "false");
+    throw Error(ErrorCode::kBadRequest, std::format("'{}' must be a string", name));
+  });
+  const std::string id = NewId("i");
+  if (auto existing = ReserveIdempotencyKey(request, *session, id, request.path + "\n" + request.body)) {
+    auto ingest = session->FindIngest(existing->statement_id);
+    co_return JsonResponse(http::status::ok, ingest->Document());
+  }
+  auto ingest = std::make_shared<IngestOperation>(id, std::move(target));
+  session->AddIngest(ingest);
+  Response response = JsonResponse(http::status::created, ingest->Document());
+  response.headers.emplace_back("Location", std::format("/warp/v1/sessions/{}/ingests/{}", session_id, id));
+  co_return response;
+}
+
+Task<Response> Api::GetIngest(Request& request, const std::string& session_id, const std::string& ingest_id) {
+  auto session = OwnSession(request, session_id);
+  co_return JsonResponse(http::status::ok, session->FindIngest(ingest_id)->Document());
+}
+
+Task<Response> Api::AbortIngest(Request& request, const std::string& session_id, const std::string& ingest_id) {
+  auto session = OwnSession(request, session_id);
+  auto ingest = session->FindIngest(ingest_id);
+  ingest->Abort(Error(ErrorCode::kStatementCancelled, "the ingest was aborted"));
+  session->RemoveIngest(ingest_id);
+  co_return NoContent();
+}
+
+Task<Response> Api::CommitIngest(Request& request, const std::string& session_id,
+                                 const std::string& ingest_id) {
+  auto session = OwnSession(request, session_id);
+  auto ingest = session->FindIngest(ingest_id);
+  const json::object body = ParseObject(request.body);
+  const json::value* parts = body.if_contains("parts");
+  if (parts == nullptr || !parts->is_int64()) {
+    throw Error(ErrorCode::kBadRequest, "'parts' must be the number of parts");
+  }
+  ingest->Seal(static_cast<int>(parts->as_int64()));
+  const int64_t rows = *co_await AwaitIngest(ingest->changed(), [&] { return ingest->Committed(); });
+  co_return JsonResponse(http::status::ok, json::object{{"rows_ingested", rows}});
+}
+
+Task<Response> Api::IngestPart(Request& request, const std::string& session_id, const std::string& ingest_id,
+                               std::string_view part_text) {
+  auto session = OwnSession(request, session_id);
+  RejectIfDraining();
+  if (!request.body_source) {
+    throw Error(ErrorCode::kBadRequest, "a part needs an Arrow IPC stream body");
+  }
+  const int64_t part = ParseInt(part_text, "the part number");
+  if (part < 0 || part > 255) {
+    throw Error(ErrorCode::kBadRequest, "a part number is from 0 to 255");
+  }
+  auto ingest = session->FindIngest(ingest_id);
+  // A retried part returns the first upload's answer, without reading the body again.
+  if (auto existing = ReserveIdempotencyKey(request, *session, "", request.path)) {
+    if (existing->response && !existing->response->empty()) {
+      Response response = JsonResponse(http::status::ok, json::parse(*existing->response));
+      response.close = true;  // the retried body is not read
+      co_return response;
+    }
+    throw Error(ErrorCode::kIdempotencyKeyReused, "a part with this key is still being uploaded");
+  }
+  const std::string key(request.Header("Idempotency-Key"));
+
+  bool first = false;
+  auto queue = ingest->AddPart(static_cast<int>(part), &first);
+  struct Uploading {
+    std::shared_ptr<IngestOperation> ingest;
+    ~Uploading() { ingest->PartUploadEnded(); }
+  } uploading{ingest};
+  if (first) {
+    // The first part to arrive starts the engine's one statement, with its schema.
+    net::post(session->strand(), [session, ingest, queue, number = static_cast<int>(part)] {
+      std::optional<int64_t> rows;
+      std::exception_ptr error;
+      try {
+        auto reader = OpenValidatedIpc(QueueInput(queue));
+        rows = session->engine().Ingest(ingest->target(), ingest->Batches(number, reader));
+      } catch (...) {
+        error = std::current_exception();
+      }
+      ingest->EngineDone(rows, error);
+    });
+  }
+
+  // Feed the part to the engine as it arrives; the queue's bound is the backpressure.
+  try {
+    while (auto piece = co_await request.body_source->Next()) {
+      if (!co_await queue->Push(std::move(*piece))) {
+        break;  // the ingest failed: its error is the answer
+      }
+    }
+    queue->Close();
+  } catch (const std::exception& e) {
+    // The connection broke in the middle of the part: the ingest fails (spec §8.3).
+    ingest->Fail(Error(ErrorCode::kExecutionError, std::format("the upload of part {} broke off: {}", part, e.what())));
+    queue->Abort();
+    throw;
+  }
+  const int64_t rows = *co_await AwaitIngest(ingest->changed(), [&] { return ingest->PartRows(static_cast<int>(part)); });
+
+  json::object answer{{"part", part}, {"rows_received", rows}};
+  if (!key.empty()) {
+    if (auto entry = state_.idempotency.Reserve(session->owner().name, key, {})) {
+      if (entry->response) *entry->response = json::serialize(answer);
+    }
+  }
+  co_return JsonResponse(http::status::ok, answer);
+}
 
 Task<Response> Api::Ingest(Request& request, const std::string& session_id) {
   auto session = OwnSession(request, session_id);

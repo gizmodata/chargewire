@@ -41,6 +41,10 @@ CodeInfo Info(ErrorCode code) {
     case ErrorCode::kServerDraining: return {"server_draining", 503};
     case ErrorCode::kUnknownOption: return {"unknown_option", 400};
     case ErrorCode::kInvalidOptionValue: return {"invalid_option_value", 400};
+    case ErrorCode::kIngestNotFound: return {"ingest_not_found", 404};
+    case ErrorCode::kIngestIncomplete: return {"ingest_incomplete", 409};
+    case ErrorCode::kIngestPartExists: return {"ingest_part_exists", 409};
+    case ErrorCode::kIngestExpired: return {"ingest_expired", 410};
   }
   return {"execution_error", 500};
 }

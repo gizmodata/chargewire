@@ -206,6 +206,13 @@ void Bind(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_function_bin
       });
     }
     scan->importers.push_back(std::move(importer));
+    if (!slot->rows->Ordered()) {
+      // A partitioned ingest (spec §8.3): no order to keep, so DuckDB inserts in parallel
+      // without ordering the batches.
+      Call([&](auto* e) {
+        return duckdb_v2_table_function_bind_set_order_preservation(result, DUCKDB_V2_ORDER_PRESERVATION_NO_ORDER, e);
+      });
+    }
     duckdb_v2_opaque bind_data{scan.release(), [](void* p) { delete static_cast<Scan*>(p); },
                                nullptr};
     Call([&](auto* e) { return duckdb_v2_function_bind_set_bind_data(info, &bind_data, e); });

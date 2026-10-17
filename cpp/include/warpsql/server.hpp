@@ -41,6 +41,9 @@ struct ServerOptions {
   // result has expired), or sooner when its session holds more finished statements
   // than max_finished_statements_per_session; then it is 404 (spec §6.5).
   std::chrono::seconds finished_statement_ttl{600};
+  // A partitioned ingest (spec §8.3) with no request and no part upload for this long
+  // is aborted (ingest_expired).
+  std::chrono::seconds ingest_idle_timeout{120};
   std::size_t max_finished_statements_per_session = 1000;
   std::chrono::hours idempotency_window{24};
   std::chrono::seconds default_wait{5};  // submit without Prefer: wait / respond-async

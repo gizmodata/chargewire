@@ -132,6 +132,32 @@ void Session::set_options(json::object options) {
   options_ = std::move(options);
 }
 
+void Session::AddIngest(std::shared_ptr<IngestOperation> ingest) {
+  std::lock_guard lock(mutex_);
+  ingests_[ingest->id()] = std::move(ingest);
+}
+
+std::shared_ptr<IngestOperation> Session::FindIngest(const std::string& id) const {
+  std::lock_guard lock(mutex_);
+  auto it = ingests_.find(id);
+  if (it == ingests_.end()) {
+    throw Error(ErrorCode::kIngestNotFound, "no such ingest in this session");
+  }
+  return it->second;
+}
+
+void Session::RemoveIngest(const std::string& id) {
+  std::lock_guard lock(mutex_);
+  ingests_.erase(id);
+}
+
+std::vector<std::shared_ptr<IngestOperation>> Session::Ingests() const {
+  std::lock_guard lock(mutex_);
+  std::vector<std::shared_ptr<IngestOperation>> out;
+  for (const auto& [id, ingest] : ingests_) out.push_back(ingest);
+  return out;
+}
+
 std::string Session::AddPrepared(std::shared_ptr<PreparedStatement> prepared) {
   std::string id = NewId("p");
   std::lock_guard lock(mutex_);
@@ -223,6 +249,9 @@ bool Session::IdleSince(Clock::time_point cutoff) const {
   if (last_activity_ > cutoff) {
     return false;
   }
+  for (const auto& [id, ingest] : ingests_) {
+    if (!ingest->Finished()) return false;  // an ingest in progress (it expires on its own)
+  }
   for (const auto& [id, statement] : statements_) {
     // A statement still running keeps the session alive, unless it is only waiting
     // for someone to read an unretained result.
@@ -245,6 +274,15 @@ void Session::Close(CancelReason reason) {
     for (const auto& [id, statement] : statements_) {
       statements.push_back(statement);
     }
+  }
+  std::vector<std::shared_ptr<IngestOperation>> ingests;
+  {
+    std::lock_guard lock(mutex_);
+    for (const auto& [id, ingest] : ingests_) ingests.push_back(ingest);
+    ingests_.clear();
+  }
+  for (const auto& ingest : ingests) {
+    ingest->Abort(Error(ErrorCode::kStatementCancelled, "the session ended, so its ingest was aborted"));
   }
   bool interrupt = false;
   for (const auto& statement : statements) {

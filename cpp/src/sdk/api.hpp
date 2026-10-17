@@ -75,6 +75,13 @@ class Api {
   Task<Response> ClosePrepared(Request& request, const std::string& session_id,
                                const std::string& prepared_id);
   Task<Response> Ingest(Request& request, const std::string& session_id);
+  // Partitioned ingest (spec §8.3).
+  Task<Response> OpenIngest(Request& request, const std::string& session_id);
+  Task<Response> GetIngest(Request& request, const std::string& session_id, const std::string& ingest_id);
+  Task<Response> AbortIngest(Request& request, const std::string& session_id, const std::string& ingest_id);
+  Task<Response> CommitIngest(Request& request, const std::string& session_id, const std::string& ingest_id);
+  Task<Response> IngestPart(Request& request, const std::string& session_id, const std::string& ingest_id,
+                            std::string_view part);
   Task<Response> Metadata(Request& request, const std::string& session_id,
                           std::string_view kind_name);
   // Starts a statement and answers per spec §6.1 (streamed or status document).

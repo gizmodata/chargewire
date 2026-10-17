@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "common.hpp"
+#include "ingests.hpp"
 #include "statements.hpp"
 #include "warpsql/backend.hpp"
 
@@ -49,6 +50,13 @@ class Session {
   std::shared_ptr<PreparedStatement> FindPrepared(const std::string& id) const;
   std::shared_ptr<PreparedStatement> RemovePrepared(const std::string& id);
 
+  // Partitioned ingests (spec §8.3).
+  void AddIngest(std::shared_ptr<IngestOperation> ingest);
+  // Throws ingest_not_found.
+  std::shared_ptr<IngestOperation> FindIngest(const std::string& id) const;
+  void RemoveIngest(const std::string& id);
+  std::vector<std::shared_ptr<IngestOperation>> Ingests() const;
+
   void AddStatement(std::shared_ptr<Statement> statement);
   // Throws statement_not_found.
   std::shared_ptr<Statement> FindStatement(const std::string& id) const;
@@ -80,6 +88,7 @@ class Session {
   json::object options_;
   std::map<std::string, std::shared_ptr<Statement>> statements_;
   std::map<std::string, std::shared_ptr<PreparedStatement>> prepared_;
+  std::map<std::string, std::shared_ptr<IngestOperation>> ingests_;
   Clock::time_point last_activity_;
   bool closed_ = false;
 };

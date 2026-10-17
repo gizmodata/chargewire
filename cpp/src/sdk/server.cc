@@ -56,7 +56,11 @@ class Server::Impl {
         limits_{state_.options.max_header_bytes, state_.options.max_json_body_bytes,
                 // Bulk ingest streams its body; everything else is read up front.
                 [](const Request& request) {
-                  return request.method == http::verb::post && request.path.ends_with("/ingest");
+                  // and so do a partitioned ingest's parts (spec §8.3)
+                  return request.method == http::verb::post &&
+                         (request.path.ends_with("/ingest") ||
+                          (request.path.find("/ingests/") != std::string::npos &&
+                           request.path.find("/parts/") != std::string::npos));
                 },
                 [](http::status status, std::string_view detail) {
                   Response response =
@@ -180,9 +184,16 @@ class Server::Impl {
     state_.idempotency.Sweep();
     const auto now = WallClock::now();
     const auto idle_cutoff = Clock::now() - state_.options.session_idle_timeout;
+    const auto ingest_cutoff = Clock::now() - state_.options.ingest_idle_timeout;
     for (auto& session : state_.sessions.All()) {
       for (const auto& statement : session->Statements()) {
         statement->ExpireIfDue(now);
+      }
+      for (const auto& ingest : session->Ingests()) {
+        if (ingest->Expired(ingest_cutoff)) {
+          // Kept, so its requests get ingest_expired; nothing of it was written.
+          ingest->Abort(Error(ErrorCode::kIngestExpired, "the ingest had no request for too long and was aborted"));
+        }
       }
       session->ForgetFinished(now, state_.options.finished_statement_ttl,
                               state_.options.max_finished_statements_per_session);

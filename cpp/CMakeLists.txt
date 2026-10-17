@@ -37,6 +37,7 @@ add_library(warpsql
   src/sdk/errors.cc
   src/sdk/http.cc
   src/sdk/ids.cc
+  src/sdk/ingests.cc
   src/sdk/ipc.cc
   src/sdk/json.cc
   src/sdk/metadata.cc
