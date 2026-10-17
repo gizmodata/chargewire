@@ -2,6 +2,7 @@
 
 import base64
 import io
+import re
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -114,3 +115,17 @@ def test_bad_request_body(warp, session_id):
     response = warp.http.post(url=f"{warp.session_url(session_id)}/statements",
                               headers=warp.headers(), json={})
     assert_problem(response=response, status=400, code="bad_request")
+
+
+RFC3339 = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$"
+
+
+def test_statement_document_timestamps_are_rfc3339(warp, session_id):
+    doc = warp.wait_done(session_id=session_id,
+                         statement_id=warp.submit(session_id=session_id, sql="SELECT 1").json()["statement_id"])
+    stamps = {key: doc[key] for key in ("submitted_at", "started_at", "finished_at") if key in doc}
+    assert "submitted_at" in stamps, doc
+    if doc.get("result", {}).get("expires_at"):
+        stamps["expires_at"] = doc["result"]["expires_at"]
+    for key, value in stamps.items():
+        assert re.fullmatch(pattern=RFC3339, string=value), f"{key} is not RFC 3339: {value!r}"
