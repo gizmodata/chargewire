@@ -15,6 +15,15 @@ SRC="$DEPS/duckdb"
 BUILD="$DEPS/duckdb-build"
 PREFIX="$DEPS/duckdb-install"
 
+# WARPSQL_DUCKDB_EXTENSION_CONFIGS: extension config files (CMake files of
+# duckdb_extension_load() calls, ';'-separated) whose extensions are built into libduckdb,
+# on top of the ones DuckDB always builds in (core_functions, parquet, json, icu). Empty
+# (the default, and the reference server's choice): no others; the rest load at run time.
+EXTENSION_ARGS=(-DBUILD_EXTENSIONS="")
+if [ -n "${WARPSQL_DUCKDB_EXTENSION_CONFIGS:-}" ]; then
+  EXTENSION_ARGS+=(-DDUCKDB_EXTENSION_CONFIGS="$WARPSQL_DUCKDB_EXTENSION_CONFIGS")
+fi
+
 mkdir -p "$DEPS"
 if [ ! -d "$SRC/.git" ]; then
   git clone --quiet --filter=blob:none https://github.com/duckdb/duckdb.git "$SRC"
@@ -30,7 +39,7 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
   -DBUILD_UNITTESTS=OFF \
   -DENABLE_SANITIZER=OFF \
   -DENABLE_UBSAN=OFF \
-  -DBUILD_EXTENSIONS=""
+  "${EXTENSION_ARGS[@]}"
 cmake --build "$BUILD"
 cmake --install "$BUILD"
 # The v2 C API header isn't installed by DuckDB's install rules yet (alpha). Copy

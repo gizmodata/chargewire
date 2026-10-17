@@ -23,6 +23,11 @@ cmake --build build
 
 Boost 1.92 (Beast, JSON, URL) is fetched by CMake. OpenSSL 3 comes from the system.
 
+DuckDB builds in its core extensions (core_functions, parquet, json, icu); the rest load
+at run time. A server that wants more built in lists them in a CMake file of
+`duckdb_extension_load()` calls and names it in `WARPSQL_DUCKDB_EXTENSION_CONFIGS`
+(several: `;`-separated) when it runs `build-duckdb.sh`.
+
 ## Run
 
 ```bash
