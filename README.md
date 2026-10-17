@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="spec/warp-sql.md"><img src="https://img.shields.io/badge/spec-draft%200.1.0-31a8db.svg" alt="Spec: draft 0.1.0"></a>
-  <a href="conformance/tests"><img src="https://img.shields.io/badge/conformance-99%20tests-brightgreen.svg" alt="Conformance: 99 tests"></a>
+  <a href="conformance/tests"><img src="https://img.shields.io/badge/conformance-137%20tests-brightgreen.svg" alt="Conformance: 137 tests"></a>
   <a href="spec/warp-sql.md#21-transport"><img src="https://img.shields.io/badge/transport-HTTP%2F1.1%20%2B%20TLS-f15a24.svg" alt="Transport: HTTP/1.1 + TLS"></a>
   <a href="https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format"><img src="https://img.shields.io/badge/wire%20format-Arrow%20IPC-f15a24.svg" alt="Wire format: Arrow IPC"></a>
   <img src="https://img.shields.io/badge/gRPC-not%20needed-lightgrey.svg" alt="No gRPC">
@@ -176,8 +176,11 @@ WARP_SQL_TEST_SERVER_BINARY=../cpp/build/warp-duckdb .venv/bin/python -m pytest 
 ```
 
 For another server, tell the suite which variable carries its administrator's password
-(`WARP_SQL_TEST_SERVER_PASSWORD_ENV`) and the user name (`WARP_SQL_TEST_SERVER_USERNAME`),
-or point it at a running server with `WARP_SQL_TEST_URL`.
+(`WARP_SQL_TEST_SERVER_PASSWORD_ENV`), the user name (`WARP_SQL_TEST_SERVER_USERNAME`) and
+the flag naming its client CA for the mutual-TLS tests (`WARP_SQL_TEST_SERVER_MTLS_FLAG`,
+default `--tls-client-ca`; the other `--mtls-*` flags are the same on every server), or point
+it at a running server with `WARP_SQL_TEST_URL` (and `-m "not mtls"`: those tests start
+servers of their own).
 
 ## 🛠️ Build the SDK and reference server
 

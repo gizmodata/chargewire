@@ -946,3 +946,6 @@ MAY serve several majors at once.
    stream of state changes is worth adding.
 6. **Conformance suite.** Every MUST in this document needs a test in the
    conformance suite (`conformance/`); most have one, and the rest are listed there.
+7. **Forwarded client certificates.** How a server trusts a TLS-terminating proxy that
+   verified the client certificate (which header, which proxies, how the thumbprint of a
+   bound token is checked through it). Until then §4.4 needs TLS to end at the server.

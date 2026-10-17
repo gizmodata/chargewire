@@ -44,8 +44,19 @@ WARP_DUCKDB_PASSWORD='…' ./build/warp-duckdb --database my.duckdb --port 31337
 ```
 
 The password is read from the environment so it never shows in process listings. TLS:
-`--tls-cert` and `--tls-key` (PEM), plus `--tls-client-ca` to require client
-certificates. The first SIGTERM drains (running work finishes, new work is refused); a
+`--tls-cert` and `--tls-key` (PEM), plus `--tls-client-ca` to verify client certificates
+(mutual TLS). With a client CA:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--mtls-require-client-cert=BOOL` | `true` | Refuse connections without a client certificate at the handshake; `false` lets them connect and sign in with the password |
+| `--mtls-crl-file PEM` | none | Certificate revocation lists, checked at the handshake; the file is looked at every 5 s and reloaded when it changes, and open connections are re-checked (spec §4.4) |
+| `--mtls-identity-source` | `san_email` | Where the `client_certificate` grant takes the identity: `san_email`, `san_uri` (SPIFFE IDs) or `subject_cn` |
+| `--mtls-admin-identities A,B` | none | Identities that may sign in with their certificate (as the administrator); with any, discovery offers `client_certificate` |
+| `--mtls-require-identity-match` | off | A password sign-in over a client certificate must be for its identity |
+
+The `--mtls-*` flags have Hardcharger's option names, so test harnesses start either server
+the same way. `--flag=value` works for every flag. The first SIGTERM drains (running work finishes, new work is refused); a
 second one stops at once. On Windows, Ctrl+C and Ctrl+Break do the same (a parent stops a
 child it started with `CREATE_NEW_PROCESS_GROUP` by sending it Ctrl+Break); closing the
 console stops it at once.

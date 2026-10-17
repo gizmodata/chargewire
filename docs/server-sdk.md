@@ -21,6 +21,7 @@ safety, and the overridable methods only do engine work:
 |---|---|
 | HTTP, TLS / mTLS, CORS, security headers | Run a statement and return an Arrow stream |
 | Token exchange and validation (§4), with a pluggable authenticator | Prepare, describe parameters, execute with a batch of parameters |
+| Client certificates (§4.4): verification, CRLs and their reload, mapping a certificate to one identity, binding tokens to it and checking every request's connection | Map an identity to a principal (`Authenticator::AuthenticateCertificate`) |
 | Session registry, idle eviction, `session_not_found` / `session_ended` (§5) | Session options, commit, rollback |
 | Binding every handle to its principal (§9.2) | Bulk ingest from an Arrow stream |
 | Idempotency keys (§6.7) | Metadata queries (§10) |

@@ -9,6 +9,31 @@ spec's version is the repository's version.
 
 ### Added
 
+- Mutual TLS that carries identity (spec §4.4, §9.6; capability `mtls_identity`): the
+  `client_certificate` grant signs in with the connection's verified client certificate and
+  no password. The identity is one configured part of the certificate (SAN e-mail by
+  default, SAN URI such as a SPIFFE ID, or subject CN); none or several values, or control
+  characters, are refused (`unknown_certificate_identity`). Its tokens are always bound to
+  the certificate (RFC 8705 `x5t#S256`): every request with one, partition reads and
+  keep-alive connections included, must come over a connection presenting that
+  certificate (`certificate_mismatch`). New codes `client_certificate_required`,
+  `certificate_revoked`, `certificate_identity_mismatch`.
+- SDK: `TlsOptions::require_client_certificate` (default true), `client_crl_file` (CRLs
+  checked at the handshake, reloaded when the file changes, checked every
+  `crl_check_interval`, default 5 s; open connections are re-checked at their next request),
+  `client_identity_source`, `require_identity_match` (default off: a password or
+  token_exchange sign-in over a certificate must be for its identity, decided before the
+  password is checked), `on_crl_reload`. `Authenticator::AuthenticateCertificate`,
+  `Principal::certificate_thumbprint`, `TokenService::BindsCertificates` (the grant is
+  offered only with a token service that keeps the binding), `ClientCertificate`.
+- warp-duckdb: `--mtls-require-client-cert`, `--mtls-crl-file`, `--mtls-identity-source`,
+  `--mtls-admin-identities`, `--mtls-require-identity-match` (Hardcharger's names), and
+  `--flag=value` for every flag.
+- `libwarpsql_client`: `Client::SignInWithClientCertificate()`, renewed before expiry like
+  the password grant.
+- Conformance: `test_mtls.py` (19 tests, marker `mtls`), with a PKI made by
+  `cryptography`; `WARP_SQL_TEST_SERVER_MTLS_FLAG` names the server's client-CA flag.
+
 - The C++ client library (`libwarpsql_client`, `cpp/include/warpsql/client.hpp`):
   discovery and health, sign-in (password, renewed before its token expires; token
   exchange), sessions and their options, transactions, statements on the streamed path
@@ -52,6 +77,10 @@ spec's version is the repository's version.
   expiry.
 
 ### Changed
+
+- TLS servers refuse TLS 1.2 renegotiation (a connection's certificate is fixed at its
+  handshake), send the client CA list in the certificate request, and set a session id
+  context, so a client that resumes a session keeps its verified certificate.
 
 - `libwarpsql_client` asks for split results by default:
   `StatementOptions::result_partitions` is 8 (was 1). The server decides: a result of
