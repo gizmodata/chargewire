@@ -191,8 +191,11 @@ class Server::Impl {
     }
   }
 
-  net::io_context io_;
+  // The engine pool outlives the io_context: destroying the io_context destroys the
+  // coroutines of requests still in flight, and their sessions' strands belong to the
+  // engine pool, so tearing the pool down first crashed a server stopped mid-request.
   net::thread_pool engine_pool_;
+  net::io_context io_;
   ServerState state_;
   Api api_;
   HttpLimits limits_;
