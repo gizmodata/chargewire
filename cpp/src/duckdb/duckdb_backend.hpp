@@ -5,6 +5,8 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "duckdb_v2.hpp"
 #include "warpsql/backend.hpp"
@@ -16,6 +18,10 @@ class DuckDBBackend : public warpsql::Backend {
   struct Options {
     std::string database = ":memory:";  // a file path, or ":memory:"
     bool read_only = false;
+    // DuckDB settings fixed when the instance starts, e.g. {"memory_limit", "8GB"}.
+    std::vector<std::pair<std::string, std::string>> instance_options;
+    // Options for attaching the database, e.g. {"STORAGE_VERSION", "v1.4.0"}.
+    std::vector<std::pair<std::string, std::string>> attach_options;
   };
 
   explicit DuckDBBackend(Options options);

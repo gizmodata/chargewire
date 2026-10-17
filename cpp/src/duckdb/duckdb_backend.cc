@@ -18,24 +18,39 @@ using warpsql::ErrorCode;
 
 DuckDBBackend::DuckDBBackend(Options options) {
   Call([&](auto* err) { return duckdb_v2_environment_create(environment_.out(), err); });
+  std::vector<std::pair<std::string, std::string>> settings = options.instance_options;
   if (options.read_only) {
-    const duckdb_v2_str names[] = {Str("access_mode")};
-    const duckdb_v2_str values[] = {Str("READ_ONLY")};
-    Call([&](auto* err) {
-      return duckdb_v2_instance_create_with_options(environment_.get(), names, values, 1,
-                                                    instance_.out(), err);
-    });
-  } else {
-    Call([&](auto* err) { return duckdb_v2_instance_create(environment_.get(), instance_.out(), err); });
+    settings.emplace_back("access_mode", "READ_ONLY");
   }
+  std::vector<duckdb_v2_str> names;
+  std::vector<duckdb_v2_str> values;
+  for (const auto& [name, value] : settings) {
+    names.push_back(Str(name));
+    values.push_back(Str(value));
+  }
+  Call([&](auto* err) {
+    return duckdb_v2_instance_create_with_options(environment_.get(), names.data(), values.data(),
+                                                  names.size(), instance_.out(), err);
+  });
+
   // The catalog is named as DuckDB names it: the file's stem, or "memory".
   const std::string catalog = options.database == ":memory:"
                                   ? std::string("memory")
                                   : std::filesystem::path(options.database).stem().string();
+  using AttachOptions = Owned<duckdb_v2_attach_options_handle, duckdb_v2_attach_options_destroy>;
+  AttachOptions attach;
+  if (!options.attach_options.empty()) {
+    Call([&](auto* err) { return duckdb_v2_attach_options_create(instance_.get(), attach.out(), err); });
+    for (const auto& [key, value] : options.attach_options) {
+      const duckdb_v2_identifier_t key_str = Str(key);
+      const duckdb_v2_str value_str = Str(value);
+      Call([&](auto* err) { return duckdb_v2_attach_options_set(attach.get(), &key_str, &value_str, err); });
+    }
+  }
   const duckdb_v2_identifier_t name = Str(catalog);
   const duckdb_v2_str path = Str(options.database);
   Call([&](auto* err) {
-    return duckdb_v2_instance_attach(instance_.get(), &name, &path, nullptr, true, err);
+    return duckdb_v2_instance_attach(instance_.get(), &name, &path, attach.get(), true, err);
   });
 
   duckdb_v2_str version{};
