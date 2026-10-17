@@ -50,6 +50,24 @@ def test_statement_without_rows_reports_rows_affected(warp, session_id):
     assert response.json()["result"] == {"kind": "update", "rows_affected": 2}
 
 
+def test_statement_that_expands_into_several_returns_rows(warp, session_id):
+    # DuckDB's PIVOT without an IN list first collects the pivot values, then queries:
+    # the result's shape is known only once the earlier statements ran.
+    warp.execute(session_id=session_id, sql="CREATE TABLE sales (city VARCHAR, year INTEGER, amount INTEGER)")
+    warp.execute(session_id=session_id,
+                 sql="INSERT INTO sales VALUES ('Paris', 2025, 10), ('Rome', 2025, 5), ('Paris', 2026, 7)")
+    sql = "PIVOT sales ON city USING sum(amount) GROUP BY year ORDER BY year"
+    response = warp.submit(session_id=session_id, sql=sql, arrow=True)
+    assert response.status_code == 200, response.text
+    assert read_table(content=response.content).to_pylist() == [
+        {"year": 2025, "Paris": 10, "Rome": 5},
+        {"year": 2026, "Paris": 7, "Rome": None},
+    ]
+    doc = warp.execute(session_id=session_id, sql=sql)
+    assert doc["result"]["kind"] == "rows"
+    assert doc["result"]["partitions"][0]["rows"] == 2
+
+
 def test_sql_error_before_execution_is_an_error_response(warp, session_id):
     for arrow in (False, True):
         response = warp.submit(session_id=session_id, sql="SELEC 1", arrow=arrow)
