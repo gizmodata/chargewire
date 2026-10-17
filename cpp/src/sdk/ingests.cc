@@ -263,7 +263,10 @@ void IngestOperation::EngineDone(std::optional<int64_t> rows, std::exception_ptr
       } catch (const std::exception& e) {
         FailLocked(Error(ErrorCode::kExecutionError, e.what()));
       }
-    } else if (!failure_) {
+    } else {
+      // The engine committed. An abort that came after it had read every part (while
+      // it committed) changed nothing: the rows are written, so that is the outcome.
+      failure_.reset();
       rows_ingested_ = rows;
       state_ = State::kCommitted;
     }
