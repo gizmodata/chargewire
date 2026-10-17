@@ -31,7 +31,7 @@ spec's version is the repository's version.
   `--flag=value` for every flag.
 - `libwarpsql_client`: `Client::SignInWithClientCertificate()`, renewed before expiry like
   the password grant.
-- Conformance: `test_mtls.py` (19 tests, marker `mtls`), with a PKI made by
+- Conformance: `test_mtls.py` (20 tests, marker `mtls`), with a PKI made by
   `cryptography`; `WARP_SQL_TEST_SERVER_MTLS_FLAG` names the server's client-CA flag.
 
 - The C++ client library (`libwarpsql_client`, `cpp/include/warpsql/client.hpp`):

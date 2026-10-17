@@ -5,6 +5,7 @@
 #include <openssl/pem.h>
 #include <openssl/x509v3.h>
 
+#include <algorithm>
 #include <array>
 #include <format>
 #include <stdexcept>
@@ -344,6 +345,11 @@ std::string CertificateIdentity(const ClientCertificate& certificate, ClientIden
   const std::string& value = values->front();
   if (value.empty() || HasControlCharacter(value)) {
     throw refuse(std::format("the client certificate's {} is empty or has control characters", kind));
+  }
+  // SAN e-mail addresses and URIs are IA5String: ASCII only. OpenSSL doesn't enforce it.
+  if (source != ClientIdentitySource::kSubjectCn &&
+      std::ranges::any_of(value, [](char c) { return static_cast<unsigned char>(c) > 0x7e; })) {
+    throw refuse(std::format("the client certificate's {} is not ASCII", kind));
   }
   return value;
 }

@@ -203,6 +203,14 @@ def test_a_certificate_from_another_ca_is_refused_at_the_handshake(pki, strict):
     assert handshake_refusal(server=strict, context=pki.context(client=pki.alice)) is None
 
 
+def test_a_certificate_that_does_not_verify_is_refused_even_when_certificates_are_optional(pki, optional):
+    # Optional means a client may present none, never that a bad one is ignored.
+    reason = handshake_refusal(server=optional, context=pki.context(client=pki.alice_other_ca))
+    assert reason is not None and "UNKNOWN_CA" in reason, reason
+    assert handshake_refusal(server=optional, context=pki.context(client=None)) is None
+    assert handshake_refusal(server=optional, context=pki.context(client=pki.alice)) is None
+
+
 def test_an_unknown_identity_is_refused(pki, strict):
     with client(server=strict, pki=pki, cert=pki.mallory) as http:
         problem = assert_problem(response=certificate_grant(http=http), status=401,
