@@ -54,6 +54,13 @@ if(WIN32)
   # internals too (Hardcharger's access control does): on Windows, DuckDB is linked
   # statically, with what its shared library links (DuckDB_EXTENSIONS, plus HTTP and
   # extension loading), registered before main() as DuckDB's own static programs do.
+  # A DuckDB built with extensions that link other libraries (httpfs: libcurl; the
+  # postgres scanner: libpq; ducklake: CRoaring) names their imported targets: find the
+  # ones the toolchain provides (Hardcharger's CI: vcpkg's static triplet).
+  foreach(package OpenSSL PostgreSQL CURL)
+    find_package(${package} QUIET)
+  endforeach()
+  find_package(roaring CONFIG QUIET)
   find_package(DuckDB CONFIG REQUIRED PATHS "${WARPSQL_DUCKDB_PREFIX}" NO_DEFAULT_PATH)
   set(WARPSQL_DUCKDB_LINKED httplib loadable_extensions ${DuckDB_EXTENSIONS})
   set(DUCKDB_LIBRARY duckdb_static)
