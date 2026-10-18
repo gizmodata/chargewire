@@ -12,6 +12,15 @@
 - **`warp-duckdb`** (`src/duckdb/`): the reference server, DuckDB 2.0 through its v2 C API
   only. It is what the conformance suite and the drivers test against.
 
+> [!WARNING]
+> **`warp-duckdb` is for testing and development, not production.** It has one password,
+> and whoever signs in is the administrator, with all of DuckDB's power: reading and
+> writing local files, attaching databases, loading extensions, reaching the network.
+> `--read-only` protects only the database file. It has no users, access control, file
+> guards, audit log or metrics. It listens on `127.0.0.1` unless told otherwise; keep it
+> there. To serve data to people, run [Hardcharger](https://github.com/gizmodata/hardcharger),
+> which is built on this SDK and adds all of that.
+
 ## Build
 
 ```bash
