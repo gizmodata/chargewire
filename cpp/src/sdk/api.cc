@@ -144,20 +144,39 @@ bool RetainedQuota::Change(const std::string& principal, int64_t bytes) {
   return true;
 }
 
+// Runs `work` on the session's strand (an engine thread). A failure comes back by value:
+// the engine thread copies it (OwnedError) and this coroutine throws a copy of its own,
+// never the exception object the engine thread caught (as co_spawn's own propagation
+// would), which that thread could free while this one still builds the response from it.
 template <typename Fn>
 Task<std::invoke_result_t<Fn>> Api::OnEngine(Session& session, Fn work) {
   using Result = std::invoke_result_t<Fn>;
+  std::optional<Error> failure;
   if constexpr (std::is_void_v<Result>) {
     co_await net::co_spawn(
-        session.strand(), [work = std::move(work)]() mutable -> Task<void> {
-          work();
+        session.strand(), [work = std::move(work), &failure]() mutable -> Task<void> {
+          try {
+            work();
+          } catch (...) {
+            failure.emplace(OwnedError(std::current_exception()));
+          }
           co_return;
         },
         net::use_awaitable);
+    if (failure) throw Error(*failure);
   } else {
-    co_return co_await net::co_spawn(
-        session.strand(), [work = std::move(work)]() mutable -> Task<Result> { co_return work(); },
+    std::optional<Result> result = co_await net::co_spawn(
+        session.strand(), [work = std::move(work), &failure]() mutable -> Task<std::optional<Result>> {
+          try {
+            co_return std::optional<Result>(work());
+          } catch (...) {
+            failure.emplace(OwnedError(std::current_exception()));
+          }
+          co_return std::nullopt;
+        },
         net::use_awaitable);
+    if (failure) throw Error(*failure);
+    co_return std::move(*result);
   }
 }
 

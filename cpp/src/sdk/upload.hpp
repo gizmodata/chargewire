@@ -86,7 +86,23 @@ std::shared_ptr<ValidatedReader> OpenValidatedIpc(std::shared_ptr<arrow::io::Inp
 // The same over bytes held in memory (small bodies: prepared-statement parameters).
 std::shared_ptr<ValidatedReader> OpenValidatedIpc(std::string bytes);
 
-// The result of engine work started with net::post, awaited by a coroutine.
+// The error `error` holds, as an Error of the caller's own: an Error is copied, anything
+// else is the internal error the API answers for it. Call it on the thread handling it.
+inline Error OwnedError(const std::exception_ptr& error) {
+  try {
+    std::rethrow_exception(error);
+  } catch (const Error& e) {
+    return e;
+  } catch (...) {
+    return Error(ErrorCode::kExecutionError, "internal server error");
+  }
+}
+
+// The result of engine work started with net::post, awaited by a coroutine. A failure
+// crosses from the engine thread to the coroutine's I/O thread by value: Fail() copies the
+// error there, on the thread that caught it, and Wait() throws a fresh copy of its own.
+// Never the caught exception itself: its object is freed by whichever thread lets go of it
+// last, possibly the engine's while the I/O thread still reads it for the response.
 template <typename T>
 class Completion {
  public:
@@ -97,23 +113,25 @@ class Completion {
     }
     signal_.Notify();
   }
-  void Fail(std::exception_ptr error) {
+  // `error` is the one being handled on the calling thread (std::current_exception()).
+  void Fail(std::exception_ptr error) { Fail(OwnedError(error)); }
+  void Fail(const Error& error) {
     {
       std::lock_guard lock(mutex_);
-      error_ = std::move(error);
+      error_.emplace(error);  // a copy owning its message (Error's copy constructor)
     }
     signal_.Notify();
   }
   bool done() {
     std::lock_guard lock(mutex_);
-    return value_.has_value() || error_ != nullptr;
+    return value_.has_value() || error_.has_value();
   }
   Task<T> Wait() {
     uint64_t seen = signal_.version();
     for (;;) {
       {
         std::lock_guard lock(mutex_);
-        if (error_) std::rethrow_exception(error_);
+        if (error_) throw Error(*error_);  // this thread's own copy
         if (value_) co_return std::move(*value_);
       }
       seen = co_await signal_.WaitChange(seen, Clock::now() + std::chrono::hours(24));
@@ -123,7 +141,7 @@ class Completion {
  private:
   std::mutex mutex_;
   std::optional<T> value_;
-  std::exception_ptr error_;
+  std::optional<Error> error_;
   Signal signal_;
 };
 
