@@ -158,6 +158,11 @@ spec's version is the repository's version.
   error whatever the status code. Conformance:
   `test_a_failure_before_the_answer_is_an_error_response`, and the mid-stream test accepts
   only an incomplete stream or the error response, with the statement's own error.
+- Conformance: `test_an_idle_session_is_not_found_and_never_recreated` probed every
+  1.5 s, and each probe is a request that keeps the session alive, so it found the session
+  evicted only if the server's sweep (every 5 s in the SDK) fell in the 0.5 s between a
+  probe and the timeout; it failed about 1 run in 40 (macOS, TSan). The silences between
+  probes now double (2, 4, 8, 16 s), so one outlasts the timeout plus the sweep interval.
 
 - Draft 0.1.0 of the protocol spec (`spec/warp-sql.md`): discovery and health,
   token authentication (password, token exchange, browser sign-in), sessions,
