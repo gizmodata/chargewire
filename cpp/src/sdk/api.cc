@@ -1,6 +1,7 @@
 #include "api.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <cstdio>
 #include <cstdlib>
@@ -257,7 +258,11 @@ Task<Response> Api::Route(Request& request) {
     const auto segments = Segments(request.path);
     if (segments.empty() || segments[0] != "warp") {
       const bool head = request.method == http::verb::head;
-      if (auto plain = state_.options.plain_handler(PlainRequest{head ? "HEAD" : "GET", request.path})) {
+      PlainRequest plain_request{head ? "HEAD" : "GET", request.path, {}};
+      for (const auto& field : request.headers) {
+        plain_request.headers.emplace_back(std::string(field.name_string()), std::string(field.value()));
+      }
+      if (auto plain = state_.options.plain_handler(plain_request)) {
         Response response;
         response.status = static_cast<http::status>(plain->status);
         response.content_type = std::move(plain->content_type);
@@ -1745,3 +1750,19 @@ Task<Response> Api::DeleteStatement(Request& request, const std::string& session
 }
 
 }  // namespace warpsql::detail
+
+namespace warpsql {
+
+std::string_view PlainRequest::Header(std::string_view name) const {
+  for (const auto& [key, value] : headers) {
+    if (key.size() == name.size() &&
+        std::equal(key.begin(), key.end(), name.begin(), [](char a, char b) {
+          return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+        })) {
+      return value;
+    }
+  }
+  return {};
+}
+
+}  // namespace warpsql

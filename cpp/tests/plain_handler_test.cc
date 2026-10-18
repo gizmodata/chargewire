@@ -181,6 +181,25 @@ TEST(PlainHandler, AnswersGetAndHeadWithoutTheBody) {
   EXPECT_EQ(recorder.Calls(), (std::vector<std::string>{"GET /ui/page", "HEAD /ui/page", "HEAD /ui/a", "GET /ui/b"}));
 }
 
+TEST(PlainHandler, SeesTheRequestsHeaders) {
+  std::mutex mutex;
+  std::vector<std::string> seen;
+  warpsql::ServerOptions options;
+  options.plain_handler = [&](const warpsql::PlainRequest& request) -> std::optional<warpsql::PlainResponse> {
+    std::lock_guard lock(mutex);
+    seen.emplace_back(request.Header("accept-encoding"));
+    seen.emplace_back(request.Header("IF-NONE-MATCH"));
+    seen.emplace_back(request.Header("x-absent"));
+    return warpsql::PlainResponse{};
+  };
+  auto running = Start(std::move(options));
+  EXPECT_EQ(Send(running->port, http::verb::get, "/ui/",
+                 {{"Accept-Encoding", "gzip, br"}, {"If-None-Match", "\"abc\""}}).status,
+            200);
+  std::lock_guard lock(mutex);
+  EXPECT_EQ(seen, (std::vector<std::string>{"gzip, br", "\"abc\"", ""}));
+}
+
 TEST(PlainHandler, NulloptLeavesTheServers404) {
   Recorder recorder;
   warpsql::ServerOptions options;

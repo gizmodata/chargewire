@@ -81,6 +81,11 @@ struct SecurityEvent {
 struct PlainRequest {
   std::string method;  // "GET" or "HEAD"
   std::string path;    // percent-decoded, without the query
+  // The request's headers as received (Accept-Encoding, If-None-Match, ...).
+  std::vector<std::pair<std::string, std::string>> headers;
+
+  // The first value of header `name` (ASCII case-insensitive), or empty.
+  std::string_view Header(std::string_view name) const;
 };
 
 struct PlainResponse {

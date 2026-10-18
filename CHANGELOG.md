@@ -48,7 +48,7 @@ spec's version is the repository's version.
 
 - SDK: `ServerOptions::plain_handler` lets an application answer GET and HEAD requests
   outside `/warp` on the main listener (Hardcharger serves its web UI at `/ui` with it), before
-  the server's own 404. A HEAD answer carries the GET's headers and Content-Length and no
+  the server's own 404, with the request's headers (`PlainRequest::Header`). A HEAD answer carries the GET's headers and Content-Length and no
   body. Paths are decided after decoding (`/%77arp`, `//warp` are the protocol's and never
   reach it), other methods never do, the health-only port never consults it, and CORS
   headers are added as to every answer. `warpsql-sdk-tests` covers it, over mutual TLS too.
