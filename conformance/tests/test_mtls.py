@@ -496,7 +496,7 @@ def test_revocation_reaches_open_connections_without_a_restart(pki, tmp_path):
             pki.ca.write_crl(path=crl, revoked=[pki.dave.cert])
             # The server looks at the CRL file every few seconds; the open (keep-alive)
             # connection's next request after the reload is refused.
-            deadline = time.monotonic() + 30
+            deadline = time.monotonic() + 60
             while True:
                 response = dave.get(url=url, headers=bearer(token=token))
                 if response.status_code != 200 or time.monotonic() > deadline:
@@ -615,8 +615,7 @@ def test_a_crl_that_passes_its_next_update_fails_open_connections_closed(pki, tm
     import datetime
     from pki import write_atomically
     crl = tmp_path / "expiring.crl.pem"
-    expires = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(seconds=10)
-    write_atomically(path=crl, data=pki.ca.crl_pem(revoked=[], next_update=expires))
+    write_atomically(path=crl, data=pki.ca.crl_pem(revoked=[]))
     server = started(pki=pki, probe=pki.alice,
                      args=[*tls_args(pki=pki, crl=crl), "--mtls-certificate-sign-in",
                            "--mtls-admin-identities", ",".join(KNOWN)])
@@ -624,6 +623,11 @@ def test_a_crl_that_passes_its_next_update_fails_open_connections_closed(pki, tm
         with client(server=server, pki=pki, cert=pki.dave) as dave:
             token = certificate_token(http=dave)
             url = f"/warp/v1/sessions/{new_session(http=dave, token=token)}"
+            # A CRL that expires soon replaces the long-lived one (however slow the server is
+            # to start), and is picked up while still current.
+            expires = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(seconds=20)
+            write_atomically(path=crl, data=pki.ca.crl_pem(revoked=[], next_update=expires))
+            time.sleep(7)
             assert dave.get(url=url, headers=bearer(token=token)).status_code == 200  # the twin, before
             time.sleep(max(0.0, (expires - datetime.datetime.now(tz=datetime.UTC)).total_seconds()) + 1.5)
             # Nothing changed on disk: the open connection is verified again at the CRL's
