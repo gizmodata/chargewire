@@ -187,8 +187,8 @@ if(WARPSQL_BUILD_TESTS)
   target_compile_definitions(warpsql-client-tests PRIVATE
                              WARPSQL_TEST_DEFAULT_SERVER="$<TARGET_FILE:warp-duckdb>")
   add_dependencies(warpsql-client-tests warp-duckdb)
-  # The SDK's own unit tests (the security-event limiter).
-  add_executable(warpsql-sdk-tests tests/security_events_test.cc)
+  # The SDK's own unit tests (the security-event limiter, session lifetime).
+  add_executable(warpsql-sdk-tests tests/security_events_test.cc tests/sessions_test.cc)
   target_include_directories(warpsql-sdk-tests PRIVATE src/sdk)
   target_link_libraries(warpsql-sdk-tests PRIVATE warpsql GTest::gtest_main)
 endif()

@@ -247,3 +247,13 @@ spec's version is the repository's version.
   the body was read. No row was ever written twice: the retries were answered from the
   first upload. Conformance: `test_the_answer_to_a_part_sent_again_arrives`,
   `test_the_answer_to_an_upload_sent_again_arrives` (both failed before the fix).
+- A request that reached a session as the idle sweep (§5.7) closed it no longer runs in
+  the closed session. The sweep checked for idleness and closed the session in two steps,
+  so a request could find the session and touch it in between; its statement then ran in
+  a session being torn down, and a streamed result was cut mid-body (a Windows
+  conformance run: `peer closed connection without sending complete message body`, on a
+  `SELECT 1` submitted just as the session went idle). The check and the close are now one
+  step under the session's lock, ordered against the request's touch: a request either
+  keeps the session alive or gets `404 session_not_found`. A session closed for any reason
+  (idle, `KILL SESSION`, `DELETE`) also refuses new statements and ingests from requests
+  that found it just before. SDK test: `SessionLifetime.*` in `warpsql-sdk-tests`.

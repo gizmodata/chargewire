@@ -221,9 +221,8 @@ class Server::Impl {
       }
       session->ForgetFinished(now, state_.options.finished_statement_ttl,
                               state_.options.max_finished_statements_per_session);
-      if (session->IdleSince(idle_cutoff)) {
+      if (session->CloseIfIdle(idle_cutoff, CancelReason::kSessionClosed)) {
         state_.sessions.Remove(session->id());
-        session->Close(CancelReason::kSessionClosed);
         net::post(session->strand(), [session] { session->DestroyEngine(); });
       }
     }

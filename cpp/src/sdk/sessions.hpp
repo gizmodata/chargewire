@@ -77,12 +77,19 @@ class Session {
   void ForgetFinished(WallClock::time_point now, std::chrono::seconds keep,
                       std::size_t max_finished);
 
+  // Records a request on the session. Throws session_not_found once it is closed: a
+  // request that found the session just before an idle sweep (or a KILL) closed it must
+  // not go on to run in it.
   void Touch();
-  // No request since `cutoff`, nothing running, and no retained result kept.
-  bool IdleSince(Clock::time_point cutoff) const;
 
   // Ends the session: cancels its statements and frees their results.
   void Close(CancelReason reason);
+  // Closes the session if it has been idle since `cutoff`: no request since then, nothing
+  // running, and no retained result kept. The check and the close are one step under the
+  // session's lock, as Touch() is, so a request either touches it first (and it stays) or
+  // finds it closed (session_not_found); it never gets a session closed under it, its
+  // result stream cut mid-body. Returns whether it closed it.
+  bool CloseIfIdle(Clock::time_point cutoff, CancelReason reason);
   bool closed() const;
 
  private:
@@ -102,6 +109,9 @@ class Session {
   std::vector<std::shared_ptr<ByteQueue>> uploads_;
   Clock::time_point last_activity_;
   bool closed_ = false;
+
+  bool IdleLocked(Clock::time_point cutoff) const;  // mutex_ held
+  void Teardown(CancelReason reason);              // after closed_ was set
 };
 
 class SessionRegistry {

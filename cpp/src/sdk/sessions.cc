@@ -139,6 +139,9 @@ void Session::set_options(json::object options) {
 
 void Session::AddIngest(std::shared_ptr<IngestOperation> ingest) {
   std::lock_guard lock(mutex_);
+  if (closed_) {
+    throw Error(ErrorCode::kSessionNotFound, "no such session");  // closed since the request found it
+  }
   ingests_[ingest->id()] = std::move(ingest);
 }
 
@@ -208,6 +211,9 @@ std::shared_ptr<PreparedStatement> Session::RemovePrepared(const std::string& id
 
 void Session::AddStatement(std::shared_ptr<Statement> statement) {
   std::lock_guard lock(mutex_);
+  if (closed_) {
+    throw Error(ErrorCode::kSessionNotFound, "no such session");  // closed since the request found it
+  }
   statements_[statement->id()] = std::move(statement);
 }
 
@@ -262,11 +268,13 @@ void Session::ForgetFinished(WallClock::time_point now, std::chrono::seconds kee
 
 void Session::Touch() {
   std::lock_guard lock(mutex_);
+  if (closed_) {
+    throw Error(ErrorCode::kSessionNotFound, "no such session");
+  }
   last_activity_ = Clock::now();
 }
 
-bool Session::IdleSince(Clock::time_point cutoff) const {
-  std::lock_guard lock(mutex_);
+bool Session::IdleLocked(Clock::time_point cutoff) const {
   if (last_activity_ > cutoff) {
     return false;
   }
@@ -285,13 +293,34 @@ bool Session::IdleSince(Clock::time_point cutoff) const {
 }
 
 void Session::Close(CancelReason reason) {
-  std::vector<std::shared_ptr<Statement>> statements;
   {
     std::lock_guard lock(mutex_);
     if (closed_) {
       return;
     }
     closed_ = true;
+  }
+  Teardown(reason);
+}
+
+bool Session::CloseIfIdle(Clock::time_point cutoff, CancelReason reason) {
+  {
+    std::lock_guard lock(mutex_);
+    if (closed_ || !IdleLocked(cutoff)) {
+      return false;
+    }
+    closed_ = true;
+  }
+  Teardown(reason);
+  return true;
+}
+
+void Session::Teardown(CancelReason reason) {
+  // closed_ is set, so nothing is added from here on (AddStatement, AddIngest and
+  // AddUpload refuse a closed session): these are all there will be.
+  std::vector<std::shared_ptr<Statement>> statements;
+  {
+    std::lock_guard lock(mutex_);
     for (const auto& [id, statement] : statements_) {
       statements.push_back(statement);
     }
