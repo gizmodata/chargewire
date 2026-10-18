@@ -952,12 +952,15 @@ Task<Response> Api::Launch(Request& request, std::shared_ptr<Session> session, S
     seen = co_await statement->changed().WaitChange(seen, std::min(deadline, split_deadline > Clock::now() ? split_deadline : deadline));
   }
 
-  // A statement that failed before producing anything is an error response (§6.1).
-  if (statement->state() == StatementState::kFailed && !statement->HasRows()) {
+  // A statement that failed before its answer started is an error response (§6.1), even
+  // with rows already buffered: those rows were never sent, and a 200 with a statement
+  // document is what a statement without rows answers, so a client that took it at its
+  // status would report a failed query as an empty success. (The streamed path waits for
+  // a split's decision, up to kSplitWait, so a failure there was the common case.)
+  if (statement->state() == StatementState::kFailed) {
     throw *statement->error();
   }
   if (streamed && statement->HasRows() && statement->PartitionCount() &&
-      statement->state() != StatementState::kFailed &&
       statement->state() != StatementState::kCancelled) {
     statement->ClaimRead(0, 0);
     co_return ResultStream(session, statement, 0, 0, request.Header("Warp-IPC-Compression"));

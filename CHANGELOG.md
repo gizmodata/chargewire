@@ -147,6 +147,18 @@ spec's version is the repository's version.
   port). On Windows DuckDB is linked statically, with the extensions its shared library
   links. The conformance harness stops a server it started with Ctrl+Break on Windows.
 
+### Fixed
+
+- A statement that failed before its answer started, after it had buffered rows, was
+  answered `200` with a `failed` statement document (the answer a statement without rows
+  gets) instead of its error response. A streamed request that asks for partitions waits
+  up to 5 s for the split decision, so with partitions (the drivers' default) any query
+  failing in that time got it. It is now the error response (`500 execution_error`, …),
+  as spec §6.1 now says outright; §6.2 adds that a `failed` or `cancelled` document is an
+  error whatever the status code. Conformance:
+  `test_a_failure_before_the_answer_is_an_error_response`, and the mid-stream test accepts
+  only an incomplete stream or the error response, with the statement's own error.
+
 - Draft 0.1.0 of the protocol spec (`spec/warp-sql.md`): discovery and health,
   token authentication (password, token exchange, browser sign-in), sessions,
   transactions, statements with a one-round-trip streamed path and an async
