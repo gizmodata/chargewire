@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
+from cryptography import x509
 import pyarrow as pa
 import pytest
 
@@ -290,6 +291,23 @@ def test_a_uri_identity_signs_in_spiffe_ids(pki, spiffe):
         problem = assert_problem(response=certificate_grant(http=http), status=401,
                                  code="unknown_certificate_identity")
     assert "no URI" in problem["detail"], problem
+
+
+def test_a_uri_identity_matches_exactly_case_included(pki, spiffe):
+    # SPIFFE IDs (URI paths) are case-sensitive: .../sa/Loader is not .../sa/loader.
+    with client(server=spiffe, pki=pki, cert=pki.spiffe_case) as http:
+        problem = assert_problem(response=certificate_grant(http=http), status=401,
+                                 code="unknown_certificate_identity")
+    assert "only in case" in problem["detail"], problem
+    with client(server=spiffe, pki=pki, cert=pki.spiffe) as http:  # the twin: the exact ID
+        certificate_token(http=http)
+
+
+def test_an_email_identity_matches_ignoring_ascii_case(pki, strict):
+    upper = pki.ca.issue(file_name="alice-upper", common_name="alice",
+                         sans=[x509.RFC822Name("ALICE@Example.COM")])
+    with client(server=strict, pki=pki, cert=upper) as http:
+        certificate_token(http=http)
 
 
 # ---- Certificate-bound tokens ----

@@ -98,7 +98,7 @@ std::string CertificateIdentity(const ClientCertificate& certificate, ClientIden
 // logs: a refused value can't spoof what a reader sees.
 std::string EscapeForDisplay(std::string_view text);
 
-// ASCII case-insensitive comparison, as identities are compared for an identity match.
+// CertificateIdentitiesMatch (URI identities exactly, others ignoring ASCII case).
 bool SameIdentityName(std::string_view a, std::string_view b);
 
 }  // namespace warpsql::detail

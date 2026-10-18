@@ -59,6 +59,12 @@ struct ClientCertificate {
   bool duplicate_san_extension = false;
 };
 
+// How certificate identities compare (spec §4.4): a URI-form identity ("spiffe://...", any
+// "scheme://..."), whose path is case-sensitive, matches only exactly; an e-mail address or
+// a common name matches ignoring ASCII case.
+bool IsUriIdentity(std::string_view identity);
+bool CertificateIdentitiesMatch(std::string_view a, std::string_view b);
+
 // What running one statement produced: rows, or the count of rows it changed.
 struct StatementOutcome {
   std::shared_ptr<arrow::RecordBatchReader> rows;  // null when the statement returns no rows

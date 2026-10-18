@@ -519,6 +519,14 @@ Task<Response> Api::IssueToken(Request& request) {
     throw Error(ErrorCode::kBadRequest, std::format("unsupported grant_type '{}'", grant_type));
   }
   if (must_be && !SameIdentityName(*must_be, principal.name)) throw mismatch(principal.name);
+  // A token bound to a certificate (a server's scoped token sent as a password, say) is
+  // exchanged only over that certificate: otherwise the new token would carry a binding
+  // this connection can't honour, issued to someone without the key.
+  if (!principal.certificate_thumbprint.empty() &&
+      (!certificate || !ConstantTimeEquals(principal.certificate_thumbprint, certificate->thumbprint))) {
+    throw Error(ErrorCode::kCertificateMismatch,
+                "this credential is bound to a client certificate that this connection did not present");
+  }
   const auto issued = state_.tokens->Issue(principal);
   co_return JsonResponse(http::status::ok,
                          json::object{{"access_token", issued.token},

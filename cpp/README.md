@@ -53,7 +53,7 @@ The password is read from the environment so it never shows in process listings.
 | `--mtls-crl-file PEM` | none | Certificate revocation lists, checked at the handshake for every certificate of the chain; the file is looked at every 5 s and reloaded when it changes, and open connections are re-checked then and when a CRL passes its nextUpdate (spec §4.4). Of several CRLs from one CA the newest is used; a CRL that names a client CA but isn't signed by it, or any delta CRL, fails the load (startup refuses, a reload keeps the last good CRLs) |
 | `--mtls-identity-source` | `san_email` | Where the `client_certificate` grant takes the identity: `san_email`, `san_uri` (SPIFFE IDs) or `subject_cn` |
 | `--mtls-certificate-sign-in` | off | Offer the `client_certificate` grant; off, client certificates only admit connections. Needs `--mtls-admin-identities` |
-| `--mtls-admin-identities A,B` | none | Identities that may sign in with their certificate (as the administrator) |
+| `--mtls-admin-identities A,B` | none | Identities that may sign in with their certificate (as the administrator). A URI identity (`spiffe://…`) matches exactly, case included; an e-mail address or CN ignoring ASCII case |
 | `--mtls-crl-allow-missing-ca-crls` | off | Every certificate of a chain is revocation-checked, so the CRL file needs every CA's CRL (the root's too); this accepts a CA above the leaf without one |
 | `--mtls-require-identity-match` | off | A password sign-in over a client certificate must be for its identity |
 

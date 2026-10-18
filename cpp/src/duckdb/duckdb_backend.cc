@@ -1,5 +1,8 @@
 #include "duckdb_backend.hpp"
 
+#include <algorithm>
+#include <cctype>
+
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 
@@ -125,16 +128,21 @@ warpsql::Principal StaticPasswordAuthenticator::AuthenticatePassword(std::string
 
 warpsql::Principal StaticPasswordAuthenticator::AuthenticateCertificate(
     std::string_view identity, const warpsql::ClientCertificate&) {
-  auto lower = [](std::string_view text) {
-    std::string out(text);
-    for (char& c : out) {
-      if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-    }
-    return out;
-  };
   for (const auto& allowed : certificate_identities_) {
-    if (lower(allowed) == lower(identity)) {
+    if (warpsql::CertificateIdentitiesMatch(allowed, identity)) {
       return warpsql::Principal{allowed, "admin", "client_certificate", {}, {}};
+    }
+  }
+  // A URI identity (a SPIFFE ID) differing from an allowed one only in case is another
+  // identity: URI paths are case-sensitive.
+  for (const auto& allowed : certificate_identities_) {
+    if (warpsql::IsUriIdentity(identity) && allowed.size() == identity.size() &&
+        std::equal(allowed.begin(), allowed.end(), identity.begin(), [](char a, char b) {
+          return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+        })) {
+      throw Error(ErrorCode::kUnknownCertificateIdentity,
+                  "the client certificate's URI identity '" + std::string(identity) + "' differs from '" + allowed +
+                      "' only in case; URI identities must match exactly");
     }
   }
   throw Error(ErrorCode::kUnknownCertificateIdentity,

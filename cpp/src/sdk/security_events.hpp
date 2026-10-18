@@ -50,7 +50,19 @@ class SecurityEventLimiter {
   std::unordered_map<std::string, std::list<Source>::iterator> by_key_;
 };
 
-// The client's address without its port ("127.0.0.1:5000" -> "127.0.0.1", "[::1]:5" -> "::1").
+// The client's address without its port ("127.0.0.1:5000" -> "127.0.0.1", "::1:5" -> "::1").
 std::string PeerHost(const std::string& peer);
+
+// What the limiter counts as one source: the client's address (an IPv6 address by its /64,
+// which one host may hold whole), plus the certificate it presented when the handshake
+// verified it. A certificate the handshake refused is no part of the key: an unverified
+// one costs the client nothing to change.
+std::string SourceKey(const SecurityEvent& event);
+
+// The longest a client-supplied field (subject, detail, user, ...) of a SecurityEvent may
+// be; longer ones are cut, saying how long they were.
+inline constexpr std::size_t kMaxSecurityEventField = 512;
+// `event` with every client-supplied field cut to kMaxSecurityEventField.
+SecurityEvent Capped(SecurityEvent event);
 
 }  // namespace warpsql::detail

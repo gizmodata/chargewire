@@ -41,6 +41,14 @@ spec's version is the repository's version.
   then one summary with `SecurityEvent::suppressed`, in a bounded LRU), a connection is closed
   after five failed authentications, and a client certificate the handshake refuses is a
   SecurityEvent too (`client_certificate_refused`, with its thumbprint and subject).
+- Third review: handshake refusals count against the client's address only (an IPv6
+  address by its /64), never the unverified certificate it chose; every client-supplied
+  field of a SecurityEvent (subject, detail, user, ...) is cut at 512 bytes, in the record
+  and in what the limiter keeps. A CRL reload that failed (the CRL, or the server's key or CA
+  mid-rotation) is tried again at the next look. A bound credential (a scoped token sent as
+  a password) is exchanged only over its own certificate. URI identities match exactly,
+  case included (`CertificateIdentitiesMatch`); e-mail and CN identities ignore ASCII case.
+  `warpsql-sdk-tests`: the limiter's unit tests.
 - SDK: `TlsOptions::require_client_certificate` (default true), `client_crl_file` (CRLs
   checked at the handshake, reloaded when the file changes, checked every
   `crl_check_interval`, default 5 s; open connections are re-checked at their next request),
@@ -54,7 +62,7 @@ spec's version is the repository's version.
   `--flag=value` for every flag.
 - `libwarpsql_client`: `Client::SignInWithClientCertificate()`, renewed before expiry like
   the password grant.
-- Conformance: `test_mtls.py` (39 tests, marker `mtls`), with a PKI made by
+- Conformance: `test_mtls.py` (41 tests, marker `mtls`), with a PKI made by
   `cryptography`; `WARP_SQL_TEST_SERVER_MTLS_FLAG` names the server's client-CA flag.
 
 - The C++ client library (`libwarpsql_client`, `cpp/include/warpsql/client.hpp`):

@@ -173,7 +173,7 @@ target_compile_options(warp-duckdb PRIVATE ${WARPSQL_WARNINGS})
 
 # The client library's tests (googletest 1.18.0): unit tests, and live tests against
 # warp-duckdb (they start it themselves; WARPSQL_TEST_SERVER_BINARY names another).
-option(WARPSQL_BUILD_TESTS "Build the client library's tests" OFF)
+option(WARPSQL_BUILD_TESTS "Build the client library's and the SDK's tests" OFF)
 if(WARPSQL_BUILD_TESTS)
   set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
   set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
@@ -187,4 +187,8 @@ if(WARPSQL_BUILD_TESTS)
   target_compile_definitions(warpsql-client-tests PRIVATE
                              WARPSQL_TEST_DEFAULT_SERVER="$<TARGET_FILE:warp-duckdb>")
   add_dependencies(warpsql-client-tests warp-duckdb)
+  # The SDK's own unit tests (the security-event limiter).
+  add_executable(warpsql-sdk-tests tests/security_events_test.cc)
+  target_include_directories(warpsql-sdk-tests PRIVATE src/sdk)
+  target_link_libraries(warpsql-sdk-tests PRIVATE warpsql GTest::gtest_main)
 endif()

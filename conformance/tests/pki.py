@@ -137,6 +137,10 @@ class Pki:
                                      sans=[email("alice@example.com\x00.evil.example")])
         self.spiffe = self.ca.issue(file_name="spiffe", common_name="loader",
                                     sans=[x509.UniformResourceIdentifier("spiffe://example.org/ns/etl/sa/loader")])
+        # The same SPIFFE ID but for the case of one letter: another workload (URI paths are
+        # case-sensitive).
+        self.spiffe_case = self.ca.issue(file_name="spiffe-case", common_name="loader-case",
+                                         sans=[x509.UniformResourceIdentifier("spiffe://example.org/ns/etl/sa/Loader")])
         self.spiffe_other = self.ca.issue(file_name="spiffe-other", common_name="intruder",
                                           sans=[x509.UniformResourceIdentifier("spiffe://example.org/ns/x/sa/intruder")])
         self.alice_other_ca = self.other_ca.issue(file_name="alice-other-ca", common_name="alice",

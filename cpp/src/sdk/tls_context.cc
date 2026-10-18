@@ -6,6 +6,7 @@
 #include <openssl/x509v3.h>
 
 #include <algorithm>
+#include <cctype>
 #include <array>
 #include <map>
 #include <utility>
@@ -23,6 +24,29 @@ ClientIdentitySource ParseClientIdentitySource(std::string_view name) {
   if (name == "subject_cn") return ClientIdentitySource::kSubjectCn;
   throw std::invalid_argument(
       std::format("unknown client identity source '{}': use san_email, san_uri or subject_cn", name));
+}
+
+bool IsUriIdentity(std::string_view identity) {
+  const auto colon = identity.find("://");
+  if (colon == std::string_view::npos || colon == 0 ||
+      !std::isalpha(static_cast<unsigned char>(identity[0]))) {
+    return false;
+  }
+  for (std::size_t i = 1; i < colon; i++) {
+    const unsigned char c = static_cast<unsigned char>(identity[i]);
+    if (!std::isalnum(c) && c != '+' && c != '-' && c != '.') return false;
+  }
+  return true;
+}
+
+bool CertificateIdentitiesMatch(std::string_view a, std::string_view b) {
+  if (IsUriIdentity(a) || IsUriIdentity(b)) return a == b;
+  if (a.size() != b.size()) return false;
+  const auto lower = [](unsigned char c) { return c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c; };
+  for (std::size_t i = 0; i < a.size(); i++) {
+    if (lower(static_cast<unsigned char>(a[i])) != lower(static_cast<unsigned char>(b[i]))) return false;
+  }
+  return true;
 }
 
 std::string_view ClientIdentitySourceName(ClientIdentitySource source) {
@@ -381,17 +405,21 @@ void TlsContext::MaybeReload() {
     return;
   }
   if (mtime == crl_mtime_ && size == crl_size_) return;
-  crl_mtime_ = mtime;
-  crl_size_ = size;
   try {
     current_ = Build(current_.generation + 1);
+    // Only now: a reload that failed (the CRL, or the server's key or CA mid-rotation) is
+    // tried again at the next look, not left until the CRL file changes again.
+    crl_mtime_ = mtime;
+    crl_size_ = size;
     if (options_.on_crl_reload) {
       options_.on_crl_reload(true, "reloaded the client CRL file " + options_.client_crl_file);
       for (const auto& note : current_.notes) options_.on_crl_reload(true, note);
     }
   } catch (const std::exception& e) {
     if (options_.on_crl_reload) {
-      options_.on_crl_reload(false, std::string(e.what()) + "; the last one loaded stays in force");
+      options_.on_crl_reload(false, "reloading the client CRL file " + options_.client_crl_file + " failed (" +
+                                        e.what() + "); the last one loaded stays in force, and the reload "
+                                        "is tried again");
     }
   }
 }
@@ -508,13 +536,6 @@ std::string EscapeForDisplay(std::string_view text) {
   return out;
 }
 
-bool SameIdentityName(std::string_view a, std::string_view b) {
-  if (a.size() != b.size()) return false;
-  for (std::size_t i = 0; i < a.size(); i++) {
-    const auto lower = [](unsigned char c) { return c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c; };
-    if (lower(static_cast<unsigned char>(a[i])) != lower(static_cast<unsigned char>(b[i]))) return false;
-  }
-  return true;
-}
+bool SameIdentityName(std::string_view a, std::string_view b) { return CertificateIdentitiesMatch(a, b); }
 
 }  // namespace warpsql::detail

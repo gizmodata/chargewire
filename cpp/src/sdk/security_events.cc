@@ -7,17 +7,49 @@ std::string PeerHost(const std::string& peer) {
   return colon == std::string::npos ? peer : peer.substr(0, colon);
 }
 
+std::string SourceKey(const SecurityEvent& event) {
+  std::string host = PeerHost(event.peer);
+  boost::system::error_code ec;
+  const auto address = net::ip::make_address(host, ec);
+  if (!ec && address.is_v6() && !address.to_v6().is_v4_mapped()) {
+    auto bytes = address.to_v6().to_bytes();
+    std::fill(bytes.begin() + 8, bytes.end(), 0);  // the /64
+    host = net::ip::address_v6(bytes).to_string() + "/64";
+  }
+  if (event.code == "client_certificate_refused") return host;
+  return host + "|" + event.presented_thumbprint;
+}
+
+namespace {
+
+std::string Cap(std::string text) {
+  if (text.size() <= kMaxSecurityEventField) return text;
+  const std::size_t full = text.size();
+  text.resize(kMaxSecurityEventField);
+  return text + "... (" + std::to_string(full) + " bytes)";
+}
+
+}  // namespace
+
+SecurityEvent Capped(SecurityEvent event) {
+  for (std::string* field : {&event.code, &event.detail, &event.user, &event.token_id, &event.presented_thumbprint,
+                             &event.certificate_subject, &event.peer, &event.request_id}) {
+    *field = Cap(std::move(*field));
+  }
+  return event;
+}
+
 SecurityEvent SecurityEventLimiter::Summary(const Source& source) {
   SecurityEvent summary = source.last;
   summary.suppressed = source.suppressed;
   summary.detail = std::to_string(source.suppressed) + " more refusals from this source in the last " +
                    "window were not reported one by one (the latest: " + source.last.detail + ")";
-  return summary;
+  return Capped(std::move(summary));
 }
 
 std::vector<SecurityEvent> SecurityEventLimiter::Admit(const SecurityEvent& event, Clock::time_point now) {
   std::vector<SecurityEvent> out;
-  const std::string key = PeerHost(event.peer) + "|" + event.presented_thumbprint;
+  const std::string key = SourceKey(event);
   std::lock_guard lock(mutex_);
   auto found = by_key_.find(key);
   if (found == by_key_.end()) {
@@ -42,10 +74,10 @@ std::vector<SecurityEvent> SecurityEventLimiter::Admit(const SecurityEvent& even
   }
   if (source.reported < limits_.per_source) {
     source.reported++;
-    out.push_back(event);
+    out.push_back(Capped(event));
   } else {
     source.suppressed++;
-    source.last = event;
+    source.last = Capped(event);  // what the LRU keeps is bounded too
   }
   return out;
 }

@@ -241,7 +241,9 @@ escape it wherever it shows it (error details, logs), so it can't spoof what a r
 sees. The certificate proves the identity
 only: what the principal may do is decided by the server's authorization (§9.1), exactly
 as for any other grant. A server MAY refuse identities it does not know, and SHOULD
-document how it compares them (for example, ignoring ASCII case).
+document how it compares them. The recommended rule: a URI-form identity (`scheme://…`,
+such as a SPIFFE ID, whose path is case-sensitive) matches only exactly, case included; an
+e-mail address or common name matches ignoring ASCII case.
 
 **Certificate-bound tokens.** A token issued for a `client_certificate` sign-in MUST be
 bound to the certificate, as in [RFC 8705](https://www.rfc-editor.org/rfc/rfc8705) §3:
@@ -836,7 +838,9 @@ applying the same rules as SQL.
   of the mapped kind: trust only CAs that issue client certificates for this purpose.
 - **Bound tokens** (§4.4) make a stolen access token useless without the certificate's
   private key. A token from another grant is not bound, even when it was obtained over an
-  mTLS connection.
+  mTLS connection. A credential that is itself bound (a server's scoped token presented as a
+  password, say) is exchanged only over the connection's own certificate
+  (`certificate_mismatch` otherwise).
 - **Revocation** takes effect for new connections at the handshake and, where the server
   re-checks open connections, on the next request of each. A server that requires CRLs
   refuses every certificate whose issuer's CRL is missing or out of date.
