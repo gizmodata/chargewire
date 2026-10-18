@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "warpsql/backend.hpp"
@@ -75,6 +76,24 @@ struct SecurityEvent {
   int64_t suppressed = 0;
 };
 
+// A GET or HEAD request outside the protocol's paths (anything not under /warp), which an
+// application may answer before the server's 404: a web UI's files, say.
+struct PlainRequest {
+  std::string method;  // "GET" or "HEAD"
+  std::string path;    // percent-decoded, without the query
+};
+
+struct PlainResponse {
+  int status = 200;
+  std::string content_type;
+  std::vector<std::pair<std::string, std::string>> headers;
+  std::string body;  // for HEAD, the body a GET would get (only its length is sent)
+};
+
+// Returns nullopt to leave the request to the server (404). Runs on an I/O thread for
+// every such request: it must be quick and must not block.
+using PlainHandler = std::function<std::optional<PlainResponse>(const PlainRequest&)>;
+
 struct ServerOptions {
   std::string host = "127.0.0.1";
   uint16_t port = 0;  // 0: any free port; see Server::port()
@@ -117,6 +136,10 @@ struct ServerOptions {
 
   // Told about every SecurityEvent (log it, audit it). Called on an I/O thread: keep it short.
   std::function<void(const SecurityEvent&)> on_security_event;
+
+  // Answers GET and HEAD requests outside /warp on the main listener (not the health
+  // port). Unset: they get 404, as any unknown path.
+  PlainHandler plain_handler;
 };
 
 // Call first in main(), before anything uses OpenSSL. It keeps OpenSSL from freeing its

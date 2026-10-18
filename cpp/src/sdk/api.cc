@@ -251,6 +251,26 @@ Task<Response> Api::Handle(Request& request) {
 }
 
 Task<Response> Api::Route(Request& request) {
+  // GET and HEAD outside /warp: the application's, if it answers (options.plain_handler).
+  if (state_.options.plain_handler &&
+      (request.method == http::verb::get || request.method == http::verb::head)) {
+    const auto segments = Segments(request.path);
+    if (segments.empty() || segments[0] != "warp") {
+      const bool head = request.method == http::verb::head;
+      if (auto plain = state_.options.plain_handler(PlainRequest{head ? "HEAD" : "GET", request.path})) {
+        Response response;
+        response.status = static_cast<http::status>(plain->status);
+        response.content_type = std::move(plain->content_type);
+        response.headers = std::move(plain->headers);
+        if (head) {
+          response.head_length = plain->body.size();
+        } else {
+          response.body = std::move(plain->body);
+        }
+        co_return response;
+      }
+    }
+  }
   if (request.method == http::verb::options) {
     co_return NoContent();  // CORS preflight; Handle() adds the headers
   }

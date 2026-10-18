@@ -97,6 +97,14 @@ template <class Stream>
 Task<bool> WriteResponse(Stream& stream, Response& response, unsigned version, bool keep_alive) {
   keep_alive = keep_alive && !response.close;
   beast::get_lowest_layer(stream).expires_after(kWriteTimeout);
+  if (response.head_length) {
+    http::response<http::empty_body> message{response.status, version};
+    ApplyHeaders(message, response, keep_alive);
+    message.content_length(*response.head_length);
+    http::response_serializer<http::empty_body> serializer{message};
+    co_await http::async_write_header(stream, serializer, net::use_awaitable);
+    co_return keep_alive;
+  }
   if (!response.stream) {
     http::response<http::string_body> message{response.status, version};
     ApplyHeaders(message, response, keep_alive);

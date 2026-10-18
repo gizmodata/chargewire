@@ -78,6 +78,9 @@ struct Response {
 
   // Close the connection after this response.
   bool close = false;
+
+  // An answer to HEAD: the headers of a GET, with this Content-Length and no body.
+  std::optional<std::size_t> head_length;
 };
 
 using Handler = std::function<Task<Response>(Request&)>;
