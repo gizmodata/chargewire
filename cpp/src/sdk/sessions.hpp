@@ -60,6 +60,13 @@ class Session {
   void RemoveIngest(const std::string& id);
   std::vector<std::shared_ptr<IngestOperation>> Ingests() const;
 
+  // A one-request bulk ingest's body still arriving (spec §8.1). Close() aborts it, so an
+  // engine thread waiting for its bytes fails instead of waiting for I/O that a stopping
+  // server no longer does (Server::Stop() joins the engine threads after stopping the I/O
+  // ones). On a closed session it is aborted at once.
+  void AddUpload(const std::shared_ptr<ByteQueue>& upload);
+  void RemoveUpload(const ByteQueue* upload);
+
   void AddStatement(std::shared_ptr<Statement> statement);
   // Throws statement_not_found.
   std::shared_ptr<Statement> FindStatement(const std::string& id) const;
@@ -92,6 +99,7 @@ class Session {
   std::map<std::string, std::shared_ptr<Statement>> statements_;
   std::map<std::string, std::shared_ptr<PreparedStatement>> prepared_;
   std::map<std::string, std::shared_ptr<IngestOperation>> ingests_;
+  std::vector<std::shared_ptr<ByteQueue>> uploads_;
   Clock::time_point last_activity_;
   bool closed_ = false;
 };

@@ -156,6 +156,22 @@ void Session::RemoveIngest(const std::string& id) {
   ingests_.erase(id);
 }
 
+void Session::AddUpload(const std::shared_ptr<ByteQueue>& upload) {
+  {
+    std::lock_guard lock(mutex_);
+    if (!closed_) {
+      uploads_.push_back(upload);
+      return;
+    }
+  }
+  upload->Abort();
+}
+
+void Session::RemoveUpload(const ByteQueue* upload) {
+  std::lock_guard lock(mutex_);
+  std::erase_if(uploads_, [upload](const auto& held) { return held.get() == upload; });
+}
+
 std::vector<std::shared_ptr<IngestOperation>> Session::Ingests() const {
   std::lock_guard lock(mutex_);
   std::vector<std::shared_ptr<IngestOperation>> out;
@@ -281,13 +297,18 @@ void Session::Close(CancelReason reason) {
     }
   }
   std::vector<std::shared_ptr<IngestOperation>> ingests;
+  std::vector<std::shared_ptr<ByteQueue>> uploads;
   {
     std::lock_guard lock(mutex_);
     for (const auto& [id, ingest] : ingests_) ingests.push_back(ingest);
     ingests_.clear();
+    uploads.swap(uploads_);
   }
   for (const auto& ingest : ingests) {
     ingest->Abort(Error(ErrorCode::kStatementCancelled, "the session ended, so its ingest was aborted"));
+  }
+  for (const auto& upload : uploads) {
+    upload->Abort();  // its engine thread's read fails, and the load rolls back
   }
   bool interrupt = false;
   for (const auto& statement : statements) {

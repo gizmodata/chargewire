@@ -147,6 +147,14 @@ spec's version is the repository's version.
   port). On Windows DuckDB is linked statically, with the extensions its shared library
   links. The conformance harness stops a server it started with Ctrl+Break on Windows.
 
+### Fixed
+
+- A server stopped during a one-request bulk ingest (`POST …/ingest`) whose body was still
+  arriving never finished stopping: `Server::Stop()` joined the engine threads after the
+  I/O threads, and the engine thread loading the upload waited for bytes only the stopped
+  I/O side could deliver. Closing a session (`Stop()` closes every one) now aborts its
+  uploads, as it already aborted partitioned ingests' parts; the load fails and rolls back.
+
 - Draft 0.1.0 of the protocol spec (`spec/warp-sql.md`): discovery and health,
   token authentication (password, token exchange, browser sign-in), sessions,
   transactions, statements with a one-round-trip streamed path and an async

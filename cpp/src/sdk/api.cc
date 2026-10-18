@@ -1273,6 +1273,14 @@ Task<Response> Api::Ingest(Request& request, const std::string& session_id) {
   const std::string key(request.Header("Idempotency-Key"));
 
   auto queue = std::make_shared<ByteQueue>(8);
+  // Closing the session (a server stop closes every one) aborts the upload, so the engine
+  // thread below never waits for bytes this coroutine will no longer push.
+  session->AddUpload(queue);
+  struct ForgetUpload {
+    Session& session;
+    const ByteQueue* upload;
+    ~ForgetUpload() { session.RemoveUpload(upload); }
+  } forget_upload{*session, queue.get()};
   auto completion = std::make_shared<Completion<int64_t>>();
   net::post(session->strand(), [session, queue, completion, target] {
     std::shared_ptr<ValidatedReader> rows;
