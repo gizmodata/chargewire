@@ -8,6 +8,7 @@
 // The password comes from the environment, never the command line, so it doesn't show
 // in process listings.
 
+#include <atomic>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -98,15 +99,23 @@ int main(int argc, char** argv) {
               << flags.server.host << ":" << server.port() << "/warp" << std::endl;
 
     // First signal: drain (finish running work, refuse new work). Second: stop now.
-    std::thread([&server, &stop_signals, drain = flags.drain_seconds] {
+    // Joined before `server` goes: a second signal that arrives after a drain finished
+    // must not reach a server already destroyed.
+    std::atomic<bool> exiting = false;
+    std::thread signals([&server, &stop_signals, &exiting, drain = flags.drain_seconds] {
       stop_signals.Wait();
+      if (exiting) return;
       std::cout << "draining (up to " << drain << " s); signal again to stop now" << std::endl;
       server.Drain(std::chrono::seconds(drain));
       stop_signals.Wait();
+      if (exiting) return;
       server.Stop();
-    }).detach();
+    });
 
     server.Wait();
+    exiting = true;
+    stop_signals.Wake();
+    signals.join();
     std::cout << "stopped" << std::endl;
   } catch (const std::exception& e) {
     std::cerr << "warp-duckdb: " << e.what() << "\n";
