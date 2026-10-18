@@ -92,7 +92,10 @@ def test_preparing_an_expensive_query_returns_at_once(warp, server):
                 took = time.monotonic() - started
                 with lock:
                     slowest[0] = max(slowest[0], took)
-                    if took >= 1.0:
+                    # The queries run for hours, so a prepare that runs one hits the 10 s
+                    # timeout above. 5 s leaves room for a small runner whose cores the busy
+                    # sessions hold (Windows CI, 4 vCPUs: 3 of 4000 prepares took 1.1-1.2 s).
+                    if took >= 5.0:
                         stalls.append(f"session {k}, prepare {i}: {sql} took {took:.2f} s")
                 assert doc["result_kind"] == "rows"
                 assert schema_of(encoded=doc["result_schema"]).names == ["n"]
