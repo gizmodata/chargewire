@@ -121,6 +121,7 @@ add_library(warpsql
   src/sdk/json.cc
   src/sdk/metadata.cc
   src/sdk/platform.cc
+  src/sdk/security_events.cc
   src/sdk/server.cc
   src/sdk/sessions.cc
   src/sdk/signal.cc

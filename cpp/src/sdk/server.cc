@@ -68,7 +68,9 @@ class Server::Impl {
                   response.status = status;
                   response.close = true;
                   return response;
-                }},
+                },
+                [this](const std::string& reason, const std::string& thumbprint, const std::string& subject,
+                       const std::string& peer) { api_.ReportHandshakeRefusal(reason, thumbprint, subject, peer); }},
         http_(io_, state_.options, limits_, [this](Request& request) { return api_.Handle(request); }),
         sweep_timer_(io_) {
     if (!state_.tokens) {
@@ -201,6 +203,7 @@ class Server::Impl {
       state_.in_memory_tokens->Sweep();
     }
     state_.idempotency.Sweep();
+    api_.FlushSecurityEvents();
     const auto now = WallClock::now();
     const auto idle_cutoff = Clock::now() - state_.options.session_idle_timeout;
     const auto ingest_cutoff = Clock::now() - state_.options.ingest_idle_timeout;

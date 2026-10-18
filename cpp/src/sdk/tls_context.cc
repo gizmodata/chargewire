@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
+#include <utility>
 #include <format>
 #include <stdexcept>
 #include <system_error>
@@ -128,42 +130,125 @@ ClientCertificate Describe(X509* leaf) {
   return out;
 }
 
-// Loads every CRL in a PEM file into `store`; returns the earliest nextUpdate among them.
-std::chrono::system_clock::time_point LoadCrls(X509_STORE* store, const std::string& path) {
+// Reads every PEM item of one kind from a file.
+template <class T, class Read, class Free>
+std::vector<T*> ReadPemAll(const std::string& path, const char* what, Read read, Free free_one) {
   BIO* bio = BIO_new_file(path.c_str(), "r");
   if (bio == nullptr) {
-    throw std::runtime_error(std::format("cannot read the CRL file {}: {}", path, OpenSslError()));
+    throw std::runtime_error(std::format("cannot read the {} file {}: {}", what, path, OpenSslError()));
   }
-  int count = 0;
-  auto earliest = std::chrono::system_clock::time_point::max();
-  while (X509_CRL* crl = PEM_read_bio_X509_CRL(bio, nullptr, nullptr, nullptr)) {
-    if (const ASN1_TIME* next = X509_CRL_get0_nextUpdate(crl)) {
-      int days = 0, seconds = 0;  // from now (portable, unlike timegm)
-      if (ASN1_TIME_diff(&days, &seconds, nullptr, next) == 1) {
-        earliest = std::min(earliest, std::chrono::system_clock::now() + std::chrono::hours(24) * days +
-                                          std::chrono::seconds(seconds));
-      }
-    }
-    const int added = X509_STORE_add_crl(store, crl);
-    X509_CRL_free(crl);
-    if (added != 1) {
-      BIO_free(bio);
-      throw std::runtime_error(std::format("cannot use a CRL in {}: {}", path, OpenSslError()));
-    }
-    count++;
-  }
+  std::vector<T*> items;
+  while (T* item = read(bio, nullptr, nullptr, nullptr)) items.push_back(item);
   // The loop ends at the end of the file (PEM_R_NO_START_LINE) or at a broken entry.
   const unsigned long last = ERR_peek_last_error();
   const bool clean_end = ERR_GET_LIB(last) == ERR_LIB_PEM && ERR_GET_REASON(last) == PEM_R_NO_START_LINE;
   ERR_clear_error();
   BIO_free(bio);
   if (!clean_end && last != 0) {
-    throw std::runtime_error(std::format("the CRL file {} has an entry that cannot be read", path));
+    for (T* item : items) free_one(item);
+    throw std::runtime_error(std::format("the {} file {} has an entry that cannot be read", what, path));
   }
-  if (count == 0) {
+  return items;
+}
+
+std::string NameDer(const X509_NAME* name) {
+  unsigned char* der = nullptr;
+  const int length = i2d_X509_NAME(name, &der);
+  std::string out(reinterpret_cast<const char*>(der), static_cast<std::size_t>(std::max(length, 0)));
+  OPENSSL_free(der);
+  return out;
+}
+
+// A CRL extension holding a number (CRL Number, Delta CRL Indicator), freed with it.
+struct CrlNumber {
+  ASN1_INTEGER* value = nullptr;
+  ~CrlNumber() { ASN1_INTEGER_free(value); }
+};
+
+// Which of two CRLs from one issuer is the newer: the higher CRL Number when both have
+// one, else the later thisUpdate.
+bool Newer(X509_CRL* a, X509_CRL* b) {
+  CrlNumber na{static_cast<ASN1_INTEGER*>(X509_CRL_get_ext_d2i(a, NID_crl_number, nullptr, nullptr))};
+  CrlNumber nb{static_cast<ASN1_INTEGER*>(X509_CRL_get_ext_d2i(b, NID_crl_number, nullptr, nullptr))};
+  if (na.value != nullptr && nb.value != nullptr) return ASN1_INTEGER_cmp(na.value, nb.value) > 0;
+  return ASN1_TIME_compare(X509_CRL_get0_lastUpdate(a), X509_CRL_get0_lastUpdate(b)) > 0;
+}
+
+std::string NumberText(X509_CRL* crl, int nid) {
+  CrlNumber n{static_cast<ASN1_INTEGER*>(X509_CRL_get_ext_d2i(crl, nid, nullptr, nullptr))};
+  if (n.value == nullptr) return "(no number)";
+  return "#" + std::to_string(ASN1_INTEGER_get(n.value));
+}
+
+// Loads the CRL file into `store` (spec §4.4). For each issuer it keeps only the newest
+// CRL (OpenSSL would use whichever it met first). A CRL whose issuer is one of the client
+// CAs must verify with that CA's key. Delta CRLs are refused: OpenSSL applies one only when
+// the certificate or the base CRL has a Freshest CRL extension, and ignores it silently
+// otherwise, so a revocation in a delta could go unseen. A refused file fails the load (at
+// startup the server doesn't start; on a reload the last good CRLs stay in force). Returns
+// the earliest nextUpdate kept, and what was set aside, for the log.
+TlsContext::Current LoadCrls(X509_STORE* store, const std::string& path, const std::string& ca_path) {
+  auto crls = ReadPemAll<X509_CRL>(path, "CRL", PEM_read_bio_X509_CRL, X509_CRL_free);
+  std::shared_ptr<void> free_crls(nullptr, [&crls](void*) { for (auto* c : crls) X509_CRL_free(c); });
+  if (crls.empty()) {
     throw std::runtime_error(std::format("the CRL file {} holds no certificate revocation list", path));
   }
-  return earliest;
+  auto cas = ReadPemAll<X509>(ca_path, "client CA", PEM_read_bio_X509, X509_free);
+  std::shared_ptr<void> free_cas(nullptr, [&cas](void*) { for (auto* c : cas) X509_free(c); });
+
+  TlsContext::Current out;
+  struct Kept {
+    X509_CRL* base = nullptr;
+    std::string issuer;
+  };
+  std::map<std::string, Kept> by_issuer;
+  for (X509_CRL* crl : crls) {
+    const X509_NAME* issuer = X509_CRL_get_issuer(crl);
+    const std::string issuer_text = EscapeForDisplay(NameText(issuer));
+    // Signed by the CA it names, when that CA is one of ours (an intermediate's CRL is
+    // checked against the intermediate at the handshake).
+    bool known = false, verified = false;
+    for (X509* ca : cas) {
+      if (X509_NAME_cmp(X509_get_subject_name(ca), issuer) != 0) continue;
+      known = true;
+      if (EVP_PKEY* key = X509_get0_pubkey(ca); key != nullptr && X509_CRL_verify(crl, key) == 1) verified = true;
+    }
+    ERR_clear_error();
+    if (known && !verified) {
+      throw std::runtime_error(std::format("a CRL in {} names {} as its issuer but is not signed by that CA's key",
+                                           path, issuer_text));
+    }
+    if (CrlNumber delta{static_cast<ASN1_INTEGER*>(X509_CRL_get_ext_d2i(crl, NID_delta_crl, nullptr, nullptr))};
+        delta.value != nullptr) {
+      throw std::runtime_error(std::format("{} holds a delta CRL from {}: delta CRLs are not supported; "
+                                           "use a full CRL", path, issuer_text));
+    }
+    auto& kept = by_issuer[NameDer(issuer)];
+    kept.issuer = issuer_text;
+    if (kept.base == nullptr) {
+      kept.base = crl;
+    } else {
+      X509_CRL* older = Newer(crl, kept.base) ? std::exchange(kept.base, crl) : crl;
+      out.notes.push_back(std::format("CRL {} from {} is superseded by {} and not used",
+                                      NumberText(older, NID_crl_number), issuer_text,
+                                      NumberText(kept.base, NID_crl_number)));
+    }
+  }
+  for (auto& [key, kept] : by_issuer) {
+    X509_CRL* crl = kept.base;
+    if (const ASN1_TIME* next = X509_CRL_get0_nextUpdate(crl)) {
+      int days = 0, seconds = 0;  // from now (portable, unlike timegm)
+      if (ASN1_TIME_diff(&days, &seconds, nullptr, next) == 1) {
+        out.crl_next_update = std::min(out.crl_next_update, std::chrono::system_clock::now() +
+                                                                 std::chrono::hours(24) * days +
+                                                                 std::chrono::seconds(seconds));
+      }
+    }
+    if (X509_STORE_add_crl(store, crl) != 1) {
+      throw std::runtime_error(std::format("cannot use a CRL in {}: {}", path, OpenSslError()));
+    }
+  }
+  return out;
 }
 
 // Identities are printable ASCII only (spec §4.4): no control, format, invisible or
@@ -172,12 +257,28 @@ bool PrintableAscii(std::string_view text) {
   return std::ranges::all_of(text, [](char c) { return c >= 0x20 && c <= 0x7e; });
 }
 
-// With allow_missing_ca_crls: a CA above the leaf whose CRL is missing passes.
-int AllowMissingCaCrl(int ok, X509_STORE_CTX* context) {
-  if (!ok && X509_STORE_CTX_get_error(context) == X509_V_ERR_UNABLE_TO_GET_CRL &&
-      X509_STORE_CTX_get_error_depth(context) > 0) {
+// The handshake's verification callback: records why a certificate was refused (for the
+// audit), and with allow_missing_ca_crls lets a CA above the leaf go without a CRL.
+template <bool kAllowMissingCaCrls>
+int VerifyCallback(int ok, X509_STORE_CTX* context) {
+  if (ok) return ok;
+  const int error = X509_STORE_CTX_get_error(context);
+  if (kAllowMissingCaCrls && error == X509_V_ERR_UNABLE_TO_GET_CRL && X509_STORE_CTX_get_error_depth(context) > 0) {
     X509_STORE_CTX_set_error(context, X509_V_OK);
     return 1;
+  }
+  auto* ssl = static_cast<SSL*>(X509_STORE_CTX_get_ex_data(context, SSL_get_ex_data_X509_STORE_CTX_idx()));
+  auto* refusal = ssl ? static_cast<HandshakeRefusal*>(SSL_get_ex_data(ssl, TlsContext::RefusalIndex())) : nullptr;
+  if (refusal != nullptr && refusal->reason.empty()) {
+    refusal->reason = X509_verify_cert_error_string(error);
+    if (X509* leaf = X509_STORE_CTX_get0_cert(context)) {
+      try {
+        const ClientCertificate described = Describe(leaf);
+        refusal->thumbprint = described.thumbprint;
+        refusal->subject = EscapeForDisplay(described.subject);
+      } catch (const std::exception&) {
+      }
+    }
   }
   return ok;
 }
@@ -200,6 +301,11 @@ PeerCertificate::~PeerCertificate() {
   sk_X509_pop_free(chain_, X509_free);
 }
 
+int TlsContext::RefusalIndex() {
+  static const int index = SSL_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
+  return index;
+}
+
 TlsContext::TlsContext(const TlsOptions& options) : options_(options) {
   current_ = Build(1);
   last_check_ = Clock::now();
@@ -209,12 +315,14 @@ TlsContext::TlsContext(const TlsOptions& options) : options_(options) {
     crl_size_ = std::filesystem::file_size(options_.client_crl_file, ec);
     if (options_.on_crl_reload) {
       options_.on_crl_reload(true, "loaded the client CRL file " + options_.client_crl_file);
+      for (const auto& note : current_.notes) options_.on_crl_reload(true, note);
     }
   }
 }
 
 TlsContext::Current TlsContext::Build(uint64_t generation) const {
-  Current built{nullptr, generation};
+  Current built;
+  built.generation = generation;
   auto context = std::make_shared<ssl::context>(ssl::context::tls_server);
   context->set_options(ssl::context::default_workarounds | ssl::context::no_sslv2 |
                        ssl::context::no_sslv3 | ssl::context::no_tlsv1 | ssl::context::no_tlsv1_1);
@@ -243,12 +351,15 @@ TlsContext::Current TlsContext::Build(uint64_t generation) const {
   SSL_CTX_set_session_id_context(native, kSessionContext, sizeof(kSessionContext) - 1);
   if (!options_.client_crl_file.empty()) {
     X509_STORE* store = SSL_CTX_get_cert_store(native);
-    built.crl_next_update = LoadCrls(store, options_.client_crl_file);
+    Current loaded = LoadCrls(store, options_.client_crl_file, options_.client_ca_file);
+    built.crl_next_update = loaded.crl_next_update;
+    built.notes = std::move(loaded.notes);
     // Every certificate of the chain, not only the leaf: a revoked intermediate CA revokes
     // what it issued.
     X509_STORE_set_flags(store, X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL);
-    if (options_.allow_missing_ca_crls) X509_STORE_set_verify_cb(store, AllowMissingCaCrl);
   }
+  X509_STORE_set_verify_cb(SSL_CTX_get_cert_store(native),
+                           options_.allow_missing_ca_crls ? VerifyCallback<true> : VerifyCallback<false>);
   return built;
 }
 
@@ -276,6 +387,7 @@ void TlsContext::MaybeReload() {
     current_ = Build(current_.generation + 1);
     if (options_.on_crl_reload) {
       options_.on_crl_reload(true, "reloaded the client CRL file " + options_.client_crl_file);
+      for (const auto& note : current_.notes) options_.on_crl_reload(true, note);
     }
   } catch (const std::exception& e) {
     if (options_.on_crl_reload) {

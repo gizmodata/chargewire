@@ -58,7 +58,8 @@ struct TlsOptions {
 
 // A refusal that may be an attack (spec §4.4): a bound token on the wrong connection, a
 // sign-in for another identity than the certificate's, a revoked certificate, an unknown
-// identity. Values are printable ASCII (anything else escaped as \xNN).
+// identity, a client certificate the TLS handshake refused (code
+// "client_certificate_refused"). Values are printable ASCII (anything else escaped as \xNN).
 struct SecurityEvent {
   std::string code;                  // the problem code the client got
   std::string detail;
@@ -68,6 +69,10 @@ struct SecurityEvent {
   std::string certificate_subject;   // RFC 2253, or empty
   std::string peer;                  // the client's address:port
   std::string request_id;
+  // Above 0: a summary, standing for this many refusals from the same source (client
+  // address and certificate) that were not reported one by one. Each source gets its
+  // first ten events a minute in full, then one summary a minute.
+  int64_t suppressed = 0;
 };
 
 struct ServerOptions {

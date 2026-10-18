@@ -41,6 +41,9 @@ struct Request {
   // once Validate() accepted it, and the identity a sign-in named.
   mutable std::optional<Principal> token_principal;
   mutable std::string attempted_identity;
+  // Authentication failures so far on this connection (null: not counted). After a few
+  // the server closes the connection.
+  int* connection_auth_failures = nullptr;
 
   std::string_view Header(std::string_view name) const;
 };
@@ -87,6 +90,10 @@ struct HttpLimits {
   // Which requests stream their body instead (no size limit).
   std::function<bool(const Request&)> streams_body;
   std::function<Response(http::status status, std::string_view detail)> error_response;
+  // A client certificate the TLS handshake refused: why, its thumbprint and subject, and the
+  // client's address. May be empty.
+  std::function<void(const std::string&, const std::string&, const std::string&, const std::string&)>
+      handshake_refused;
 };
 
 class HttpServer {

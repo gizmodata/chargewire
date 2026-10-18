@@ -317,6 +317,7 @@ template <class Stream>
 Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler& handler,
                          TlsContext* tls = nullptr, PeerCertificate* peer = nullptr) {
   beast::flat_buffer buffer;
+  int auth_failures = 0;
   std::string peer_address;
   {
     boost::system::error_code ec;
@@ -359,6 +360,7 @@ Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler
       request.headers = static_cast<const http::fields&>(message.base());
       request.request_id = NewId("r");
       request.peer = peer_address;
+      request.connection_auth_failures = &auth_failures;
       if (peer != nullptr) {
         request.client_certificate = peer->info();
         request.client_certificate_problem = tls->Recheck(*peer);
@@ -485,9 +487,26 @@ class HttpServer::Impl {
       // connection's life.
       const TlsContext::Current context = tls_->Get();
       TlsStream tls_stream(std::move(stream), context.context->native_handle());
+      // Why the handshake refused a client certificate, if it does (the verify callback).
+      HandshakeRefusal refusal;
+      SSL_set_ex_data(tls_stream.native_handle(), TlsContext::RefusalIndex(), &refusal);
+      std::string peer_address;
+      {
+        boost::system::error_code ec;
+        const auto remote = beast::get_lowest_layer(tls_stream).socket().remote_endpoint(ec);
+        if (!ec) peer_address = remote.address().to_string() + ":" + std::to_string(remote.port());
+      }
       try {
         beast::get_lowest_layer(tls_stream).expires_after(kHandshakeTimeout);
-        co_await tls_stream.async_handshake(net::use_awaitable);
+        try {
+          co_await tls_stream.async_handshake(net::use_awaitable);
+        } catch (const std::exception&) {
+          if (!refusal.reason.empty() && limits_.handshake_refused) {
+            limits_.handshake_refused(refusal.reason, refusal.thumbprint, refusal.subject, peer_address);
+          }
+          throw;
+        }
+        SSL_set_ex_data(tls_stream.native_handle(), TlsContext::RefusalIndex(), nullptr);
         auto peer = tls_->PeerOf(tls_stream.native_handle(), context.generation);
         co_await ServeRequests(tls_stream, limits_, handler_, tls_.get(), peer.get());
       } catch (const std::exception&) {

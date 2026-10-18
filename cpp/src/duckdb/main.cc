@@ -124,7 +124,9 @@ Flags ParseFlags(int argc, char** argv) {
   flags.server.on_security_event = [](const warpsql::SecurityEvent& event) {
     std::cerr << "warp-duckdb: SECURITY " << event.code << " user=" << event.user
               << " token_id=" << event.token_id << " thumbprint=" << event.presented_thumbprint
-              << " peer=" << event.peer << " request=" << event.request_id << ": " << event.detail
+              << " peer=" << event.peer << " request=" << event.request_id
+              << (event.suppressed > 0 ? " suppressed=" + std::to_string(event.suppressed) : std::string())
+              << ": " << event.detail
               << std::endl;
   };
   if (flags.server.tls) {

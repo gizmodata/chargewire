@@ -653,3 +653,85 @@ def test_an_identity_must_be_printable_ascii(pki, matching, common_name):
     assert "\\x" in problem["detail"], problem
     with client(server=matching, pki=pki, cert=pki.warp_cn) as http:  # the twin: plain "warp"
         certificate_token(http=http)
+
+
+# ---- CRL files: deltas, several CRLs per CA, forgeries ----
+
+def crl_server(pki, crl):
+    return started(pki=pki, probe=None,
+                   args=[*tls_args(pki=pki, crl=crl), "--mtls-require-client-cert=false",
+                         "--mtls-certificate-sign-in", "--mtls-admin-identities", ",".join(KNOWN)])
+
+
+def refused_at_startup(pki, crl) -> str:
+    """The server must refuse to start with this CRL file; returns what it said."""
+    import subprocess
+    out = subprocess.run(args=[binary(), "--host", "127.0.0.1", "--port", "0", *tls_args(pki=pki, crl=crl),
+                               "--mtls-certificate-sign-in", "--mtls-admin-identities", "alice@example.com"],
+                         env={**os.environ, os.environ.get("WARP_SQL_TEST_SERVER_PASSWORD_ENV", "WARP_DUCKDB_PASSWORD"): "pw"},
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode != 0, f"started with {crl.name}: {out.stdout} {out.stderr}"
+    return out.stdout + out.stderr
+
+
+def test_a_delta_crl_is_refused_and_fails_closed(pki, tmp_path):
+    # Deltas are not applied (OpenSSL would skip one silently without a Freshest CRL
+    # extension), so a file holding one is refused rather than half-read.
+    from pki import write_atomically
+    crl = tmp_path / "delta.crl.pem"
+    delta_file = pki.ca.crl_pem(revoked=[], number=1) + pki.ca.crl_pem(revoked=[pki.alice.cert], number=2, delta_of=1)
+    write_atomically(path=crl, data=delta_file)
+    assert "delta CRLs are not supported" in refused_at_startup(pki=pki, crl=crl)
+    # On a reload the last good CRLs stay in force: dave stays revoked, and the server says why.
+    write_atomically(path=crl, data=pki.ca.crl_pem(revoked=[pki.dave.cert], number=1))
+    server = crl_server(pki=pki, crl=crl)
+    try:
+        write_atomically(path=crl, data=delta_file)
+        time.sleep(7)
+        reason = handshake_refusal(server=server, context=pki.context(client=pki.dave))
+        assert reason is not None and "CERTIFICATE_REVOKED" in reason, reason
+        with client(server=server, pki=pki, cert=pki.alice) as http:  # the delta's revocation isn't half-applied either
+            certificate_token(http=http)
+        assert "delta CRLs are not supported" in server.log_tail(lines=200), server.log_tail()
+    finally:
+        finish(server=server)
+
+
+@pytest.mark.parametrize("newest_first", [False, True], ids=["older-first", "newer-first"])
+def test_the_newest_crl_of_a_ca_wins(pki, tmp_path, newest_first):
+    from pki import write_atomically
+    older, newer = pki.ca.crl_pem(revoked=[], number=2), pki.ca.crl_pem(revoked=[pki.dave.cert], number=3)
+    crl = tmp_path / "two.crl.pem"
+    write_atomically(path=crl, data=newer + older if newest_first else older + newer)
+    server = crl_server(pki=pki, crl=crl)
+    try:
+        reason = handshake_refusal(server=server, context=pki.context(client=pki.dave))
+        assert reason is not None and "CERTIFICATE_REVOKED" in reason, reason
+        assert handshake_refusal(server=server, context=pki.context(client=pki.alice)) is None
+    finally:
+        finish(server=server)
+
+
+def test_a_crl_not_signed_by_its_ca_is_refused(pki, tmp_path):
+    from pki import write_atomically
+    crl = tmp_path / "forged.crl.pem"
+    # Names the client CA as its issuer, signed by another key (a newer number, to win).
+    write_atomically(path=crl, data=pki.ca.crl_pem(revoked=[], number=9, signer=pki.other_ca.key)
+                     + pki.ca.crl_pem(revoked=[pki.dave.cert], number=2))
+    assert "not signed by that CA's key" in refused_at_startup(pki=pki, crl=crl)
+
+
+# ---- Refusal floods ----
+
+def test_a_connection_that_keeps_failing_authentication_is_closed(pki, optional):
+    with client(server=optional, pki=pki, cert=None) as http:
+        answers = [certificate_grant(http=http) for _ in range(5)]
+    for answer in answers:
+        assert_problem(response=answer, status=401, code="client_certificate_required")
+    assert [a.headers.get("connection") for a in answers][:4] == [None] * 4 or \
+        all(a.headers.get("connection") != "close" for a in answers[:4]), [a.headers for a in answers]
+    assert answers[4].headers.get("connection") == "close", answers[4].headers
+    # A connection that signs in fine is never closed for it (the twin).
+    with client(server=optional, pki=pki, cert=pki.alice) as http:
+        answers = [certificate_grant(http=http) for _ in range(6)]
+    assert all(a.status_code == 200 and a.headers.get("connection") != "close" for a in answers)

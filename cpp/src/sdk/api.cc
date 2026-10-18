@@ -38,6 +38,8 @@ constexpr int64_t kMaxRequestedPartitions = 256;
 constexpr std::size_t kEncodeWindowZstd = 8;
 constexpr std::size_t kEncodeBytes = 64 * 1024 * 1024;
 constexpr std::size_t kGatherBytes = 1024 * 1024;
+// Authentication failures one connection may have before the server closes it.
+constexpr int kMaxAuthFailuresPerConnection = 5;
 
 // WARPSQL_STREAM_STATS=1 logs, for every result stream and statement, how long each
 // stage of the pipeline took (stderr), to see which one limits a stream.
@@ -193,7 +195,24 @@ Task<Response> Api::Handle(Request& request) {
     response = co_await Route(request);
   } catch (const Error& error) {
     ReportSecurityEvent(request, error);
-    const bool close = response.close;
+    bool close = response.close;
+    // A connection that keeps failing authentication is closed: each attempt then costs
+    // the client a new connection (and TLS handshake), not just a request.
+    switch (error.code()) {
+      case ErrorCode::kInvalidToken:
+      case ErrorCode::kInvalidCredentials:
+      case ErrorCode::kCertificateMismatch:
+      case ErrorCode::kCertificateIdentityMismatch:
+      case ErrorCode::kUnknownCertificateIdentity:
+      case ErrorCode::kClientCertificateRequired:
+        if (request.connection_auth_failures != nullptr &&
+            ++*request.connection_auth_failures >= kMaxAuthFailuresPerConnection) {
+          close = true;
+        }
+        break;
+      default:
+        break;
+    }
     response = ProblemResponse(error, request.request_id);
     response.close = close;
   } catch (const std::exception&) {
@@ -536,10 +555,38 @@ void Api::ReportSecurityEvent(const Request& request, const Error& error) const 
   }
   event.peer = request.peer;
   event.request_id = request.request_id;
-  try {
-    state_.options.on_security_event(event);
-  } catch (...) {
-    // a failing logger must not change the answer
+  Emit(event);
+}
+
+void Api::Emit(const SecurityEvent& event) const {
+  if (!state_.options.on_security_event) return;
+  for (const auto& admitted : state_.security_events.Admit(event)) {
+    try {
+      state_.options.on_security_event(admitted);
+    } catch (...) {
+      // a failing logger must not change the answer
+    }
+  }
+}
+
+void Api::ReportHandshakeRefusal(const std::string& reason, const std::string& thumbprint,
+                                 const std::string& subject, const std::string& peer) const {
+  SecurityEvent event;
+  event.code = "client_certificate_refused";
+  event.detail = EscapeForDisplay("the TLS handshake refused the client certificate: " + reason);
+  event.presented_thumbprint = thumbprint;
+  event.certificate_subject = subject;
+  event.peer = peer;
+  Emit(event);
+}
+
+void Api::FlushSecurityEvents() const {
+  if (!state_.options.on_security_event) return;
+  for (const auto& summary : state_.security_events.Flush()) {
+    try {
+      state_.options.on_security_event(summary);
+    } catch (...) {
+    }
   }
 }
 

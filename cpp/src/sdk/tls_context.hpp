@@ -20,6 +20,13 @@
 
 namespace warpsql::detail {
 
+// Why a handshake refused a client certificate (filled in by the verify callback).
+struct HandshakeRefusal {
+  std::string reason;      // OpenSSL's verify error
+  std::string thumbprint;  // the leaf's x5t#S256
+  std::string subject;     // RFC 2253, escaped
+};
+
 // A connection's verified client certificate. Created after the handshake; lives as long
 // as the connection, and is checked again before each of its requests.
 class PeerCertificate {
@@ -50,11 +57,15 @@ class TlsContext {
 
   struct Current {
     std::shared_ptr<net::ssl::context> context;
-    uint64_t generation;
+    uint64_t generation = 0;
     // The earliest nextUpdate of its CRLs (max: none): after it, every certificate is
     // verified again, and fails closed once the CRL has expired.
     std::chrono::system_clock::time_point crl_next_update = std::chrono::system_clock::time_point::max();
+    std::vector<std::string> notes;  // what loading the CRLs set aside, for the log
   };
+  // The SSL ex_data slot of a HandshakeRefusal the handshake fills in when it refuses a
+  // client certificate.
+  static int RefusalIndex();
   // The context new connections use. Looks at the CRL file first, at most every
   // crl_check_interval, and reloads it when it changed.
   Current Get();

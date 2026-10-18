@@ -33,6 +33,14 @@ spec's version is the repository's version.
   exact: an unbound session takes only unbound tokens too. `ServerOptions::on_security_event`
   reports every certificate refusal (user, token id, thumbprint, peer address);
   `TokenService::Accepted` is told about a token only after every check passed.
+- Second review: of several CRLs from one CA the newest is used (CRL Number, else
+  thisUpdate), the others reported as superseded; a CRL naming a client CA must be signed by
+  it; delta CRLs are refused (OpenSSL would ignore one silently without a Freshest CRL
+  extension). A refused CRL file stops startup, and on a reload keeps the last good CRLs.
+  SecurityEvents are rate-limited per source (address and certificate: ten a minute in full,
+  then one summary with `SecurityEvent::suppressed`, in a bounded LRU), a connection is closed
+  after five failed authentications, and a client certificate the handshake refuses is a
+  SecurityEvent too (`client_certificate_refused`, with its thumbprint and subject).
 - SDK: `TlsOptions::require_client_certificate` (default true), `client_crl_file` (CRLs
   checked at the handshake, reloaded when the file changes, checked every
   `crl_check_interval`, default 5 s; open connections are re-checked at their next request),
@@ -46,7 +54,7 @@ spec's version is the repository's version.
   `--flag=value` for every flag.
 - `libwarpsql_client`: `Client::SignInWithClientCertificate()`, renewed before expiry like
   the password grant.
-- Conformance: `test_mtls.py` (34 tests, marker `mtls`), with a PKI made by
+- Conformance: `test_mtls.py` (39 tests, marker `mtls`), with a PKI made by
   `cryptography`; `WARP_SQL_TEST_SERVER_MTLS_FLAG` names the server's client-CA flag.
 
 - The C++ client library (`libwarpsql_client`, `cpp/include/warpsql/client.hpp`):

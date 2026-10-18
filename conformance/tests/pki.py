@@ -81,15 +81,22 @@ class Authority:
                                                encryption_algorithm=serialization.NoEncryption()))
         return Issued(cert=cert, key=key, cert_path=cert_path, key_path=key_path)
 
-    def crl_pem(self, revoked: list[x509.Certificate], next_update: datetime.datetime | None = None) -> bytes:
+    def crl_pem(self, revoked: list[x509.Certificate], next_update: datetime.datetime | None = None,
+                number: int | None = None, delta_of: int | None = None, signer=None) -> bytes:
+        """A CRL; `number` its CRL Number, `delta_of` the base CRL number for a delta CRL,
+        `signer` another key to sign it with (a forgery)."""
         builder = (x509.CertificateRevocationListBuilder().issuer_name(self.cert.subject)
                    .last_update(NOW - datetime.timedelta(minutes=5))
                    .next_update(next_update or NOW + datetime.timedelta(days=1)))
+        if number is not None:
+            builder = builder.add_extension(extval=x509.CRLNumber(number), critical=False)
+        if delta_of is not None:
+            builder = builder.add_extension(extval=x509.DeltaCRLIndicator(delta_of), critical=True)
         for cert in revoked:
             builder = builder.add_revoked_certificate(
                 x509.RevokedCertificateBuilder().serial_number(cert.serial_number)
                 .revocation_date(NOW - datetime.timedelta(minutes=1)).build())
-        return builder.sign(private_key=self.key, algorithm=hashes.SHA256()).public_bytes(
+        return builder.sign(private_key=signer or self.key, algorithm=hashes.SHA256()).public_bytes(
             encoding=serialization.Encoding.PEM)
 
     def write_crl(self, path: Path, revoked: list[x509.Certificate]) -> None:

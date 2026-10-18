@@ -10,6 +10,7 @@
 #include "common.hpp"
 #include "http.hpp"
 #include "ipc.hpp"
+#include "security_events.hpp"
 #include "sessions.hpp"
 #include "statements.hpp"
 #include "warpsql/server.hpp"
@@ -45,6 +46,7 @@ struct ServerState {
   IdempotencyStore idempotency;
   RetainedQuota quota;
   std::atomic<bool> draining = false;
+  SecurityEventLimiter security_events{};
 };
 
 class Api {
@@ -107,6 +109,16 @@ class Api {
   Principal Authenticate(const Request& request, bool announce = true) const;
   // Reports a refusal that may be an attack (ServerOptions::on_security_event).
   void ReportSecurityEvent(const Request& request, const Error& error) const;
+
+ public:
+  // A client certificate the TLS handshake refused (rate-limited like the rest).
+  void ReportHandshakeRefusal(const std::string& reason, const std::string& thumbprint,
+                              const std::string& subject, const std::string& peer) const;
+  // Reports the summaries of windows that ended with refusals held back.
+  void FlushSecurityEvents() const;
+
+ private:
+  void Emit(const SecurityEvent& event) const;
   // Whether the client_certificate grant is offered (spec §4.4).
   bool OffersCertificateSignIn() const;
   std::shared_ptr<Session> OwnSession(const Request& request, const std::string& session_id);

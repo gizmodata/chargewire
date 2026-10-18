@@ -267,12 +267,18 @@ handshake. It SHOULD fail closed: a CA with no revocation data, or data past its
 `nextUpdate`, fails the chain unless the operator explicitly allows it. It SHOULD pick
 up new revocation data without a restart and SHOULD then re-check the certificates of
 connections already open, answering their next request with `certificate_revoked`; it
-SHOULD also re-check them when the data it verified them with passes its `nextUpdate`.
+SHOULD also re-check them when the data it verified them with passes its `nextUpdate`. With
+several CRLs from one CA it uses the newest (highest CRL Number, else latest
+`thisUpdate`), and a revocation list it cannot apply completely (a delta CRL it does not
+support, one not signed by the CA it names) fails closed.
 
 **Refusals are security events.** A server SHOULD log each `certificate_mismatch`,
 `certificate_identity_mismatch`, `certificate_revoked` and `unknown_certificate_identity`
 refusal with the principal, the token's id, the certificate presented and the client's
-address, and SHOULD report a token's successful use only after all of these checks.
+address, and SHOULD report a token's successful use only after all of these checks. Refusals cost an
+attacker nothing, so a server SHOULD rate-limit their records per source (still counting
+what it holds back) and close a connection after a few failed authentications, and SHOULD
+also record client certificates its handshake refuses.
 
 **Proxies.** The certificate is only seen by whoever ends TLS. Deployments MUST end TLS
 at the Warp SQL server (a TCP or TLS-passthrough load balancer) for this grant, or have
