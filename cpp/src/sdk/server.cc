@@ -76,7 +76,14 @@ class Server::Impl {
     }
   }
 
-  ~Impl() { Stop(); }
+  // Stops (or waits for the stop already under way, e.g. a drain's), then joins the drain's
+  // thread, so nothing of the server runs while its members are torn down.
+  ~Impl() {
+    Stop();
+    if (drain_thread_.joinable()) {
+      drain_thread_.join();
+    }
+  }
 
   void Start() {
     port_ = http_.Bind();
@@ -113,8 +120,11 @@ class Server::Impl {
     net::co_spawn(io_, FinishDraining(grace), net::detached);
   }
 
+  // One stop, whoever asks first: Stop(), the destructor or a finished drain. A caller that
+  // isn't first waits until that stop has finished.
   void Stop() {
-    if (stopped_.exchange(true)) {
+    if (stopping_.exchange(true)) {
+      Wait();
       return;
     }
     state_.draining = true;
@@ -134,12 +144,17 @@ class Server::Impl {
     }
     engine_pool_.join();
     encode_pool_.join();
+    {
+      std::lock_guard lock(stopped_mutex_);
+      stopped_ = true;
+    }
     stopped_cv_.notify_all();
   }
 
+  // Returns once a stop has finished (not merely begun).
   void Wait() {
     std::unique_lock lock(stopped_mutex_);
-    stopped_cv_.wait(lock, [this] { return stopped_.load(); });
+    stopped_cv_.wait(lock, [this] { return stopped_; });
   }
 
  private:
@@ -151,8 +166,12 @@ class Server::Impl {
       timer.expires_after(std::chrono::milliseconds(100));
       co_await timer.async_wait(net::use_awaitable);
     }
-    // Stop() joins the io threads, so it can't run on one of them.
-    std::thread([this] { Stop(); }).detach();
+    // Stop() joins the io threads, so it can't run on one of them: it runs on a thread the
+    // destructor joins (never detached, so it can't outlive the server). The io threads
+    // are joined before the destructor reads drain_thread_, which orders this write first.
+    if (!drain_spawned_.exchange(true)) {  // a second Drain() finds the first one's
+      drain_thread_ = std::thread([this] { Stop(); });
+    }
   }
 
   bool AnyRunning() const {
@@ -222,7 +241,10 @@ class Server::Impl {
   std::vector<std::thread> threads_;
   uint16_t port_ = 0;
 
-  std::atomic<bool> stopped_ = false;
+  std::thread drain_thread_;
+  std::atomic<bool> drain_spawned_ = false;
+  std::atomic<bool> stopping_ = false;
+  bool stopped_ = false;  // guarded by stopped_mutex_
   std::mutex stopped_mutex_;
   std::condition_variable stopped_cv_;
 };
