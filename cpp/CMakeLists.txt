@@ -52,7 +52,7 @@ find_package(Arrow CONFIG REQUIRED PATHS "${WARPSQL_ARROW_PREFIX}" NO_DEFAULT_PA
 if(WIN32)
   # DuckDB's DLL exports its C API only, and an embedding server may use DuckDB's C++
   # internals too (Hardcharger's access control does): on Windows, DuckDB is linked
-  # statically, with what its shared library links (DuckDB_EXTENSIONS, plus HTTP and
+  # statically, with what its shared library links (its extensions, plus HTTP and
   # extension loading), registered before main() as DuckDB's own static programs do.
   # A DuckDB built with extensions that link other libraries (httpfs: libcurl; the
   # postgres scanner: libpq; ducklake: CRoaring) names their imported targets: find the
@@ -62,15 +62,30 @@ if(WIN32)
   endforeach()
   find_package(roaring CONFIG QUIET)
   find_package(DuckDB CONFIG REQUIRED PATHS "${WARPSQL_DUCKDB_PREFIX}" NO_DEFAULT_PATH)
-  set(WARPSQL_DUCKDB_LINKED httplib loadable_extensions ${DuckDB_EXTENSIONS})
+  # Every extension the install has a static library of is one its shared library links
+  # (DuckDB's four, and those an extension config links in); DuckDB_EXTENSIONS names only
+  # the configs' ones when there are any.
+  file(GLOB _extension_libs "${WARPSQL_DUCKDB_PREFIX}/lib/*_extension.lib")
+  set(WARPSQL_DUCKDB_LINKED httplib loadable_extensions)
+  foreach(lib IN LISTS _extension_libs)
+    get_filename_component(name "${lib}" NAME_WE)
+    string(REGEX REPLACE "_extension$" "" name "${name}")
+    list(APPEND WARPSQL_DUCKDB_LINKED ${name})
+  endforeach()
+  if(NOT "parquet" IN_LIST WARPSQL_DUCKDB_LINKED)
+    message(FATAL_ERROR "no DuckDB extension libraries in ${WARPSQL_DUCKDB_PREFIX}/lib")
+  endif()
+  message(STATUS "DuckDB, statically, with: ${WARPSQL_DUCKDB_LINKED}")
   set(DUCKDB_LIBRARY duckdb_static)
   set(DECLARATIONS "")
   set(REGISTRATIONS "")
   foreach(name IN LISTS WARPSQL_DUCKDB_LINKED)
     if(TARGET ${name}_extension)
       list(APPEND DUCKDB_LIBRARY ${name}_extension)
-    else()
+    elseif(TARGET duckdb_${name})
       list(APPEND DUCKDB_LIBRARY duckdb_${name})
+    else()
+      list(APPEND DUCKDB_LIBRARY "${WARPSQL_DUCKDB_PREFIX}/lib/${name}_extension.lib")
     endif()
     string(APPEND DECLARATIONS
            "int32_t duckdb_extension_${name}_describe(duckdb_extension_descriptor *descriptor);\n")
