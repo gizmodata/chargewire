@@ -349,6 +349,33 @@ def test_partitions_need_the_bound_certificate_on_every_connection(pki, strict):
     assert_problem(response=read(index=1, cert=pki.bob), status=401, code="certificate_mismatch")
 
 
+def test_ingest_parts_need_the_bound_certificate_on_every_connection(pki, strict):
+    from test_partitioned_ingest import ipc_bytes, rows
+    with client(server=strict, pki=pki, cert=pki.alice) as alice:
+        token = certificate_token(http=alice)
+        session_id = new_session(http=alice, token=token)
+        base = f"/warp/v1/sessions/{session_id}/ingests"
+        opened = alice.post(url=base, headers=bearer(token=token), json={"table": "mtls_parts", "mode": "create"})
+        assert opened.status_code == 201, opened.text
+        ingest_id = opened.json()["ingest_id"]
+
+    def upload(part: int, cert) -> httpx.Response:
+        with client(server=strict, pki=pki, cert=cert) as http:
+            return http.post(url=f"{base}/{ingest_id}/parts/{part}", content=ipc_bytes(table=rows(start=part * 1000, count=1000)),
+                             headers={**bearer(token=token), "Content-Type": ARROW_STREAM})
+
+    # Each part on a connection of its own; one over bob's certificate is refused, and
+    # refused before it touches the ingest.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        answers = list(pool.map(lambda part: upload(part=part, cert=pki.alice), [0, 1]))
+    assert [a.status_code for a in answers] == [200, 200], [a.text for a in answers]
+    assert_problem(response=upload(part=2, cert=pki.bob), status=401, code="certificate_mismatch")
+    with client(server=strict, pki=pki, cert=pki.alice) as alice:
+        committed = alice.post(url=f"{base}/{ingest_id}/commit", headers=bearer(token=token), json={"parts": 2})
+        assert committed.status_code == 200, committed.text
+        assert committed.json()["rows_ingested"] == 2000
+
+
 # ---- TLS session resumption ----
 
 def test_a_resumed_session_keeps_its_certificate_and_its_bound_token(pki, strict):

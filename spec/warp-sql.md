@@ -244,8 +244,8 @@ equivalent). Every request that uses a bound token MUST arrive on a TLS connecti
 verified client certificate has the same thumbprint; otherwise the server answers `401`
 with code `certificate_mismatch` and a `WWW-Authenticate: Bearer` header, whatever the
 endpoint. This covers every connection a client opens: the partitions of a split result
-(§6.10) are read on connections of their own, and each MUST present the same
-certificate. Keep-alive connections are checked per request, not once per connection.
+(§6.10) are read, and the parts of a partitioned ingest (§8.3) uploaded, on
+connections of their own, and each MUST present the same certificate. Keep-alive connections are checked per request, not once per connection.
 
 **Revocation.** A server that checks revocation (for example against certificate
 revocation lists) refuses a revoked certificate at the handshake. It SHOULD pick up new
