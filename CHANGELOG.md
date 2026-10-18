@@ -18,6 +18,9 @@ spec's version is the repository's version.
   keep-alive connections included, must come over a connection presenting that
   certificate (`certificate_mismatch`). New codes `client_certificate_required`,
   `certificate_revoked`, `certificate_identity_mismatch`.
+  A session opened with a bound token keeps the binding: any later request on it needs a
+  token bound to the same certificate (`certificate_mismatch`), even one of the same
+  principal from a password sign-in; sessions of unbound tokens are unchanged.
 - SDK: `TlsOptions::require_client_certificate` (default true), `client_crl_file` (CRLs
   checked at the handshake, reloaded when the file changes, checked every
   `crl_check_interval`, default 5 s; open connections are re-checked at their next request),
@@ -31,7 +34,7 @@ spec's version is the repository's version.
   `--flag=value` for every flag.
 - `libwarpsql_client`: `Client::SignInWithClientCertificate()`, renewed before expiry like
   the password grant.
-- Conformance: `test_mtls.py` (23 tests, marker `mtls`), with a PKI made by
+- Conformance: `test_mtls.py` (25 tests, marker `mtls`), with a PKI made by
   `cryptography`; `WARP_SQL_TEST_SERVER_MTLS_FLAG` names the server's client-CA flag.
 
 - The C++ client library (`libwarpsql_client`, `cpp/include/warpsql/client.hpp`):

@@ -245,7 +245,12 @@ verified client certificate has the same thumbprint; otherwise the server answer
 with code `certificate_mismatch` and a `WWW-Authenticate: Bearer` header, whatever the
 endpoint. This covers every connection a client opens: the partitions of a split result
 (§6.10) are read, and the parts of a partitioned ingest (§8.3) uploaded, on
-connections of their own, and each MUST present the same certificate. Keep-alive connections are checked per request, not once per connection.
+connections of their own, and each MUST present the same certificate. Keep-alive connections are checked per request, not once per connection. A session opened with a bound
+token keeps the binding: every later request on it (its statements, results, partitions,
+ingest parts, cancel, close) MUST carry a token bound to the same certificate, even one of
+the same principal from another grant; otherwise `401` with code `certificate_mismatch`.
+Sessions opened with unbound tokens are unchanged. Tokens a principal derives from a bound
+token (for example a server's scoped tokens) MUST carry the same binding.
 
 **Revocation.** A server that checks revocation (for example against certificate
 revocation lists) refuses a revoked certificate at the handshake. It SHOULD pick up new

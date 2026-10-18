@@ -101,6 +101,9 @@ class Pki:
         email = x509.RFC822Name
         self.alice = self.ca.issue(file_name="alice", common_name="alice", sans=[email("alice@example.com")])
         self.bob = self.ca.issue(file_name="bob", common_name="bob", sans=[email("bob@example.com")])
+        # Another certificate (another key) for alice's identity: the same principal.
+        self.alice_again = self.ca.issue(file_name="alice-again", common_name="alice",
+                                         sans=[email("alice@example.com")])
         self.carol = self.ca.issue(file_name="carol", common_name="carol", sans=[email("carol@example.com")])
         self.dave = self.ca.issue(file_name="dave", common_name="dave", sans=[email("dave@example.com")])
         self.mallory = self.ca.issue(file_name="mallory", common_name="mallory",

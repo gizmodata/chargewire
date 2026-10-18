@@ -376,6 +376,45 @@ def test_ingest_parts_need_the_bound_certificate_on_every_connection(pki, strict
         assert committed.json()["rows_ingested"] == 2000
 
 
+def test_a_session_keeps_the_binding_of_the_token_that_opened_it(pki, strict):
+    # One principal (alice), two certificates of hers: a session opened with one's bound
+    # token is used only with tokens bound to that certificate. (A password token is the
+    # next test's.)
+    with client(server=strict, pki=pki, cert=pki.alice) as alice:
+        token = certificate_token(http=alice)
+        session_id = new_session(http=alice, token=token)
+    with client(server=strict, pki=pki, cert=pki.alice_again) as again:
+        other_token = certificate_token(http=again)
+        url = f"/warp/v1/sessions/{session_id}"
+        for response in [again.get(url=url, headers=bearer(token=other_token)),
+                         again.post(url=f"{url}/statements", headers=bearer(token=other_token), json={"sql": "SELECT 1"}),
+                         again.delete(url=url, headers=bearer(token=other_token))]:
+            assert_problem(response=response, status=401, code="certificate_mismatch")
+        # Her other certificate opens sessions of its own.
+        new_session(http=again, token=other_token)
+    with client(server=strict, pki=pki, cert=pki.alice) as alice:
+        response = alice.post(url=f"/warp/v1/sessions/{session_id}/statements", headers=bearer(token=token),
+                              json={"sql": "SELECT 1"})
+        assert response.status_code in (200, 201, 202), response.text
+
+
+def test_a_password_token_cannot_use_a_certificate_session(pki, matching):
+    # Identity from the subject CN, which is the password user's name: one principal.
+    with client(server=matching, pki=pki, cert=pki.warp_cn) as http:
+        cert_token = certificate_token(http=http)
+        password = password_grant(http=http, server=matching)
+        assert password.status_code == 200, password.text
+        password_token = password.json()["access_token"]
+        bound_session = new_session(http=http, token=cert_token)
+        response = http.get(url=f"/warp/v1/sessions/{bound_session}", headers=bearer(token=password_token))
+        assert_problem(response=response, status=401, code="certificate_mismatch")
+        assert http.get(url=f"/warp/v1/sessions/{bound_session}", headers=bearer(token=cert_token)).status_code == 200
+        # A session opened with the password token is unbound, as before: both may use it.
+        plain_session = new_session(http=http, token=password_token)
+        for token in (password_token, cert_token):
+            assert http.get(url=f"/warp/v1/sessions/{plain_session}", headers=bearer(token=token)).status_code == 200
+
+
 # ---- TLS session resumption ----
 
 def test_a_resumed_session_keeps_its_certificate_and_its_bound_token(pki, strict):
