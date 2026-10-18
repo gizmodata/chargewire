@@ -46,6 +46,12 @@ spec's version is the repository's version.
   origin's answers and preflight, another origin's), with `WARP_SQL_TEST_SERVER_CORS_FLAG`
   naming a server's own flag (Hardcharger: `--cors-origins`).
 
+- SDK: `ServerOptions::plain_handler` lets an application answer GET and HEAD requests
+  outside `/warp` on the main listener (Hardcharger serves its web UI at `/ui` with it), before
+  the server's own 404. A HEAD answer carries the GET's headers and Content-Length and no
+  body. Paths are decided after decoding (`/%77arp`, `//warp` are the protocol's and never
+  reach it), other methods never do, the health-only port never consults it, and CORS
+  headers are added as to every answer. `warpsql-sdk-tests` covers it, over mutual TLS too.
 - Mutual TLS that carries identity (spec §4.4, §9.6; capability `mtls_identity`): the
   `client_certificate` grant signs in with the connection's verified client certificate and
   no password. The identity is one configured part of the certificate (SAN e-mail by
