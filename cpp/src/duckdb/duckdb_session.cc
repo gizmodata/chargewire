@@ -728,8 +728,8 @@ warpsql::OptionErrors DuckDBSession::SetOptions(const json::object& options) {
     if (!value.is_bool()) {
       throw Error(ErrorCode::kInvalidOptionValue, "arrow_lossless_conversion must be true or false");
     }
-    RunSql(connection_.get(), value.as_bool() ? "SET arrow_lossless_conversion = true"
-                                              : "SET arrow_lossless_conversion = false");
+    RunSql(connection_.get(), value.as_bool() ? "SET SESSION arrow_lossless_conversion = true"
+                                              : "SET SESSION arrow_lossless_conversion = false");
     lossless_ = value.as_bool();
   });
   for (const auto& option : options) {

@@ -323,7 +323,9 @@ whole life.
 
 Returns the session document above, with the session's current options: a change
 made through SQL (`USE other_schema`) shows here too. Clients MAY use it as a cheap
-liveness probe.
+liveness probe: for a session the server ended (§5.6) it answers `401` `session_ended`
+with the `reason`, as every other request naming the session does, and it does not wait
+for a statement the session is running.
 
 ### 5.3 `PATCH /warp/v1/sessions/{session_id}`
 
@@ -422,6 +424,12 @@ infers for that parameter. A `null` takes the type the engine infers for its par
 where the statement doesn't fix one (`? + 1`), the client casts in SQL
 (`CAST(? AS INTEGER)`), as in other SQL databases. For exact types (decimals, timestamps,
 binary, nested values) use a prepared statement with Arrow parameters (§7).
+
+An integer keeps its exact value. JSON parsers commonly read an integer outside the 64-bit
+range as a double, which rounds it (10^38 - 1 becomes 1e38): a server MUST bind such an
+integer exactly (as a 128-bit integer where the engine has one) or refuse it with
+`bad_request`, never as a rounded value. A client that must not depend on either sends it
+as a string and casts in SQL.
 
 How the server answers depends on `Accept` and `Prefer`:
 
@@ -818,7 +826,10 @@ data, and MUST delete them when they expire or their session ends.
 ### 9.4 Metadata follows authorization
 
 The metadata endpoints (§10) MUST return only the objects the principal may see,
-applying the same rules as SQL.
+applying the same rules as SQL: inside a catalog the principal may see, a schema, table,
+view or column it holds no privilege on is left out, as are keys that name one. SQL's own
+ways of listing the catalog (an engine's catalog views and functions) SHOULD follow the
+same rules, so a client can't read around them.
 
 ### 9.5 Browsers
 

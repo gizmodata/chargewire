@@ -43,11 +43,14 @@ class DuckDBSession : public warpsql::EngineSession {
   // (metadata/tables?include_schema=true; Flight SQL has none). A server may add the key
   // its older clients read; none: not reported.
   virtual std::vector<std::string> ColumnDefaultMetadataKeys() const { return {"WARP:SQL:COLUMN_DEFAULT"}; }
+  // Rows of the tables metadata (catalog, schema, table, type) with each table's schema
+  // added (include_schema), so a server that leaves some tables out (spec §9.4) can
+  // describe only the ones it keeps.
+  std::shared_ptr<arrow::RecordBatchReader> TablesWithSchemas(
+      std::shared_ptr<arrow::RecordBatchReader> tables);
 
  private:
   void EndTransaction(std::string_view sql);
-  std::shared_ptr<arrow::RecordBatchReader> TablesWithSchemas(
-      std::shared_ptr<arrow::RecordBatchReader> tables);
 
   Connection connection_;
   idx_t batch_rows_ = 0;

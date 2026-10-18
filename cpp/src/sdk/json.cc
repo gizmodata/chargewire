@@ -1,5 +1,6 @@
 #include "json.hpp"
 
+#include <cctype>
 #include <ctime>
 #include <format>
 
@@ -7,12 +8,79 @@
 
 namespace warpsql::detail {
 
+namespace {
+
+// Is the integer literal `digits` (an optional '-', then digits) outside what a JSON
+// number parses into exactly here (int64 or uint64)?
+bool BeyondSixtyFourBits(std::string_view digits) {
+  const bool negative = digits.starts_with('-');
+  if (negative) digits.remove_prefix(1);
+  const std::string_view limit = negative ? "9223372036854775808" : "18446744073709551615";
+  return digits.size() > limit.size() || (digits.size() == limit.size() && digits > limit);
+}
+
+// The body with every integer literal outside the 64-bit range (which the JSON parser
+// would read as a double, rounding it) written as {"\u0000integer": "<digits>"}
+// (kWideIntegerKey), so a bind parameter keeps its exact value (spec §6.1).
+std::string ExactWideIntegers(std::string_view body) {
+  std::string out;
+  out.reserve(body.size());
+  bool in_string = false;
+  for (std::size_t i = 0; i < body.size();) {
+    const char c = body[i];
+    if (in_string) {
+      out += c;
+      if (c == '\\' && i + 1 < body.size()) {
+        out += body[i + 1];
+        i += 2;
+        continue;
+      }
+      in_string = c != '"';
+      i++;
+      continue;
+    }
+    if (c == '"') {
+      in_string = true;
+      out += c;
+      i++;
+      continue;
+    }
+    if (c != '-' && (c < '0' || c > '9')) {
+      out += c;
+      i++;
+      continue;
+    }
+    // A number: its integer part, then (for a fraction or exponent) the rest, unchanged.
+    std::size_t end = i + 1;
+    while (end < body.size() && body[end] >= '0' && body[end] <= '9') end++;
+    const bool integer = end == body.size() || (body[end] != '.' && body[end] != 'e' && body[end] != 'E');
+    if (!integer) {
+      while (end < body.size() && (std::isdigit(static_cast<unsigned char>(body[end])) || body[end] == '.' ||
+                                   body[end] == 'e' || body[end] == 'E' || body[end] == '+' || body[end] == '-')) {
+        end++;
+      }
+    }
+    const std::string_view token = body.substr(i, end - i);
+    if (integer && token != "-" && BeyondSixtyFourBits(token)) {
+      out += "{\"\\u0000integer\":\"";
+      out += token;
+      out += "\"}";
+    } else {
+      out += token;
+    }
+    i = end;
+  }
+  return out;
+}
+
+}  // namespace
+
 json::object ParseObject(std::string_view body) {
   if (body.empty()) {
     return {};
   }
   boost::system::error_code ec;
-  json::value value = json::parse(body, ec);
+  json::value value = json::parse(ExactWideIntegers(body), ec);
   if (ec || !value.is_object()) {
     throw Error(ErrorCode::kBadRequest, "the request body must be a JSON object");
   }

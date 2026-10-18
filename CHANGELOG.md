@@ -117,6 +117,11 @@ spec's version is the repository's version.
   that one, and another certificate cannot be swapped in by resuming), and sessions don't
   resume across a CRL reload: each CRL generation has its own session cache and ticket keys.
   Conformance: two resumption tests, and the revocation test resumes a pre-revocation session.
+- Spec §9.4 spells out that metadata leaves out the schemas, tables, views, columns and
+  keys a principal holds no privilege on, inside catalogs it may see, and that SQL's own
+  catalog listings should follow the same rules.
+- DuckDB backend: `DuckDBSession::TablesWithSchemas()` is protected, so a server that
+  leaves tables out of the tables metadata describes only the ones it keeps.
 
 - `libwarpsql_client` asks for split results by default:
   `StatementOptions::result_partitions` is 8 (was 1). The server decides: a result of
@@ -184,3 +189,19 @@ spec's version is the repository's version.
   inspector is the one module allowed DuckDB internals), runs as a standalone server,
   and keeps statement execution off HTTP request threads. IPC is done by Arrow C++ built
   with IPC only, not nanoarrow. ADBC client: `gizmodata/warp-sql-adbc` (Go).
+
+### Fixed
+
+- A JSON bind parameter that is an integer outside the 64-bit range is bound exactly
+  (DuckDB backend: HUGEINT, else UHUGEINT; wider is refused with `bad_request`). It was
+  read as a double and bound rounded (10^38 - 1 as 1e38). Spec §6.1 now requires exact or
+  refused; the SDK hands such integers to the engine as `{"\0integer": "<digits>"}`
+  (`warpsql::kWideIntegerKey`). Conformance: `test_integer_parameters_keep_their_exact_value`.
+- `GET /warp/v1/sessions/{id}` of a session the server ended answers `401`
+  `session_ended` with its `reason` (spec §5.2, §5.6), as every other request does; it
+  answered `200`, so a client using it as a liveness probe saw a dead session as alive.
+  Engines report it with the new `EngineSession::CheckEnded()` (safe from any thread).
+- DuckDB backend: the `arrow_lossless_conversion` session option ran a plain `SET`,
+  which for that setting changes the instance's default: one session switching it
+  changed every other session's HUGEINT, UUID and JSON results (their options still said
+  `false`). It is now `SET SESSION`.

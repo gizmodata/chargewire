@@ -40,6 +40,9 @@ class Session {
   void SetRunning(const Statement* statement);
   std::optional<double> Progress();
   std::optional<std::chrono::milliseconds> DefaultStatementTimeout();
+  // Throws session_ended when the engine ended the session (EngineSession::CheckEnded).
+  // Safe from any thread.
+  void CheckEnded();
 
   json::object options() const;
   void set_options(json::object options);

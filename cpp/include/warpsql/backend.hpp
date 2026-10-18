@@ -110,6 +110,12 @@ class PreparedStatement {
   virtual std::optional<bool> ReturnsRows() { return std::nullopt; }
 };
 
+// A JSON bind parameter that is an integer outside the 64-bit range (spec §6.1) reaches
+// the engine as an object with this one key and the integer's digits as a string,
+// {"\0integer": "-170141183460469231731687303715884105728"}, so it keeps its exact value
+// (JSON parsers read such numbers as doubles). An engine binds it exactly or refuses it.
+inline constexpr std::string_view kWideIntegerKey{"\0integer", 8};
+
 // Bind parameters for one request: JSON (spec §6.1), or Arrow rows, one execution per
 // row (spec §7.2).
 struct Parameters {
@@ -189,6 +195,12 @@ class EngineSession {
 
   // Fraction of the running statement done, in [0, 1], when the engine knows.
   virtual std::optional<double> Progress();
+
+  // Throws the session_ended error (Error::SessionEnded, spec §5.6) once the engine has
+  // ended this session (an administrator killed it, its principal's credentials
+  // changed, ...), so every request naming the session says so, GET of the session
+  // (a liveness probe) included. Safe from any thread, while another call runs.
+  virtual void CheckEnded() {}
 
   // The timeout for this session's statements that set none (Warp-Statement-Timeout),
   // e.g. one the session chose with SQL. nullopt: the server's default applies; zero:

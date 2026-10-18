@@ -114,6 +114,19 @@ def test_parameters_are_values_never_sql(warp, session_id):
     assert table.column("name").to_pylist() == [hostile]
 
 
+def test_integer_parameters_keep_their_exact_value(warp, session_id):
+    # Beyond 64 bits a JSON parser reads an integer as a double; a server binds it exactly
+    # or refuses it, never rounded (spec §6.1). 10^38 - 1 as a double is 1e38.
+    for value in [2**63 - 1, 2**64 - 1, 2**64, 10**38 - 1, 2**127, 2**128 - 1, -(2**63) - 1, -(2**127)]:
+        response = warp.submit(session_id=session_id, sql="SELECT CAST(? AS VARCHAR) AS t",
+                               parameters=[value], arrow=True)
+        if response.status_code == 400:
+            assert_problem(response=response, status=400, code="bad_request")
+            continue
+        assert response.status_code == 200, response.text
+        assert read_table(content=response.content).column("t").to_pylist() == [str(value)], value
+
+
 def test_parameters_must_be_an_array_or_object(warp, session_id):
     response = warp.submit(session_id=session_id, sql="SELECT ?", parameters="7")
     assert_problem(response=response, status=400, code="bad_request")

@@ -670,6 +670,9 @@ Task<Response> Api::CreateSession(Request& request) {
 
 Task<Response> Api::GetSession(Request& request, const std::string& session_id) {
   auto session = OwnSession(request, session_id);
+  // A session the engine ended answers as every other request for it does (spec §5.6),
+  // without waiting for a statement it may be running.
+  session->CheckEnded();
   co_return JsonResponse(http::status::ok, SessionDocument(*session));
 }
 

@@ -122,6 +122,11 @@ std::optional<std::chrono::milliseconds> Session::DefaultStatementTimeout() {
   return engine_ ? engine_->DefaultStatementTimeout() : std::nullopt;
 }
 
+void Session::CheckEnded() {
+  std::lock_guard lock(engine_mutex_);
+  if (engine_) engine_->CheckEnded();
+}
+
 json::object Session::options() const {
   std::lock_guard lock(mutex_);
   return options_;

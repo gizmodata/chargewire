@@ -7,6 +7,7 @@
 #include <arrow/record_batch.h>
 #include <arrow/util/decimal.h>
 
+#include <cstdint>
 #include <format>
 
 namespace warpduckdb {
@@ -229,10 +230,62 @@ Value ValueFactory::FromJsonScalar(const json::value& item) {
       Call([&](auto* e) { return duckdb_v2_value_create_varchar(factory_, &text, value.out(), e); });
       break;
     }
+    case json::kind::object:
+      if (const auto& object = item.as_object(); object.size() == 1 && object.contains(warpsql::kWideIntegerKey) &&
+                                                 object.at(warpsql::kWideIntegerKey).is_string()) {
+        return WideInteger(object.at(warpsql::kWideIntegerKey).as_string());
+      }
+      [[fallthrough]];
     default:
       throw Error(ErrorCode::kBadRequest,
                   "JSON bind parameters must be scalars; use a prepared statement with Arrow "
                   "parameters for nested values");
+  }
+  return value;
+}
+
+Value ValueFactory::WideInteger(std::string_view text) {
+  // An integer outside the 64-bit range (spec §6.1): HUGEINT when it fits one, else
+  // UHUGEINT, as DuckDB's own clients bind a large integer; anything wider is refused.
+  // 128-bit arithmetic in two 64-bit halves (MSVC has no __int128).
+  const bool negative = text.starts_with('-');
+  const std::string_view digits = negative ? text.substr(1) : text;
+  uint64_t high = 0, low = 0;  // the magnitude
+  bool fits = !digits.empty();
+  for (const char c : digits) {
+    if (c < '0' || c > '9') {
+      fits = false;
+      break;
+    }
+    // (high, low) = (high, low) * 10 + digit, low half 32 bits at a time.
+    const uint64_t first = (low & 0xffffffffu) * 10 + static_cast<uint64_t>(c - '0');
+    const uint64_t second = (low >> 32) * 10 + (first >> 32);
+    const uint64_t carry = second >> 32;
+    if (high > (UINT64_MAX - carry) / 10) {
+      fits = false;
+      break;
+    }
+    high = high * 10 + carry;
+    low = (second << 32) | (first & 0xffffffffu);
+  }
+  constexpr uint64_t kTopBit = uint64_t{1} << 63;  // 2^127 is (kTopBit, 0): |HUGEINT min|
+  if (!fits || (negative && (high > kTopBit || (high == kTopBit && low > 0)))) {
+    throw Error(ErrorCode::kBadRequest,
+                std::format("the JSON parameter {} is outside the 128-bit integer range DuckDB has: pass it as a "
+                            "string and CAST it in SQL",
+                            text));
+  }
+  Value value;
+  if (negative || high < kTopBit) {
+    if (negative) {  // two's complement
+      low = ~low + 1;
+      high = ~high + (low == 0 ? 1 : 0);
+    }
+    const duckdb_v2_hugeint_t huge{low, static_cast<int64_t>(high)};
+    Call([&](auto* e) { return duckdb_v2_value_create_hugeint(factory_, &huge, value.out(), e); });
+  } else {
+    const duckdb_v2_uhugeint_t huge{low, high};
+    Call([&](auto* e) { return duckdb_v2_value_create_uhugeint(factory_, &huge, value.out(), e); });
   }
   return value;
 }

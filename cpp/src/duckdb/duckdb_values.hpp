@@ -6,6 +6,7 @@
 #include <boost/json.hpp>
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "duckdb_v2.hpp"
@@ -65,6 +66,8 @@ class ValueFactory {
   // The DuckDB type an Arrow type binds as; empty when there is none.
   LogicalType TypeFor(const arrow::DataType& type);
   Value FromJsonScalar(const boost::json::value& item);
+  // A JSON integer outside the 64-bit range (warpsql::kWideIntegerKey), exactly.
+  Value WideInteger(std::string_view text);
   Value FromArrow(const arrow::Array& array, int64_t row, duckdb_v2_logical_type_handle null_type);
 
   duckdb_v2_factory_handle factory_;
