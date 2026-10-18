@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <utility>
+#include <vector>
 
 #include <boost/asio/connect.hpp>
 #include <boost/asio/write.hpp>
@@ -302,9 +303,19 @@ void Transport::Connect() {
   }
   beast::tcp_stream& lowest = secure_ ? beast::get_lowest_layer(*secure_) : *plain_;
   lowest.expires_after(connect_timeout_);
+  // IPv4 addresses first on Windows: there a refused connection takes about two seconds
+  // (Windows retries the SYN), and "localhost" resolves to ::1 before 127.0.0.1, so every
+  // connection to a server listening on 127.0.0.1 (the default) waited that long first.
+  // Elsewhere the resolver's order, which a refusal costs nothing to walk.
+  std::vector<tcp::endpoint> ordered(endpoints.begin(), endpoints.end());
+#ifdef _WIN32
+  std::stable_partition(ordered.begin(), ordered.end(), [](const tcp::endpoint& e) { return e.address().is_v4(); });
+#endif
   ec = Run([&](auto handler) {
-    lowest.async_connect(endpoints, [handler = std::move(handler)](boost::system::error_code e,
-                                                                   const tcp::endpoint&) mutable { handler(e); });
+    lowest.async_connect(ordered,
+                       [handler = std::move(handler)](boost::system::error_code e, const tcp::endpoint&) mutable {
+                         handler(e);
+                       });
   });
   if (ec) {
     Drop();
