@@ -19,12 +19,13 @@ bool PeerClosed(boost::asio::ip::tcp::socket& socket);
 // is needed to rebind past TIME_WAIT.
 void PrepareListener(boost::asio::ip::tcp::acceptor& acceptor);
 
-// Ends a connection (a TLS one after its close_notify). On Windows the server first stops sending, then reads and
-// drops what the client still sends (for a moment, as nginx's lingering close does):
-// closing a socket with unread bytes resets the connection, and a Windows client
-// discards a response it hasn't read yet when the reset arrives, so a client still
-// uploading a body the server refused (413) would never see the refusal. Elsewhere it
-// shuts both directions down at once, as before.
+// Ends a connection (a TLS one after its close_notify). The server first stops sending,
+// then reads and drops what the client still sends (for up to 2 s, as nginx's lingering
+// close does): closing a socket with unread bytes resets the connection, and the client
+// then loses a response it hasn't read yet (Windows discards it; Linux and macOS clients
+// still writing the body get a broken pipe or a reset instead of the answer). So a client
+// uploading a body the server answers without reading (a retried part or upload answered
+// from its first send, a 413, an ingest error) would not see the answer.
 boost::asio::awaitable<void> EndConnection(boost::beast::tcp_stream& stream);
 
 // `seconds` as UTC calendar time (gmtime_r; gmtime_s on Windows).

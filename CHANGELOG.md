@@ -213,3 +213,15 @@ spec's version is the repository's version.
   which for that setting changes the instance's default: one session switching it
   changed every other session's HUGEINT, UUID and JSON results (their options still said
   `false`). It is now `SET SESSION`.
+- The answer to an upload or a part sent again with its `Idempotency-Key` (§8.1, §8.3) is
+  no longer lost on Linux and macOS. The server answers it from the first upload without
+  reading the body, and then closed the connection with the body unread, which resets it:
+  a client still sending got a broken pipe or a reset instead of the answer, and had to
+  send it again, with the same risk each time (warp-sql-adbc's
+  `TestIntegrationIngestPartAnswerLost` saw a part sent three times; an ingest whose
+  retries were all lost would fail). The lingering close that Windows already had (stop
+  sending, then read and drop what the client still sends, for up to 2 s) now applies on
+  every platform, which also lets clients read a 413, a 431 or an ingest error sent before
+  the body was read. No row was ever written twice: the retries were answered from the
+  first upload. Conformance: `test_the_answer_to_a_part_sent_again_arrives`,
+  `test_the_answer_to_an_upload_sent_again_arrives` (both failed before the fix).

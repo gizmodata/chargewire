@@ -155,6 +155,58 @@ def test_a_part_sent_twice(warp, session_id):
     assert checksum(warp, session_id, "pi_twice")["n"] == 5000
 
 
+def send_raw(warp, path: str, headers: dict[str, str], body: bytes) -> bytes:
+    """POSTs body over a socket of its own, the whole body before reading the answer, as most
+    clients do; returns the raw answer, or raises the transport error."""
+    url = urllib.parse.urlparse(str(warp.http.base_url))
+    with socket.create_connection((url.hostname, url.port)) as sock:
+        head = f"POST {path} HTTP/1.1\r\nHost: x\r\nContent-Length: {len(body)}\r\n"
+        head += "".join(f"{name}: {value}\r\n" for name, value in headers.items())
+        sock.sendall(head.encode() + b"\r\n" + body)
+        answer = b""
+        while chunk := sock.recv(65536):
+            answer += chunk
+            if b"\r\n\r\n" in answer and answer.endswith(b"}"):
+                break
+        return answer
+
+
+def test_the_answer_to_a_part_sent_again_arrives(warp, session_id):
+    # A part sent again is answered from its first upload without reading the body (§8.3), so
+    # the answer comes while the client is still sending. The server must take in the rest
+    # before closing: closing with unread bytes resets the connection, and the client loses
+    # the answer (Linux and macOS: a broken pipe or a reset; Windows discards it).
+    ingests = Ingests(warp=warp, session_id=session_id)
+    ingest_id = ingests.open(table="pi_resent", mode="create").json()["ingest_id"]
+    body = ipc_bytes(rows(0, 400_000), batch_rows=20_000)  # several MB, more than sockets buffer
+    headers = {"Content-Type": ARROW_STREAM, "Idempotency-Key": "pi-resent-0"}
+    first = ingests.part(ingest_id, 0, body, **headers)
+    assert first.status_code == 200, first.text
+    path = f"{urllib.parse.urlparse(ingests.base).path}/{ingest_id}/parts/0"
+    for _ in range(5):
+        answer = send_raw(warp=warp, path=path, headers=warp.headers(**headers), body=body)
+        assert answer.startswith(b"HTTP/1.1 200"), answer[:200]
+        assert answer.endswith(first.content), answer[-200:]
+    assert ingests.commit(ingest_id, parts=1).json() == {"rows_ingested": 400_000}
+    assert checksum(warp, session_id, "pi_resent")["n"] == 400_000
+
+
+def test_the_answer_to_an_upload_sent_again_arrives(warp, session_id):
+    # The same for a one-request upload (§8.1) sent again with its key.
+    body = ipc_bytes(rows(0, 400_000), batch_rows=20_000)
+    headers = {"Content-Type": ARROW_STREAM, "Idempotency-Key": "upload-resent"}
+    url = f"{warp.session_url(session_id)}/ingest"
+    params = {"table": "ing_resent", "mode": "create"}
+    first = warp.http.post(url=url, params=params, headers=warp.headers(**headers), content=body)
+    assert first.status_code == 200, first.text
+    path = f"{urllib.parse.urlparse(url).path}?{urllib.parse.urlencode(params)}"
+    for _ in range(5):
+        answer = send_raw(warp=warp, path=path, headers=warp.headers(**headers), body=body)
+        assert answer.startswith(b"HTTP/1.1 200"), answer[:200]
+        assert answer.endswith(first.content), answer[-200:]
+    assert checksum(warp, session_id, "ing_resent")["n"] == 400_000
+
+
 def test_a_part_with_another_schema_fails_everything(warp, session_id):
     ingests = Ingests(warp=warp, session_id=session_id)
     ingest_id = ingests.open(table="pi_schema", mode="create").json()["ingest_id"]

@@ -58,7 +58,6 @@ void PrepareListener(boost::asio::ip::tcp::acceptor& acceptor) {
 
 boost::asio::awaitable<void> EndConnection(boost::beast::tcp_stream& stream) {
   boost::system::error_code ec;
-#ifdef _WIN32
   constexpr auto kLinger = std::chrono::seconds(2);
   constexpr std::size_t kMaxDrained = 256 * 1024 * 1024;
   stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, ec);
@@ -75,7 +74,6 @@ boost::asio::awaitable<void> EndConnection(boost::beast::tcp_stream& stream) {
       drained += got;
     }
   }
-#endif
   stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
   co_return;
 }
