@@ -124,13 +124,21 @@ def test_an_idle_session_is_not_found_and_never_recreated():
     try:
         warp = Warp(base_url=server.base_url, username=server.username, password=server.password)
         sid = warp.new_session()
-        deadline = time.monotonic() + 30
+        # Eviction is the server's to schedule (§5.7: an idle session MAY be evicted), and
+        # every probe is a request that keeps the session alive. Probing at a fixed short
+        # interval only finds it gone if the server's sweep falls between two probes, which
+        # a server sweeping every few seconds may not do for a long time. So the silences
+        # double (2, 4, 8, 16 s): one soon outlasts the timeout plus any sweep interval.
+        gaps = [2, 4, 8, 16]
+        silences = []
         while True:
             response = warp.submit(session_id=sid, sql="SELECT 1", arrow=True)
             if response.status_code == 404:
                 break
-            assert time.monotonic() < deadline, "the idle session was never evicted"
-            time.sleep(1.5)  # no request for longer than the idle timeout
+            assert response.status_code == 200, response.text
+            assert gaps, f"the idle session was never evicted (silent for {silences} s in turn)"
+            silences.append(gaps.pop(0))
+            time.sleep(silences[-1])
         assert_problem(response=response, status=404, code="session_not_found")
         assert_problem(response=warp.http.get(url=warp.session_url(sid), headers=warp.headers()),
                        status=404, code="session_not_found")
