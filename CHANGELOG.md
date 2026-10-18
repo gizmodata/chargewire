@@ -7,6 +7,12 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Documentation
+
+- `cpp/README.md` says `warp-duckdb` is for testing and development only: whoever signs in
+  is the administrator with all of DuckDB's file, network and extension access, and it has
+  no users, access control or file guards. Production use is Hardcharger.
+
 ### Added
 
 - CORS with credentials (spec §9.5): the SDK answers an allowed origin, preflights

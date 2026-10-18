@@ -135,7 +135,7 @@ the protocol ([docs/distributed.md](docs/distributed.md)).
 | | Project |
 |---|---|
 | Server | [**Hardcharger**](https://github.com/gizmodata/hardcharger): GizmoData's DuckDB 2.0 server |
-| Reference server | [`warp-duckdb`](cpp/README.md) (this repo): DuckDB 2.0 through its v2 C API |
+| Reference server | [`warp-duckdb`](cpp/README.md) (this repo): DuckDB 2.0 through its v2 C API; for testing and development only, not production |
 | Server SDK | [`libwarpsql`](cpp/README.md) (C++20, this repo): engines implement a `Backend`; the SDK owns authentication, handle binding, retention, cancellation and draining, and streams every result through an asynchronous pipeline (produce, compress on a worker pool, encrypt and send, each stage overlapped) |
 | ADBC driver | [`warp-sql-adbc`](https://github.com/gizmodata/warp-sql-adbc): Go, with Python bindings, loadable by any ADBC driver manager |
 | JDBC driver | [`warp-sql-jdbc`](https://github.com/gizmodata/warp-sql-jdbc): one jar for Java 17+, no gRPC or Netty |
