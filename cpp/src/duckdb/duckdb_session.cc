@@ -5,6 +5,7 @@
 #include <arrow/ipc/writer.h>
 
 #include <algorithm>
+#include <cctype>
 #include <map>
 
 #include "duckdb_describe.hpp"
@@ -60,9 +61,42 @@ DUCKDB_V2_STATEMENT_TYPE StatementType(duckdb_v2_sql_statement_handle statement)
   return type;
 }
 
-// A write, described by binding it (read-only, even inside the session's transaction):
-// without RETURNING DuckDB reports one BIGINT column named Count, the changed rows.
-// With RETURNING it returns rows, whose Arrow schema binding doesn't give.
+using TokenIterator = Owned<duckdb_v2_token_iterator_handle, duckdb_v2_token_iterator_destroy>;
+
+// Whether the statement's own text has a RETURNING clause outside any parentheses (a
+// RETURNING inside a CTE or a subquery belongs to that inner statement). Tokens, not raw
+// text: a string, a quoted name or a comment that says RETURNING is no clause.
+bool HasTopLevelReturning(duckdb_v2_connection_handle connection,
+                          duckdb_v2_sql_statement_handle statement) {
+  duckdb_v2_str text{};
+  Call([&](auto* e) { return duckdb_v2_sql_statement_get_text(statement, &text, e); });
+  const std::string_view sql(text.ptr == nullptr ? "" : text.ptr, text.len);
+  TokenIterator tokens;
+  Call([&](auto* e) { return duckdb_v2_tokenize_sql(connection, &text, tokens.out(), e); });
+  int depth = 0;
+  for (;;) {
+    DUCKDB_V2_TOKEN_TYPE type = DUCKDB_V2_TOKEN_TYPE_INVALID;
+    idx_t start = 0;
+    idx_t length = 0;
+    Call([&](auto* e) { return duckdb_v2_token_iterator_next(tokens.get(), &type, &start, &length, e); });
+    if (type == DUCKDB_V2_TOKEN_TYPE_END_OF_INPUT) return false;
+    const std::string_view token = sql.substr(start, length);
+    if (type == DUCKDB_V2_TOKEN_TYPE_OPERATOR) {
+      for (const char c : token) depth += c == '(' ? 1 : c == ')' ? -1 : 0;
+    } else if (type == DUCKDB_V2_TOKEN_TYPE_KEYWORD && depth == 0 && token.size() == 9) {
+      std::string word(token);
+      std::transform(word.begin(), word.end(), word.begin(),
+                     [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+      if (word == "RETURNING") return true;
+    }
+  }
+}
+
+// A write, described by binding it (read-only, even inside the session's transaction;
+// a write is never executed to describe it). Without RETURNING DuckDB reports one BIGINT
+// column named Count, the changed rows; with RETURNING, the returned columns, converted
+// as a query's are (ResultArrowSchema). A RETURNING of one BIGINT column named Count
+// looks the same as the changed-rows count, so the statement's tokens decide that one.
 Described DescribeWrite(duckdb_v2_connection_handle connection,
                         duckdb_v2_sql_statement_handle statement) {
   using Schema = Owned<duckdb_v2_schema_handle, duckdb_v2_schema_destroy>;
@@ -73,19 +107,24 @@ Described DescribeWrite(duckdb_v2_connection_handle connection,
     if (err != nullptr) duckdb_v2_error_info_destroy(&err);
     return {};
   }
-  idx_t count = 0;
-  Call([&](auto* e) { return duckdb_v2_schema_get_count(output.get(), &count, e); });
-  if (count == 1) {
-    duckdb_v2_identifier_t name{};
-    duckdb_v2_logical_type_handle type = nullptr;  // borrowed from the schema
-    Call([&](auto* e) { return duckdb_v2_schema_get_field(output.get(), 0, &name, &type, e); });
-    DUCKDB_V2_LOGICAL_TYPE_ID id{};
-    Call([&](auto* e) { return duckdb_v2_logical_type_get_id(type, &id, e); });
-    if (ToString(name) == "Count" && id == DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT) {
-      return Described{false, nullptr};
+  try {
+    idx_t count = 0;
+    Call([&](auto* e) { return duckdb_v2_schema_get_count(output.get(), &count, e); });
+    if (count == 1) {
+      duckdb_v2_identifier_t name{};
+      duckdb_v2_logical_type_handle type = nullptr;  // borrowed from the schema
+      Call([&](auto* e) { return duckdb_v2_schema_get_field(output.get(), 0, &name, &type, e); });
+      DUCKDB_V2_LOGICAL_TYPE_ID id{};
+      Call([&](auto* e) { return duckdb_v2_logical_type_get_id(type, &id, e); });
+      if (ToString(name) == "Count" && id == DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT &&
+          !HasTopLevelReturning(connection, statement)) {
+        return Described{false, nullptr};
+      }
     }
+    return Described{true, ResultArrowSchema(connection, output.get())};
+  } catch (const Error&) {
+    return {};
   }
-  return Described{true, nullptr};
 }
 
 // A prepared query describes itself without running: binding gives its result columns'

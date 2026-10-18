@@ -214,3 +214,101 @@ def test_described_schema_follows_the_settings(warp):
     assert a.field("l").type == pa.list_(pa.int32()) and b.field("l").type == pa.list_view(pa.int32())
     assert a.field("tz").type.tz != "Asia/Kolkata"  # the server's own time zone
     assert b.field("tz").type == pa.timestamp("us", tz="Asia/Kolkata")
+
+
+# ---- Writes with RETURNING: described by binding, never executed ----
+
+WRITE_TABLE = ("CREATE TABLE {t} (id INTEGER PRIMARY KEY, amount DECIMAL(10, 2), u UUID, tags VARCHAR[], "
+               "stamp TIMESTAMPTZ, big HUGEINT, m mood)")
+RETURNING_WRITES = [
+    "INSERT INTO {t} VALUES (2, 2.50, uuid(), ['b'], TIMESTAMPTZ '2026-10-18 01:00:00+00', 2, 'sad') RETURNING *",
+    "INSERT INTO {t} VALUES (3, ?, uuid(), [CAST(? AS VARCHAR)], now(), 3, 'happy') "
+    "RETURNING id, amount * 2 AS doubled, tags, u",
+    "UPDATE {t} SET amount = amount + 1 WHERE id = 1 RETURNING id, amount, big + 1 AS bigger, stamp",
+    "DELETE FROM {t} WHERE id = 1 RETURNING *, 'gone' AS why",
+    "MERGE INTO {t} USING (SELECT 1 AS id) s ON {t}.id = s.id "
+    "WHEN MATCHED THEN UPDATE SET amount = 9 RETURNING merge_action, *",
+]
+RETURNING_PARAMETERS = {1: ["4.25", "c"]}
+
+
+def fresh_write_table(warp, session_id: str, name: str) -> None:
+    warp.execute(session_id=session_id, sql=f"DROP TABLE IF EXISTS {name}")
+    warp.execute(session_id=session_id, sql=WRITE_TABLE.format(t=name))
+    warp.execute(session_id=session_id, sql=f"INSERT INTO {name} VALUES "
+                                            "(1, 1.25, uuid(), ['a'], TIMESTAMPTZ '2026-10-17 01:00:00+00', 1, 'happy')")
+
+
+def table_rows(warp, session_id: str, name: str) -> list:
+    return warp.query(session_id=session_id, sql=f"SELECT id, amount, tags FROM {name} ORDER BY id").to_pylist()
+
+
+@pytest.mark.parametrize("setting", ["default", "lossless", "everything"])
+def test_a_write_with_returning_is_described_without_running(warp, setting):
+    session_id = session_with(warp=warp, setting=setting)
+    table = f"returning_{setting}"
+    try:
+        fresh_write_table(warp=warp, session_id=session_id, name=table)
+        before = table_rows(warp=warp, session_id=session_id, name=table)
+        prepared = []
+        for sql in RETURNING_WRITES:
+            doc = prepare(warp=warp, session_id=session_id, sql=sql.format(t=table))
+            assert doc["result_kind"] == "rows", (sql, doc)
+            assert doc["result_schema"], (sql, doc)
+            prepared.append(doc)
+        # Preparing wrote nothing: not one row inserted, changed or deleted.
+        assert table_rows(warp=warp, session_id=session_id, name=table) == before
+        # Each one's described schema is what its execution sends.
+        for i, (sql, doc) in enumerate(zip(RETURNING_WRITES, prepared)):
+            described = schema_of(encoded=doc["result_schema"])
+            executed = executed_schema(warp=warp, session_id=session_id, prepared_id=doc["prepared_id"],
+                                       parameters=RETURNING_PARAMETERS.get(i))
+            assert described.equals(executed, check_metadata=True), f"{sql}\n{described}\n!=\n{executed}"
+        assert table_rows(warp=warp, session_id=session_id, name=table) != before  # the executions did write
+    finally:
+        warp.http.delete(url=warp.session_url(session_id), headers=warp.headers())
+
+
+def test_a_write_without_returning_is_an_update_and_runs_nothing(warp, session_id):
+    # Negative twin: no RETURNING, so no rows and no schema, whatever the text says.
+    warp.execute(session_id=session_id, sql="CREATE TYPE IF NOT EXISTS mood AS ENUM ('sad', 'happy')")
+    fresh_write_table(warp=warp, session_id=session_id, name="no_returning")
+    before = table_rows(warp=warp, session_id=session_id, name="no_returning")
+    for sql in ["INSERT INTO no_returning (id, amount) VALUES (5, 5)",
+                "INSERT INTO no_returning (id, tags) VALUES (6, ['RETURNING *'])",  # a string says it
+                "UPDATE no_returning SET amount = 0 -- RETURNING *",               # a comment says it
+                'UPDATE no_returning SET amount = amount WHERE "id" = 1',
+                "DELETE FROM no_returning WHERE id IN (SELECT id FROM no_returning)"]:
+        doc = prepare(warp=warp, session_id=session_id, sql=sql)
+        assert doc["result_kind"] == "update", (sql, doc)
+        assert doc["result_schema"] is None, (sql, doc)
+    assert table_rows(warp=warp, session_id=session_id, name="no_returning") == before
+
+
+def test_returning_one_bigint_named_count_is_rows_not_a_count(warp, session_id):
+    # Its bound columns look exactly like a write's changed-rows count (one BIGINT,
+    # "Count"); the RETURNING clause in the statement says they are rows.
+    warp.execute(session_id=session_id, sql="CREATE TABLE counted (n BIGINT)")
+    doc = prepare(warp=warp, session_id=session_id, sql='INSERT INTO counted VALUES (7) RETURNING n AS "Count"')
+    assert doc["result_kind"] == "rows", doc
+    executed = executed_schema(warp=warp, session_id=session_id, prepared_id=doc["prepared_id"])
+    assert schema_of(encoded=doc["result_schema"]).equals(executed, check_metadata=True)
+    # Positive twin of the count: the same table without RETURNING.
+    plain = prepare(warp=warp, session_id=session_id, sql="INSERT INTO counted VALUES (8)")
+    assert plain["result_kind"] == "update" and plain["result_schema"] is None, plain
+
+
+def test_preparing_a_returning_write_inside_a_transaction_writes_nothing(warp, session_id):
+    warp.execute(session_id=session_id, sql="CREATE TYPE IF NOT EXISTS mood AS ENUM ('sad', 'happy')")
+    fresh_write_table(warp=warp, session_id=session_id, name="returning_tx")
+    warp.http.patch(url=warp.session_url(session_id), headers=warp.headers(),
+                    json={"options": {"autocommit": False}})
+    doc = prepare(warp=warp, session_id=session_id,
+                  sql="DELETE FROM returning_tx RETURNING id")
+    assert doc["result_kind"] == "rows"
+    # The transaction is still usable, and still sees the row the DELETE would remove.
+    assert warp.query(session_id=session_id, sql="SELECT count(*) AS n FROM returning_tx").to_pylist() == [{"n": 1}]
+    assert warp.http.post(url=f"{warp.session_url(session_id)}/commit",
+                          headers=warp.headers()).status_code == 204
+    other = warp.new_session()
+    assert warp.query(session_id=other, sql="SELECT count(*) AS n FROM returning_tx").to_pylist() == [{"n": 1}]

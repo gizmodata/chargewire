@@ -212,6 +212,15 @@ spec's version is the repository's version.
   of hours-long cross joins in 16 sessions at once, each under a second (failed 5 of 5 runs
   before), and the described schema equal, metadata included, to the executed one for
   every DuckDB type (`test_all_types()` and more) under seven setting combinations.
+- DuckDB backend: a prepared `INSERT`, `UPDATE`, `DELETE` or `MERGE` with `RETURNING`
+  describes its rows' schema (it answered `result_kind: rows` with no `result_schema`),
+  from the same bind and Arrow exporter, never by executing the write. A `RETURNING` of
+  one BIGINT column named `Count` binds exactly like a write's changed-rows count, so the
+  statement's tokens decide it (a top-level `RETURNING` keyword; one in a string, a
+  quoted name, a comment or a CTE doesn't count). Conformance: schema parity with the
+  executed `RETURNING` under three setting combinations, the table unchanged by the
+  prepares (in an explicit transaction too), and the negative twin, writes without
+  `RETURNING` described as updates.
 - DuckDB backend: the session option `arrow_lossless_conversion` reported the value last
   set through the option, not the one the session's results use: after SQL `SET SESSION
   arrow_lossless_conversion = true`, or an administrator's plain `SET` (which for this
