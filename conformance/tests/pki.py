@@ -33,10 +33,13 @@ class Issued:
 
 
 class Authority:
-    def __init__(self, directory: Path, common_name: str):
+    def __init__(self, directory: Path, common_name: str, parent: "Authority | None" = None):
+        """A root CA, or with `parent` an intermediate CA it signs."""
         self.directory = directory
+        self.parent = parent
         self.key = _key()
-        self.cert = (x509.CertificateBuilder().subject_name(_name(common_name)).issuer_name(_name(common_name))
+        issuer = parent.cert.subject if parent else _name(common_name)
+        builder = (x509.CertificateBuilder().subject_name(_name(common_name)).issuer_name(issuer)
                      .public_key(self.key.public_key()).serial_number(x509.random_serial_number())
                      .not_valid_before(NOW - datetime.timedelta(minutes=5))
                      .not_valid_after(NOW + datetime.timedelta(days=2))
@@ -46,8 +49,11 @@ class Authority:
                                                          key_agreement=False, key_cert_sign=True, crl_sign=True,
                                                          encipher_only=False, decipher_only=False), critical=True)
                      .add_extension(extval=x509.SubjectKeyIdentifier.from_public_key(self.key.public_key()),
-                                    critical=False)
-                     .sign(private_key=self.key, algorithm=hashes.SHA256()))
+                                    critical=False))
+        if parent:
+            builder = builder.add_extension(
+                extval=x509.AuthorityKeyIdentifier.from_issuer_public_key(parent.key.public_key()), critical=False)
+        self.cert = builder.sign(private_key=parent.key if parent else self.key, algorithm=hashes.SHA256())
         self.cert_path = directory / f"{common_name}.pem"
         self.cert_path.write_bytes(self.cert.public_bytes(encoding=serialization.Encoding.PEM))
 
@@ -67,25 +73,34 @@ class Authority:
             builder = builder.add_extension(extval=x509.SubjectAlternativeName(sans), critical=False)
         cert = builder.sign(private_key=self.key, algorithm=hashes.SHA256())
         cert_path, key_path = self.directory / f"{file_name}.pem", self.directory / f"{file_name}.key"
-        cert_path.write_bytes(cert.public_bytes(encoding=serialization.Encoding.PEM))
+        # An intermediate's certificates go out with the intermediate after them (the chain).
+        chain = self.cert.public_bytes(encoding=serialization.Encoding.PEM) if self.parent else b""
+        cert_path.write_bytes(cert.public_bytes(encoding=serialization.Encoding.PEM) + chain)
         key_path.write_bytes(key.private_bytes(encoding=serialization.Encoding.PEM,
                                                format=serialization.PrivateFormat.PKCS8,
                                                encryption_algorithm=serialization.NoEncryption()))
         return Issued(cert=cert, key=key, cert_path=cert_path, key_path=key_path)
 
-    def write_crl(self, path: Path, revoked: list[x509.Certificate]) -> None:
+    def crl_pem(self, revoked: list[x509.Certificate], next_update: datetime.datetime | None = None) -> bytes:
         builder = (x509.CertificateRevocationListBuilder().issuer_name(self.cert.subject)
                    .last_update(NOW - datetime.timedelta(minutes=5))
-                   .next_update(NOW + datetime.timedelta(days=1)))
+                   .next_update(next_update or NOW + datetime.timedelta(days=1)))
         for cert in revoked:
             builder = builder.add_revoked_certificate(
                 x509.RevokedCertificateBuilder().serial_number(cert.serial_number)
                 .revocation_date(NOW - datetime.timedelta(minutes=1)).build())
-        crl = builder.sign(private_key=self.key, algorithm=hashes.SHA256())
-        # Written whole and renamed into place, as an operator's tooling should.
-        scratch = path.with_suffix(".tmp")
-        scratch.write_bytes(crl.public_bytes(encoding=serialization.Encoding.PEM))
-        scratch.replace(path)
+        return builder.sign(private_key=self.key, algorithm=hashes.SHA256()).public_bytes(
+            encoding=serialization.Encoding.PEM)
+
+    def write_crl(self, path: Path, revoked: list[x509.Certificate]) -> None:
+        write_atomically(path=path, data=self.crl_pem(revoked=revoked))
+
+
+def write_atomically(path: Path, data: bytes) -> None:
+    """Written whole and renamed into place, as an operator's tooling should."""
+    scratch = path.with_suffix(".tmp")
+    scratch.write_bytes(data)
+    scratch.replace(path)
 
 
 class Pki:

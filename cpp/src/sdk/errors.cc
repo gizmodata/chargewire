@@ -50,6 +50,7 @@ CodeInfo Info(ErrorCode code) {
     case ErrorCode::kCertificateRevoked: return {"certificate_revoked", 401};
     case ErrorCode::kCertificateMismatch: return {"certificate_mismatch", 401};
     case ErrorCode::kCertificateIdentityMismatch: return {"certificate_identity_mismatch", 401};
+    case ErrorCode::kUnsupportedGrantType: return {"unsupported_grant_type", 400};
   }
   return {"execution_error", 500};
 }

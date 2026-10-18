@@ -243,6 +243,13 @@ class TokenService {
   // The SDK offers the client_certificate grant (spec §4.4) only with a service that does:
   // a token that lost its binding would work without the certificate.
   virtual bool BindsCertificates() const { return false; }
+  // Called once a request's token has passed every check: Validate(), the certificate
+  // binding (spec §4.4) and, for a session's endpoints, the session's own binding. A
+  // service that logs successful uses logs here, so a refused token never reads as used.
+  virtual void Accepted(std::string_view token, const Principal& principal) {
+    (void)token;
+    (void)principal;
+  }
 };
 
 // Turns credentials into a principal (spec §4.1).

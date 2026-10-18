@@ -312,14 +312,17 @@ std::shared_ptr<Session> SessionRegistry::Find(const std::string& id,
       it->second->closed()) {
     throw Error(ErrorCode::kSessionNotFound, "no such session");
   }
-  // A session created with a certificate-bound token keeps that binding (spec §4.4): it is
-  // used only with tokens bound to the same certificate, never with a password token or
-  // another certificate's, though the principal's name is the same.
+  // A session keeps the binding of the token that opened it (spec §4.4): every request on
+  // it carries a token bound the same way, the same certificate or none. So whatever runs
+  // in the session (a scoped token it mints, say) acts under the binding of the request.
   const std::string& bound = it->second->owner().certificate_thumbprint;
-  if (!bound.empty() && !ConstantTimeEquals(bound, principal.certificate_thumbprint)) {
+  const std::string& presented = principal.certificate_thumbprint;
+  if (bound.empty() != presented.empty() || (!bound.empty() && !ConstantTimeEquals(bound, presented))) {
     throw Error(ErrorCode::kCertificateMismatch,
-                "this session was opened with a token bound to a client certificate; use it with "
-                "a token from that certificate's sign-in");
+                bound.empty() ? "this session was opened with a token not bound to a client certificate; "
+                                "a certificate-bound token opens sessions of its own"
+                              : "this session was opened with a token bound to a client certificate; use "
+                                "it with a token from that certificate's sign-in");
   }
   return it->second;
 }

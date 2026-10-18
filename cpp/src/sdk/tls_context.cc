@@ -128,14 +128,22 @@ ClientCertificate Describe(X509* leaf) {
   return out;
 }
 
-// Loads every CRL in a PEM file into `store`; returns how many.
-int LoadCrls(X509_STORE* store, const std::string& path) {
+// Loads every CRL in a PEM file into `store`; returns the earliest nextUpdate among them.
+std::chrono::system_clock::time_point LoadCrls(X509_STORE* store, const std::string& path) {
   BIO* bio = BIO_new_file(path.c_str(), "r");
   if (bio == nullptr) {
     throw std::runtime_error(std::format("cannot read the CRL file {}: {}", path, OpenSslError()));
   }
   int count = 0;
+  auto earliest = std::chrono::system_clock::time_point::max();
   while (X509_CRL* crl = PEM_read_bio_X509_CRL(bio, nullptr, nullptr, nullptr)) {
+    if (const ASN1_TIME* next = X509_CRL_get0_nextUpdate(crl)) {
+      int days = 0, seconds = 0;  // from now (portable, unlike timegm)
+      if (ASN1_TIME_diff(&days, &seconds, nullptr, next) == 1) {
+        earliest = std::min(earliest, std::chrono::system_clock::now() + std::chrono::hours(24) * days +
+                                          std::chrono::seconds(seconds));
+      }
+    }
     const int added = X509_STORE_add_crl(store, crl);
     X509_CRL_free(crl);
     if (added != 1) {
@@ -155,14 +163,23 @@ int LoadCrls(X509_STORE* store, const std::string& path) {
   if (count == 0) {
     throw std::runtime_error(std::format("the CRL file {} holds no certificate revocation list", path));
   }
-  return count;
+  return earliest;
 }
 
-bool HasControlCharacter(std::string_view text) {
-  for (unsigned char c : text) {
-    if (c < 0x20 || c == 0x7f) return true;
+// Identities are printable ASCII only (spec §4.4): no control, format, invisible or
+// non-ASCII characters, from any source.
+bool PrintableAscii(std::string_view text) {
+  return std::ranges::all_of(text, [](char c) { return c >= 0x20 && c <= 0x7e; });
+}
+
+// With allow_missing_ca_crls: a CA above the leaf whose CRL is missing passes.
+int AllowMissingCaCrl(int ok, X509_STORE_CTX* context) {
+  if (!ok && X509_STORE_CTX_get_error(context) == X509_V_ERR_UNABLE_TO_GET_CRL &&
+      X509_STORE_CTX_get_error_depth(context) > 0) {
+    X509_STORE_CTX_set_error(context, X509_V_OK);
+    return 1;
   }
-  return false;
+  return ok;
 }
 
 }  // namespace
@@ -184,7 +201,7 @@ PeerCertificate::~PeerCertificate() {
 }
 
 TlsContext::TlsContext(const TlsOptions& options) : options_(options) {
-  current_ = {Build(), 1};
+  current_ = Build(1);
   last_check_ = Clock::now();
   if (!options_.client_crl_file.empty()) {
     std::error_code ec;
@@ -196,7 +213,8 @@ TlsContext::TlsContext(const TlsOptions& options) : options_(options) {
   }
 }
 
-std::shared_ptr<ssl::context> TlsContext::Build() const {
+TlsContext::Current TlsContext::Build(uint64_t generation) const {
+  Current built{nullptr, generation};
   auto context = std::make_shared<ssl::context>(ssl::context::tls_server);
   context->set_options(ssl::context::default_workarounds | ssl::context::no_sslv2 |
                        ssl::context::no_sslv3 | ssl::context::no_tlsv1 | ssl::context::no_tlsv1_1);
@@ -206,8 +224,9 @@ std::shared_ptr<ssl::context> TlsContext::Build() const {
   SSL_CTX_set_options(native, SSL_OP_NO_RENEGOTIATION);
   context->use_certificate_chain_file(options_.certificate_chain_file);
   context->use_private_key_file(options_.private_key_file, ssl::context::pem);
+  built.context = context;
   if (options_.client_ca_file.empty()) {
-    return context;
+    return built;
   }
   context->load_verify_file(options_.client_ca_file);
   // Tell clients which CAs to pick a certificate from.
@@ -224,10 +243,13 @@ std::shared_ptr<ssl::context> TlsContext::Build() const {
   SSL_CTX_set_session_id_context(native, kSessionContext, sizeof(kSessionContext) - 1);
   if (!options_.client_crl_file.empty()) {
     X509_STORE* store = SSL_CTX_get_cert_store(native);
-    LoadCrls(store, options_.client_crl_file);
-    X509_STORE_set_flags(store, X509_V_FLAG_CRL_CHECK);
+    built.crl_next_update = LoadCrls(store, options_.client_crl_file);
+    // Every certificate of the chain, not only the leaf: a revoked intermediate CA revokes
+    // what it issued.
+    X509_STORE_set_flags(store, X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL);
+    if (options_.allow_missing_ca_crls) X509_STORE_set_verify_cb(store, AllowMissingCaCrl);
   }
-  return context;
+  return built;
 }
 
 void TlsContext::MaybeReload() {
@@ -251,7 +273,7 @@ void TlsContext::MaybeReload() {
   crl_mtime_ = mtime;
   crl_size_ = size;
   try {
-    current_ = {Build(), current_.generation + 1};
+    current_ = Build(current_.generation + 1);
     if (options_.on_crl_reload) {
       options_.on_crl_reload(true, "reloaded the client CRL file " + options_.client_crl_file);
     }
@@ -279,7 +301,13 @@ std::shared_ptr<PeerCertificate> TlsContext::PeerOf(SSL* ssl, uint64_t generatio
   }
   STACK_OF(X509)* sent = SSL_get_peer_cert_chain(ssl);
   STACK_OF(X509)* chain = sent ? X509_chain_up_ref(sent) : sk_X509_new_null();
-  return std::make_shared<PeerCertificate>(leaf, chain, generation);
+  auto peer = std::make_shared<PeerCertificate>(leaf, chain, generation);
+  {
+    std::lock_guard lock(mutex_);
+    if (current_.generation == generation) peer->verified_until_ = current_.crl_next_update;
+    else peer->verified_until_ = std::chrono::system_clock::time_point::min();  // check at once
+  }
+  return peer;
 }
 
 std::string TlsContext::Recheck(PeerCertificate& peer) {
@@ -289,7 +317,11 @@ std::string TlsContext::Recheck(PeerCertificate& peer) {
     return peer.problem_;
   }
   const Current current = Get();
-  if (current.generation == peer.generation_) return {};
+  // Verified again when the CRLs changed, or when one it was verified with passed its
+  // nextUpdate (then it fails closed: an expired CRL verifies nothing).
+  if (current.generation == peer.generation_ && std::chrono::system_clock::now() < peer.verified_until_) {
+    return {};
+  }
   // The CRLs changed since this connection was verified: verify it again under them.
   X509_STORE* store = SSL_CTX_get_cert_store(current.context->native_handle());
   X509_STORE_CTX* check = X509_STORE_CTX_new();
@@ -311,6 +343,7 @@ std::string TlsContext::Recheck(PeerCertificate& peer) {
     return peer.problem_;
   }
   peer.generation_ = current.generation;
+  peer.verified_until_ = current.crl_next_update;
   return {};
 }
 
@@ -343,15 +376,24 @@ std::string CertificateIdentity(const ClientCertificate& certificate, ClientIden
                              values->size(), kind));
   }
   const std::string& value = values->front();
-  if (value.empty() || HasControlCharacter(value)) {
-    throw refuse(std::format("the client certificate's {} is empty or has control characters", kind));
-  }
-  // SAN e-mail addresses and URIs are IA5String: ASCII only. OpenSSL doesn't enforce it.
-  if (source != ClientIdentitySource::kSubjectCn &&
-      std::ranges::any_of(value, [](char c) { return static_cast<unsigned char>(c) > 0x7e; })) {
-    throw refuse(std::format("the client certificate's {} is not ASCII", kind));
+  if (value.empty() || !PrintableAscii(value)) {
+    throw refuse(std::format("the client certificate's {} '{}' is empty or has characters other than "
+                             "printable ASCII (control characters included)",
+                             kind, EscapeForDisplay(value)));
   }
   return value;
+}
+
+std::string EscapeForDisplay(std::string_view text) {
+  std::string out;
+  for (char c : text) {
+    if (c >= 0x20 && c <= 0x7e && c != '\\') {
+      out += c;
+    } else {
+      out += std::format("\\x{:02x}", static_cast<unsigned char>(c));
+    }
+  }
+  return out;
 }
 
 bool SameIdentityName(std::string_view a, std::string_view b) {

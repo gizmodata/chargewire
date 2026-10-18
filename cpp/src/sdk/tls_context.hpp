@@ -38,6 +38,8 @@ class PeerCertificate {
   std::shared_ptr<const ClientCertificate> info_;
   // Only touched by the connection's own coroutine (one strand).
   uint64_t generation_;  // the context generation it was last verified under
+  // When that verification stops holding: the earliest nextUpdate of the CRLs it used.
+  std::chrono::system_clock::time_point verified_until_ = std::chrono::system_clock::time_point::max();
   std::string problem_;  // set once it stops verifying; it never verifies again
 };
 
@@ -49,6 +51,9 @@ class TlsContext {
   struct Current {
     std::shared_ptr<net::ssl::context> context;
     uint64_t generation;
+    // The earliest nextUpdate of its CRLs (max: none): after it, every certificate is
+    // verified again, and fails closed once the CRL has expired.
+    std::chrono::system_clock::time_point crl_next_update = std::chrono::system_clock::time_point::max();
   };
   // The context new connections use. Looks at the CRL file first, at most every
   // crl_check_interval, and reloads it when it changed.
@@ -63,7 +68,7 @@ class TlsContext {
   std::string Recheck(PeerCertificate& peer);
 
  private:
-  std::shared_ptr<net::ssl::context> Build() const;
+  Current Build(uint64_t generation) const;
   void MaybeReload();
 
   const TlsOptions options_;
@@ -77,6 +82,10 @@ class TlsContext {
 // The identity `source` names in `certificate` (spec §4.4): exactly one value, without
 // control characters. Throws Error(kUnknownCertificateIdentity) otherwise.
 std::string CertificateIdentity(const ClientCertificate& certificate, ClientIdentitySource source);
+
+// `text` with every byte outside printable ASCII written as \xNN, for error details and
+// logs: a refused value can't spoof what a reader sees.
+std::string EscapeForDisplay(std::string_view text);
 
 // ASCII case-insensitive comparison, as identities are compared for an identity match.
 bool SameIdentityName(std::string_view a, std::string_view b);

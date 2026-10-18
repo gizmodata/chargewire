@@ -21,6 +21,18 @@ spec's version is the repository's version.
   A session opened with a bound token keeps the binding: any later request on it needs a
   token bound to the same certificate (`certificate_mismatch`), even one of the same
   principal from a password sign-in; sessions of unbound tokens are unchanged.
+- Certificate sign-in is opt-in: the `client_certificate` grant is offered only where the
+  server enables it, and answered with `400` `unsupported_grant_type` elsewhere (client CAs
+  alone only admit connections). warp-duckdb: `--mtls-certificate-sign-in`, with
+  `--mtls-admin-identities`. CRLs are checked for every certificate of the chain
+  (`X509_V_FLAG_CRL_CHECK_ALL`): a revoked intermediate revokes what it issued, and a CA
+  without a CRL fails closed unless `TlsOptions::allow_missing_ca_crls`
+  (`--mtls-crl-allow-missing-ca-crls`) lets a CA above the leaf go without. Open connections
+  are verified again when a CRL passes its nextUpdate. Identities are printable ASCII from
+  every source, and refused values are escaped in details and logs. A session's binding is
+  exact: an unbound session takes only unbound tokens too. `ServerOptions::on_security_event`
+  reports every certificate refusal (user, token id, thumbprint, peer address);
+  `TokenService::Accepted` is told about a token only after every check passed.
 - SDK: `TlsOptions::require_client_certificate` (default true), `client_crl_file` (CRLs
   checked at the handshake, reloaded when the file changes, checked every
   `crl_check_interval`, default 5 s; open connections are re-checked at their next request),
@@ -34,7 +46,7 @@ spec's version is the repository's version.
   `--flag=value` for every flag.
 - `libwarpsql_client`: `Client::SignInWithClientCertificate()`, renewed before expiry like
   the password grant.
-- Conformance: `test_mtls.py` (25 tests, marker `mtls`), with a PKI made by
+- Conformance: `test_mtls.py` (34 tests, marker `mtls`), with a PKI made by
   `cryptography`; `WARP_SQL_TEST_SERVER_MTLS_FLAG` names the server's client-CA flag.
 
 - The C++ client library (`libwarpsql_client`, `cpp/include/warpsql/client.hpp`):

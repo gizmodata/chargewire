@@ -1001,7 +1001,8 @@ TEST_F(LiveTls, MutualTls) {
 
 TEST_F(LiveTls, SignsInWithTheClientCertificate) {
   Server server({"--tls-cert", certs_->server_cert.string(), "--tls-key", certs_->server_key.string(),
-                 "--tls-client-ca", certs_->ca.string(), "--mtls-admin-identities", "client@example.com",
+                 "--tls-client-ca", certs_->ca.string(), "--mtls-certificate-sign-in",
+                 "--mtls-admin-identities", "client@example.com",
                  "--token-lifetime-seconds", "62"},
                 true);
   wc::TlsOptions with_cert{.enabled = true,

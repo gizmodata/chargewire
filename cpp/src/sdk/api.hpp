@@ -101,7 +101,12 @@ class Api {
   Task<Response> DeleteStatement(Request& request, const std::string& session_id,
                                  const std::string& statement_id);
 
-  Principal Authenticate(const Request& request) const;
+  // The request's principal from its token, checked against the connection's certificate.
+  // `announce`: tell the token service it was accepted (OwnSession does, after the
+  // session's own check).
+  Principal Authenticate(const Request& request, bool announce = true) const;
+  // Reports a refusal that may be an attack (ServerOptions::on_security_event).
+  void ReportSecurityEvent(const Request& request, const Error& error) const;
   // Whether the client_certificate grant is offered (spec §4.4).
   bool OffersCertificateSignIn() const;
   std::shared_ptr<Session> OwnSession(const Request& request, const std::string& session_id);

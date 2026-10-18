@@ -192,6 +192,7 @@ Task<Response> Api::Handle(Request& request) {
     }
     response = co_await Route(request);
   } catch (const Error& error) {
+    ReportSecurityEvent(request, error);
     const bool close = response.close;
     response = ProblemResponse(error, request.request_id);
     response.close = close;
@@ -460,6 +461,7 @@ Task<Response> Api::IssueToken(Request& request) {
   if (grant_type == "password") {
     const std::string username = RequiredString(body, "username");
     const std::string password = RequiredString(body, "password");
+    request.attempted_identity = username;
     // Before the password is checked, so the refusal says nothing about it.
     if (must_be && !SameIdentityName(*must_be, username)) throw mismatch(username);
     principal = co_await net::co_spawn(
@@ -480,6 +482,7 @@ Task<Response> Api::IssueToken(Request& request) {
                   "the client_certificate grant needs a TLS client certificate on this connection");
     }
     const std::string identity = CertificateIdentity(*certificate, tls->client_identity_source);
+    request.attempted_identity = identity;
     principal = co_await net::co_spawn(
         state_.engine_pool,
         [=]() -> Task<Principal> {
@@ -489,6 +492,10 @@ Task<Response> Api::IssueToken(Request& request) {
     principal.auth_method = "client_certificate";
     // Always bound: the token works only on connections presenting this certificate.
     principal.certificate_thumbprint = certificate->thumbprint;
+  } else if (grant_type == "client_certificate") {
+    throw Error(ErrorCode::kUnsupportedGrantType,
+                "certificate sign-in is not enabled on this server (mutual TLS here only admits "
+                "connections; sign in another way)");
   } else {
     throw Error(ErrorCode::kBadRequest, std::format("unsupported grant_type '{}'", grant_type));
   }
@@ -500,8 +507,46 @@ Task<Response> Api::IssueToken(Request& request) {
                                       {"expires_in", issued.expires_in.count()}});
 }
 
-Principal Api::Authenticate(const Request& request) const {
-  Principal principal = state_.tokens->Validate(BearerToken(request.Header("Authorization")));
+void Api::ReportSecurityEvent(const Request& request, const Error& error) const {
+  switch (error.code()) {
+    case ErrorCode::kCertificateMismatch:
+    case ErrorCode::kCertificateIdentityMismatch:
+    case ErrorCode::kCertificateRevoked:
+    case ErrorCode::kUnknownCertificateIdentity:
+    case ErrorCode::kClientCertificateRequired:
+      break;
+    default:
+      return;
+  }
+  if (!state_.options.on_security_event) return;
+  SecurityEvent event;
+  event.code = std::string(CodeName(error.code()));
+  event.detail = EscapeForDisplay(error.what());
+  if (request.token_principal) {
+    event.user = EscapeForDisplay(request.token_principal->name);
+    if (const auto* id = request.token_principal->claims.if_contains("token_id"); id && id->is_string()) {
+      event.token_id = EscapeForDisplay(std::string(id->as_string()));
+    }
+  } else {
+    event.user = EscapeForDisplay(request.attempted_identity);
+  }
+  if (request.client_certificate) {
+    event.presented_thumbprint = request.client_certificate->thumbprint;
+    event.certificate_subject = EscapeForDisplay(request.client_certificate->subject);
+  }
+  event.peer = request.peer;
+  event.request_id = request.request_id;
+  try {
+    state_.options.on_security_event(event);
+  } catch (...) {
+    // a failing logger must not change the answer
+  }
+}
+
+Principal Api::Authenticate(const Request& request, bool announce) const {
+  const std::string_view token = BearerToken(request.Header("Authorization"));
+  Principal principal = state_.tokens->Validate(token);
+  request.token_principal = principal;
   // A certificate-bound token works only on a connection presenting that certificate
   // (spec §4.4), on every request: keep-alive connections and partition reads included.
   if (!principal.certificate_thumbprint.empty() &&
@@ -511,12 +556,14 @@ Principal Api::Authenticate(const Request& request) const {
                 "this access token is bound to a client certificate that this connection did "
                 "not present");
   }
+  if (announce) state_.tokens->Accepted(token, principal);
   return principal;
 }
 
 std::shared_ptr<Session> Api::OwnSession(const Request& request, const std::string& session_id) {
-  const Principal principal = Authenticate(request);
+  const Principal principal = Authenticate(request, false);
   auto session = state_.sessions.Find(session_id, principal);
+  state_.tokens->Accepted(BearerToken(request.Header("Authorization")), principal);
   session->Touch();
   return session;
 }

@@ -42,12 +42,32 @@ struct TlsOptions {
   // good one in force.
   std::string client_crl_file;
   std::chrono::seconds crl_check_interval{5};
+  // With CRLs, every certificate of a client's chain is checked (X509_V_FLAG_CRL_CHECK_ALL),
+  // so the file needs a CRL from every CA in it, the root included; a CA without one fails
+  // the handshake. True accepts a CA above the leaf that has no CRL (its own certificate
+  // is then not revocation-checked); the leaf's issuer always needs one. An open
+  // connection is verified again whenever a loaded CRL's nextUpdate passes.
+  bool allow_missing_ca_crls = false;
   ClientIdentitySource client_identity_source = ClientIdentitySource::kSanEmail;
   // A password or token_exchange sign-in on a connection with a client certificate must
   // be for the identity the certificate maps to (certificate_identity_mismatch).
   bool require_identity_match = false;
   // Told about each CRL (re)load: whether it worked and what happened, for the log.
   std::function<void(bool ok, const std::string& message)> on_crl_reload;
+};
+
+// A refusal that may be an attack (spec §4.4): a bound token on the wrong connection, a
+// sign-in for another identity than the certificate's, a revoked certificate, an unknown
+// identity. Values are printable ASCII (anything else escaped as \xNN).
+struct SecurityEvent {
+  std::string code;                  // the problem code the client got
+  std::string detail;
+  std::string user;                  // the token's principal, or the identity a sign-in named
+  std::string token_id;              // the token's id (Principal::claims "token_id"), if known
+  std::string presented_thumbprint;  // the connection's client certificate (x5t#S256), or empty
+  std::string certificate_subject;   // RFC 2253, or empty
+  std::string peer;                  // the client's address:port
+  std::string request_id;
 };
 
 struct ServerOptions {
@@ -89,6 +109,9 @@ struct ServerOptions {
   std::size_t max_result_partitions = 32;
 
   std::vector<std::string> cors_allowed_origins;  // empty: no cross-origin access
+
+  // Told about every SecurityEvent (log it, audit it). Called on an I/O thread: keep it short.
+  std::function<void(const SecurityEvent&)> on_security_event;
 };
 
 // Call first in main(), before anything uses OpenSSL. It keeps OpenSSL from freeing its

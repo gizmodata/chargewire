@@ -50,9 +50,11 @@ The password is read from the environment so it never shows in process listings.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--mtls-require-client-cert=BOOL` | `true` | Refuse connections without a client certificate at the handshake; `false` lets them connect and sign in with the password |
-| `--mtls-crl-file PEM` | none | Certificate revocation lists, checked at the handshake; the file is looked at every 5 s and reloaded when it changes, and open connections are re-checked (spec §4.4) |
+| `--mtls-crl-file PEM` | none | Certificate revocation lists, checked at the handshake for every certificate of the chain; the file is looked at every 5 s and reloaded when it changes, and open connections are re-checked then and when a CRL passes its nextUpdate (spec §4.4) |
 | `--mtls-identity-source` | `san_email` | Where the `client_certificate` grant takes the identity: `san_email`, `san_uri` (SPIFFE IDs) or `subject_cn` |
-| `--mtls-admin-identities A,B` | none | Identities that may sign in with their certificate (as the administrator); with any, discovery offers `client_certificate` |
+| `--mtls-certificate-sign-in` | off | Offer the `client_certificate` grant; off, client certificates only admit connections. Needs `--mtls-admin-identities` |
+| `--mtls-admin-identities A,B` | none | Identities that may sign in with their certificate (as the administrator) |
+| `--mtls-crl-allow-missing-ca-crls` | off | Every certificate of a chain is revocation-checked, so the CRL file needs every CA's CRL (the root's too); this accepts a CA above the leaf without one |
 | `--mtls-require-identity-match` | off | A password sign-in over a client certificate must be for its identity |
 
 The `--mtls-*` flags have Hardcharger's option names, so test harnesses start either server

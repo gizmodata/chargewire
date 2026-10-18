@@ -69,7 +69,7 @@ def finish(server: ServerUnderTest) -> None:
 def strict(pki):
     """Client certificates required; e-mail identities; carol's certificate revoked."""
     server = started(pki=pki, probe=pki.alice,
-                     args=[*tls_args(pki=pki, crl=pki.crl_path), "--mtls-admin-identities", ",".join(KNOWN)])
+                     args=[*tls_args(pki=pki, crl=pki.crl_path), "--mtls-certificate-sign-in", "--mtls-admin-identities", ",".join(KNOWN)])
     yield server
     finish(server=server)
 
@@ -79,7 +79,7 @@ def optional(pki):
     """Client certificates optional: a client may connect without one."""
     server = started(pki=pki, probe=None,
                      args=[*tls_args(pki=pki), "--mtls-require-client-cert=false",
-                           "--mtls-admin-identities", "alice@example.com,bob@example.com"])
+                           "--mtls-certificate-sign-in", "--mtls-admin-identities", "alice@example.com,bob@example.com"])
     yield server
     finish(server=server)
 
@@ -91,7 +91,7 @@ def matching(pki):
     pki.warp_cn = pki.ca.issue(file_name="cn-user", common_name=username)
     matched = started(pki=pki, probe=pki.warp_cn,
                       args=[*tls_args(pki=pki), "--mtls-identity-source", "subject_cn",
-                            "--mtls-require-identity-match", "--mtls-admin-identities", username])
+                            "--mtls-require-identity-match", "--mtls-certificate-sign-in", "--mtls-admin-identities", username])
     yield matched
     finish(server=matched)
 
@@ -101,7 +101,7 @@ def spiffe(pki):
     """Identity from the URI subject alternative name (a SPIFFE ID)."""
     server = started(pki=pki, probe=pki.spiffe,
                      args=[*tls_args(pki=pki), "--mtls-identity-source", "san_uri",
-                           "--mtls-admin-identities", "spiffe://example.org/ns/etl/sa/loader"])
+                           "--mtls-certificate-sign-in", "--mtls-admin-identities", "spiffe://example.org/ns/etl/sa/loader"])
     yield server
     finish(server=server)
 
@@ -109,7 +109,8 @@ def spiffe(pki):
 def client(server: ServerUnderTest, pki: Pki, cert) -> httpx.Client:
     """One keep-alive connection (at most), presenting `cert` (None: no certificate)."""
     return httpx.Client(base_url=server.base_url, verify=pki.context(client=cert), timeout=60,
-                        limits=httpx.Limits(max_connections=1, max_keepalive_connections=1))
+                        limits=httpx.Limits(max_connections=1, max_keepalive_connections=1,
+                                            keepalive_expiry=600))
 
 
 def certificate_grant(http: httpx.Client) -> httpx.Response:
@@ -186,7 +187,22 @@ def test_a_server_without_client_cas_offers_no_certificate_sign_in(server):
     assert "mtls_identity" not in doc["capabilities"]
     assert "client_certificate" not in doc["auth"]["grant_types"]
     response = httpx.post(url=f"{server.base_url}/warp/v1/auth/token", json={"grant_type": "client_certificate"})
-    assert_problem(response=response, status=400, code="bad_request")
+    assert_problem(response=response, status=400, code="unsupported_grant_type")
+
+
+def test_certificate_sign_in_is_opt_in(pki):
+    # Client CAs alone make mutual TLS admit connections only; certificates sign no one in.
+    server = started(pki=pki, probe=pki.alice, args=tls_args(pki=pki))
+    try:
+        with client(server=server, pki=pki, cert=pki.alice) as http:
+            doc = http.get(url="/warp").json()
+            assert "mtls_identity" not in doc["capabilities"]
+            assert "client_certificate" not in doc["auth"]["grant_types"]
+            assert_problem(response=certificate_grant(http=http), status=400, code="unsupported_grant_type")
+            # A password still signs in over the certificate's connection.
+            assert password_grant(http=http, server=server).status_code == 200
+    finally:
+        finish(server=server)
 
 
 # ---- Signing in with a certificate ----
@@ -409,10 +425,12 @@ def test_a_password_token_cannot_use_a_certificate_session(pki, matching):
         response = http.get(url=f"/warp/v1/sessions/{bound_session}", headers=bearer(token=password_token))
         assert_problem(response=response, status=401, code="certificate_mismatch")
         assert http.get(url=f"/warp/v1/sessions/{bound_session}", headers=bearer(token=cert_token)).status_code == 200
-        # A session opened with the password token is unbound, as before: both may use it.
+        # A session opened with the password token is unbound, and only unbound tokens use it:
+        # what runs there (a scoped token minted, say) then never runs under a binding it lacks.
         plain_session = new_session(http=http, token=password_token)
-        for token in (password_token, cert_token):
-            assert http.get(url=f"/warp/v1/sessions/{plain_session}", headers=bearer(token=token)).status_code == 200
+        assert http.get(url=f"/warp/v1/sessions/{plain_session}", headers=bearer(token=password_token)).status_code == 200
+        response = http.get(url=f"/warp/v1/sessions/{plain_session}", headers=bearer(token=cert_token))
+        assert_problem(response=response, status=401, code="certificate_mismatch")
 
 
 # ---- TLS session resumption ----
@@ -464,7 +482,7 @@ def test_revocation_reaches_open_connections_without_a_restart(pki, tmp_path):
     crl = tmp_path / "crl.pem"
     pki.ca.write_crl(path=crl, revoked=[])
     server = started(pki=pki, probe=pki.alice,
-                     args=[*tls_args(pki=pki, crl=crl), "--mtls-admin-identities", ",".join(KNOWN)])
+                     args=[*tls_args(pki=pki, crl=crl), "--mtls-certificate-sign-in", "--mtls-admin-identities", ",".join(KNOWN)])
     try:
         # A TLS session dave could resume later (it must not outlive the revocation).
         dave_context = pki.context(client=pki.dave)
@@ -524,3 +542,114 @@ def test_identity_match_refuses_a_password_for_someone_else(pki, matching):
 def test_without_identity_match_a_password_signs_in_over_any_certificate(pki, strict):
     with client(server=strict, pki=pki, cert=pki.alice) as alice:
         assert password_grant(http=alice, server=strict).status_code == 200
+
+
+# ---- Chains: every CA's revocation counts ----
+
+@pytest.fixture
+def chain(pki, tmp_path):
+    """A root (the server's client CA), an intermediate it signs, a leaf the intermediate
+    signs (sent with the intermediate), and the CRL file to fill."""
+    from pki import Authority
+    from cryptography import x509 as _x509
+    inter = Authority(directory=tmp_path, common_name="warp-test-intermediate", parent=pki.ca)
+    leaf = inter.issue(file_name="via-intermediate", common_name="alice",
+                       sans=[_x509.RFC822Name("alice@example.com")])
+    return inter, leaf, tmp_path / "chain.crl.pem"
+
+
+def chain_server(pki, crl, *extra):
+    # Certificates optional, so the harness sees the server come up whatever the CRLs refuse.
+    return started(pki=pki, probe=None,
+                   args=[*tls_args(pki=pki, crl=crl), *extra, "--mtls-require-client-cert=false",
+                         "--mtls-certificate-sign-in",
+                         "--mtls-admin-identities", "alice@example.com"])
+
+
+def test_a_revoked_intermediate_ca_revokes_what_it_issued(pki, chain):
+    from pki import write_atomically
+    inter, leaf, crl = chain
+    # The twin first: neither revoked, both CAs' CRLs present.
+    write_atomically(path=crl, data=pki.ca.crl_pem(revoked=[]) + inter.crl_pem(revoked=[]))
+    server = chain_server(pki, crl)
+    try:
+        with client(server=server, pki=pki, cert=leaf) as http:
+            certificate_token(http=http)
+    finally:
+        finish(server=server)
+    # The root's CRL revokes the intermediate; the intermediate's own CRL is clean.
+    write_atomically(path=crl, data=pki.ca.crl_pem(revoked=[inter.cert]) + inter.crl_pem(revoked=[]))
+    server = chain_server(pki, crl)
+    try:
+        reason = handshake_refusal(server=server, context=pki.context(client=leaf))
+        assert reason is not None and "CERTIFICATE_REVOKED" in reason, reason
+        assert handshake_refusal(server=server, context=pki.context(client=pki.alice)) is None
+    finally:
+        finish(server=server)
+
+
+def test_a_ca_without_a_crl_fails_closed_unless_allowed(pki, chain):
+    from pki import write_atomically
+    inter, leaf, crl = chain
+    # Only the intermediate's CRL: the root (which issued the intermediate) has none.
+    write_atomically(path=crl, data=inter.crl_pem(revoked=[]))
+    server = chain_server(pki, crl)
+    try:
+        reason = handshake_refusal(server=server, context=pki.context(client=leaf))
+        assert reason is not None and "ALERT" in reason, reason
+    finally:
+        finish(server=server)
+    server = chain_server(pki, crl, "--mtls-crl-allow-missing-ca-crls")
+    try:
+        with client(server=server, pki=pki, cert=leaf) as http:
+            certificate_token(http=http)
+        # Allowing a CA above the leaf to lack a CRL never excuses the leaf's issuer: a
+        # leaf of the root (whose CRL is missing) is still refused.
+        reason = handshake_refusal(server=server, context=pki.context(client=pki.alice))
+        assert reason is not None and "ALERT" in reason, reason
+    finally:
+        finish(server=server)
+
+
+def test_a_crl_that_passes_its_next_update_fails_open_connections_closed(pki, tmp_path):
+    import datetime
+    from pki import write_atomically
+    crl = tmp_path / "expiring.crl.pem"
+    expires = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(seconds=10)
+    write_atomically(path=crl, data=pki.ca.crl_pem(revoked=[], next_update=expires))
+    server = started(pki=pki, probe=pki.alice,
+                     args=[*tls_args(pki=pki, crl=crl), "--mtls-certificate-sign-in",
+                           "--mtls-admin-identities", ",".join(KNOWN)])
+    try:
+        with client(server=server, pki=pki, cert=pki.dave) as dave:
+            token = certificate_token(http=dave)
+            url = f"/warp/v1/sessions/{new_session(http=dave, token=token)}"
+            assert dave.get(url=url, headers=bearer(token=token)).status_code == 200  # the twin, before
+            time.sleep(max(0.0, (expires - datetime.datetime.now(tz=datetime.UTC)).total_seconds()) + 1.5)
+            # Nothing changed on disk: the open connection is verified again at the CRL's
+            # nextUpdate, and an expired CRL verifies nothing.
+            response = dave.get(url=url, headers=bearer(token=token))
+            problem = assert_problem(response=response, status=401, code="certificate_revoked")
+            assert "expired" in problem["detail"], problem
+        reason = handshake_refusal(server=server, context=pki.context(client=pki.dave))
+        assert reason is not None and "ALERT" in reason, reason
+    finally:
+        finish(server=server)
+
+
+# ---- Identities are printable ASCII ----
+
+@pytest.mark.parametrize("common_name", ["warp​", "‮warp", "warp\u0085", "wаrp", "warp "],
+                         ids=["zero-width-space", "right-to-left-override", "next-line-c1", "cyrillic-a",
+                              "line-separator"])
+def test_an_identity_must_be_printable_ascii(pki, matching, common_name):
+    odd = pki.ca.issue(file_name=f"cn-{abs(hash(common_name))}", common_name=common_name)
+    with client(server=matching, pki=pki, cert=odd) as http:
+        problem = assert_problem(response=certificate_grant(http=http), status=401,
+                                 code="unknown_certificate_identity")
+    assert "printable ASCII" in problem["detail"], problem
+    # The value is escaped in the detail: nothing invisible or reordering reaches a reader.
+    assert all(0x20 <= ord(c) <= 0x7e for c in problem["detail"]), repr(problem["detail"])
+    assert "\\x" in problem["detail"], problem
+    with client(server=matching, pki=pki, cert=pki.warp_cn) as http:  # the twin: plain "warp"
+        certificate_token(http=http)

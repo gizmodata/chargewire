@@ -317,6 +317,12 @@ template <class Stream>
 Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler& handler,
                          TlsContext* tls = nullptr, PeerCertificate* peer = nullptr) {
   beast::flat_buffer buffer;
+  std::string peer_address;
+  {
+    boost::system::error_code ec;
+    const auto remote = beast::get_lowest_layer(stream).socket().remote_endpoint(ec);
+    if (!ec) peer_address = remote.address().to_string() + ":" + std::to_string(remote.port());
+  }
   for (;;) {
     http::request_parser<http::buffer_body> parser;
     parser.header_limit(static_cast<std::uint32_t>(limits.max_header_bytes));
@@ -352,6 +358,7 @@ Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler
       request.method = message.method();
       request.headers = static_cast<const http::fields&>(message.base());
       request.request_id = NewId("r");
+      request.peer = peer_address;
       if (peer != nullptr) {
         request.client_certificate = peer->info();
         request.client_certificate_problem = tls->Recheck(*peer);

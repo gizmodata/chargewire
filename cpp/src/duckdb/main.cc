@@ -3,7 +3,8 @@
 //   WARP_DUCKDB_PASSWORD=… warp-duckdb [--database PATH] [--read-only] [--host HOST]
 //       [--port PORT] [--username NAME] [--tls-cert PEM --tls-key PEM [--tls-client-ca PEM]]
 //       [--mtls-require-client-cert=BOOL] [--mtls-crl-file PEM] [--mtls-identity-source SRC]
-//       [--mtls-admin-identities A,B] [--mtls-require-identity-match[=BOOL]]
+//       [--mtls-certificate-sign-in --mtls-admin-identities A,B] [--mtls-require-identity-match[=BOOL]]
+//       [--mtls-crl-allow-missing-ca-crls]
 //       [--cors-origin ORIGIN]... [--drain-seconds N] [--token-lifetime-seconds N]
 //       [--session-idle-timeout-seconds N] [--finished-statement-ttl-seconds N]
 //
@@ -30,6 +31,7 @@ struct Flags {
   warpsql::ServerOptions server;
   std::string username = "warp";
   std::vector<std::string> certificate_identities;
+  bool certificate_sign_in = false;
   int drain_seconds = 30;
 };
 
@@ -40,7 +42,8 @@ struct Flags {
             << "       [--tls-cert PEM --tls-key PEM [--tls-client-ca PEM]]\n"
             << "       [--mtls-require-client-cert=BOOL] [--mtls-crl-file PEM]\n"
             << "       [--mtls-identity-source san_email|san_uri|subject_cn]\n"
-            << "       [--mtls-admin-identities A,B] [--mtls-require-identity-match[=BOOL]]\n"
+            << "       [--mtls-certificate-sign-in --mtls-admin-identities A,B]\n"
+            << "       [--mtls-require-identity-match[=BOOL]] [--mtls-crl-allow-missing-ca-crls]\n"
             << "       [--cors-origin ORIGIN]... [--drain-seconds N] [--token-lifetime-seconds N]\n"
             << "       [--session-idle-timeout-seconds N] [--finished-statement-ttl-seconds N]\n";
   std::exit(2);
@@ -80,6 +83,8 @@ Flags ParseFlags(int argc, char** argv) {
     else if (flag == "--tls-client-ca") tls.client_ca_file = value();
     else if (flag == "--mtls-require-client-cert") tls.require_client_certificate = boolean();
     else if (flag == "--mtls-crl-file") tls.client_crl_file = value();
+    else if (flag == "--mtls-crl-allow-missing-ca-crls") tls.allow_missing_ca_crls = boolean();
+    else if (flag == "--mtls-certificate-sign-in") flags.certificate_sign_in = boolean();
     else if (flag == "--mtls-identity-source") {
       try {
         tls.client_identity_source = warpsql::ParseClientIdentitySource(value());
@@ -112,6 +117,16 @@ Flags ParseFlags(int argc, char** argv) {
   if (mtls_option && (!flags.server.tls || flags.server.tls->client_ca_file.empty())) {
     Usage("the --mtls-* flags need --tls-cert, --tls-key and --tls-client-ca");
   }
+  // Certificate sign-in is opt-in: without it mutual TLS only admits connections.
+  if (flags.certificate_sign_in != !flags.certificate_identities.empty()) {
+    Usage("--mtls-certificate-sign-in and --mtls-admin-identities go together");
+  }
+  flags.server.on_security_event = [](const warpsql::SecurityEvent& event) {
+    std::cerr << "warp-duckdb: SECURITY " << event.code << " user=" << event.user
+              << " token_id=" << event.token_id << " thumbprint=" << event.presented_thumbprint
+              << " peer=" << event.peer << " request=" << event.request_id << ": " << event.detail
+              << std::endl;
+  };
   if (flags.server.tls) {
     flags.server.tls->on_crl_reload = [](bool ok, const std::string& message) {
       std::cerr << "warp-duckdb: " << (ok ? "" : "WARNING: ") << message << std::endl;
