@@ -446,7 +446,10 @@ How the server answers depends on `Accept` and `Prefer`:
   statement is accepted. Without either, the wait is the server's choice.
 
 An error found before execution starts (a syntax error, a permission denial) is an
-error response (§11), not a statement document.
+error response (§11), not a statement document. So is a statement that has failed by
+the time the server answers its submission, whether or not it had produced rows: the
+response is the error response for the statement's error (`execution_error`, …), never
+a success status with a `failed` document.
 
 ### 6.2 The statement document
 
@@ -469,6 +472,9 @@ A failed or cancelled statement carries `error`, a problem document (§11), and 
 cancelled one also carries `cancel_reason`: `client`, `timeout`, `session_closed`,
 `killed`, `privilege_revoked` or `server_shutdown`. A cancelled statement's error code
 is `statement_timeout` when its timeout ran out and `statement_cancelled` otherwise.
+A client MUST treat a `failed` or `cancelled` document as the statement's error whatever
+the response's status code (an idempotent replay, §6.7, answers `200` with the
+statement's document in any state).
 
 A succeeded statement carries `result`:
 

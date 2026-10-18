@@ -74,38 +74,82 @@ def test_long_poll_returns_when_the_state_changes(warp, session_id):
     assert status["state"] in ("running", "succeeded")
 
 
-def test_failure_mid_stream_leaves_the_stream_incomplete(warp, session_id):
-    sql = ("SELECT CASE WHEN i < 300000 THEN i ELSE error('boom') END AS v "
-           "FROM range(1000000) t(i)")
+FAILING_SQL = ("SELECT CASE WHEN i < 300000 THEN i ELSE error('boom') END AS v "
+               "FROM range(1000000) t(i)")
+END_OF_STREAM = b"\xff\xff\xff\xff\x00\x00\x00\x00"
+
+
+def assert_failed_statement_answer(warp, session_id, headers: dict[str, str], url: str | None = None,
+                                   body: dict | None = None) -> str:
+    """A statement that fails while it runs answers in one of the two ways the spec allows:
+    an error response (the failure came before the answer started, §6.1), or a 200 Arrow
+    stream that ends without the end-of-stream marker (it came during the stream, §6.6),
+    after which the statement document says why. Never a 200 statement document: that is
+    what a statement without rows answers, so a client would take the failure for an
+    empty success. Returns which of the two it was."""
     request = warp.http.build_request(
-        method="POST", url=f"{warp.session_url(session_id)}/statements",
-        headers=warp.headers(Accept=ARROW_STREAM), json={"sql": sql})
+        method="POST", url=url or f"{warp.session_url(session_id)}/statements",
+        headers=warp.headers(Accept=ARROW_STREAM, **headers),
+        json={"sql": FAILING_SQL} if body is None else body)
     response = warp.http.send(request=request, stream=True)
-    assert response.status_code == 200, response.read()
-    statement_id = response.headers["warp-statement-id"]
     body = bytearray()
     try:
-        for chunk in response.iter_raw():
-            body.extend(chunk)
-    except httpx.RemoteProtocolError:
-        pass
-    else:
-        # Say what the server thought happened: a clean end here would hand a client a
-        # truncated result as if it were whole.
-        doc = warp.status(session_id=session_id, statement_id=statement_id)
-        eos = bytes(body).endswith(b"\xff\xff\xff\xff\x00\x00\x00\x00")
-        pytest.fail(reason=f"the stream ended cleanly after {len(body)} bytes "
-                           f"(ends with the end-of-stream marker: {eos}; headers: {dict(response.headers)}; "
-                           f"first 64 bytes: {bytes(body[:64]).hex()}; last 64: {bytes(body[-64:]).hex()}); "
-                           f"statement: {doc}")
+        if response.status_code != 200:
+            response.read()
+            problem = assert_problem(response=response, status=500, code="execution_error")
+            assert "boom" in problem["detail"], problem
+            return "error response"
+        content_type = response.headers.get("content-type", "")
+        if not content_type.startswith(ARROW_STREAM):
+            pytest.fail(reason=f"a failed statement answered 200 with {content_type}, as a statement "
+                               f"without rows does: {response.read()[:400]!r}")
+        statement_id = response.headers["warp-statement-id"]
+        try:
+            for chunk in response.iter_raw():
+                body.extend(chunk)
+        except httpx.RemoteProtocolError:
+            pass
+        else:
+            # Say what the server thought happened: a clean end here would hand a client a
+            # truncated result as if it were whole.
+            doc = warp.status(session_id=session_id, statement_id=statement_id)
+            pytest.fail(reason=f"the stream ended cleanly after {len(body)} bytes (ends with the "
+                               f"end-of-stream marker: {bytes(body).endswith(END_OF_STREAM)}); "
+                               f"statement: {doc}")
     finally:
         response.close()
     # Whatever arrived (the schema, perhaps some batches) is never a complete stream: it
     # lacks the end-of-stream marker (continuation token, then a zero length).
-    assert not bytes(body).endswith(b"\xff\xff\xff\xff\x00\x00\x00\x00")
+    assert not bytes(body).endswith(END_OF_STREAM)
     doc = warp.wait_done(session_id=session_id, statement_id=statement_id)
-    assert doc["state"] == "failed"
-    assert doc["error"]["code"] == "execution_error"
+    assert doc["state"] == "failed", doc
+    assert doc["error"]["code"] == "execution_error", doc
+    assert "boom" in doc["error"]["detail"], doc
+    return "incomplete stream"
+
+
+def test_failure_mid_stream_leaves_the_stream_incomplete(warp, session_id):
+    assert_failed_statement_answer(warp=warp, session_id=session_id, headers={})
+
+
+def test_a_failure_before_the_answer_is_an_error_response(warp, session_id):
+    # Asking for partitions makes a server that splits results wait to decide the split
+    # before it answers (§6.10), so the failure comes first: the answer is the error. One
+    # that answers before deciding streams instead, and must leave that stream incomplete.
+    assert_failed_statement_answer(warp=warp, session_id=session_id, headers={"Warp-Result-Partitions": "8"})
+
+
+@pytest.mark.parametrize("partitions", [None, "8"])
+def test_a_failed_prepared_execution_is_never_a_success(warp, session_id, partitions):
+    # Executing a prepared statement answers as submitting one does (§7).
+    response = warp.http.post(url=f"{warp.session_url(session_id)}/prepared",
+                              headers=warp.headers(), json={"sql": FAILING_SQL})
+    assert response.status_code == 201, response.text
+    prepared_id = response.json()["prepared_id"]
+    assert_failed_statement_answer(
+        warp=warp, session_id=session_id,
+        headers={} if partitions is None else {"Warp-Result-Partitions": partitions},
+        url=f"{warp.session_url(session_id)}/prepared/{prepared_id}/execute", body={})
 
 
 def test_zstd_compressed_results(warp, session_id):
