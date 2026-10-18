@@ -65,13 +65,23 @@ if(WIN32)
   # Every extension the install has a static library of is one its shared library links
   # (DuckDB's four, and those an extension config links in); DuckDB_EXTENSIONS names only
   # the configs' ones when there are any.
+  # Registered in DuckDB's own order, which is their load order: its four first, as
+  # others need them loaded (ducklake reads with parquet, and would otherwise install it).
   file(GLOB _extension_libs "${WARPSQL_DUCKDB_PREFIX}/lib/*_extension.lib")
-  set(WARPSQL_DUCKDB_LINKED httplib loadable_extensions)
+  set(_installed "")
   foreach(lib IN LISTS _extension_libs)
     get_filename_component(name "${lib}" NAME_WE)
     string(REGEX REPLACE "_extension$" "" name "${name}")
-    list(APPEND WARPSQL_DUCKDB_LINKED ${name})
+    list(APPEND _installed ${name})
   endforeach()
+  set(WARPSQL_DUCKDB_LINKED httplib loadable_extensions)
+  foreach(name IN ITEMS core_functions parquet json icu)
+    if(name IN_LIST _installed)
+      list(APPEND WARPSQL_DUCKDB_LINKED ${name})
+      list(REMOVE_ITEM _installed ${name})
+    endif()
+  endforeach()
+  list(APPEND WARPSQL_DUCKDB_LINKED ${_installed})
   if(NOT "parquet" IN_LIST WARPSQL_DUCKDB_LINKED)
     message(FATAL_ERROR "no DuckDB extension libraries in ${WARPSQL_DUCKDB_PREFIX}/lib")
   endif()
