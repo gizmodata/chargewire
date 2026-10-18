@@ -9,6 +9,7 @@
 #include <array>
 #include <filesystem>
 
+#include "duckdb_describe.hpp"
 #include "duckdb_session.hpp"
 #include "duckdb_sql.hpp"
 #include "duckdb_upload.hpp"
@@ -65,6 +66,7 @@ DuckDBBackend::DuckDBBackend(Options options) : result_batch_rows_(options.resul
   });
   // Functions are registered on the instance's catalog, once.
   RegisterUploadFunction(health_connection_.get());
+  RegisterResultSchemaFunction(health_connection_.get());
 }
 
 DuckDBBackend::~DuckDBBackend() {

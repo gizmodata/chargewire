@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <map>
 
+#include "duckdb_describe.hpp"
 #include "duckdb_sql.hpp"
 
 namespace warpduckdb {
@@ -87,15 +88,15 @@ Described DescribeWrite(duckdb_v2_connection_handle connection,
   return Described{true, nullptr};
 }
 
-// Executing returns a handle whose result type and schema are known before its first
-// step, and destroying it unstepped runs nothing, so a prepared query describes itself
-// by executing with typed NULL parameters. Writes are never executed to describe them:
-// dropping an unstepped write inside an explicit transaction aborts the transaction.
-// DDL and the like return no rows; the rest (PRAGMA, a statement whose parameter types
-// DuckDB can't tell, ...) stay unknown.
-Described Describe(ValueFactory& values, duckdb_v2_connection_handle connection,
-                   duckdb_v2_sql_statement_handle statement,
-                   duckdb_v2_prepared_statement_handle prepared, const ParameterTypes& types) {
+// A prepared query describes itself without running: binding gives its result columns'
+// DuckDB types, and DuckDB's Arrow exporter the schema an execution would send
+// (ResultArrowSchema). Executing to learn the schema was not safe: dropping the result
+// unstepped did not always run nothing, since DuckDB's threads could already have
+// picked the plan up, and the drop then waited for the whole query. Writes are
+// described by binding too (DescribeWrite). DDL and the like return no rows; the rest
+// (PRAGMA, a statement whose parameter types DuckDB can't tell, ...) stay unknown.
+Described Describe(duckdb_v2_connection_handle connection,
+                   duckdb_v2_sql_statement_handle statement, const ParameterTypes& types) {
   switch (StatementType(statement)) {
     case DUCKDB_V2_STATEMENT_TYPE_SELECT:
     case DUCKDB_V2_STATEMENT_TYPE_EXPLAIN:
@@ -121,44 +122,24 @@ Described Describe(ValueFactory& values, duckdb_v2_connection_handle connection,
     default:
       return {};
   }
-  json::value nulls;
-  if (types.named()) {
-    json::object by_name;
-    for (std::size_t i = 0; i < types.size(); i++) {
-      if (types.For(i, types.name(i)) == nullptr) return {};
-      by_name[types.name(i)] = nullptr;
-    }
-    nulls = std::move(by_name);
-  } else {
-    for (std::size_t i = 0; i < types.size(); i++) {
-      if (types.For(i, "") == nullptr) return {};
-    }
-    nulls = json::array(types.size(), nullptr);
+  // A parameter whose type DuckDB can't tell (`SELECT ?`) leaves the result's types
+  // open until the values arrive.
+  for (std::size_t i = 0; i < types.size(); i++) {
+    if (types.For(i, types.named() ? types.name(i) : "") == nullptr) return {};
+  }
+  using Schema = Owned<duckdb_v2_schema_handle, duckdb_v2_schema_destroy>;
+  Schema output;
+  duckdb_v2_error_info_handle err = nullptr;
+  if (duckdb_v2_statement_bind(connection, statement, output.out(), nullptr, &err) !=
+      DUCKDB_V2_ERROR_NONE) {
+    // e.g. a statement that expands into a group: its schema is known only at execution
+    if (err != nullptr) duckdb_v2_error_info_destroy(&err);
+    return {};
   }
   try {
-    const BoundValues bound = values.FromJson(nulls, types);
-    const auto handles = bound.Handles();
-    const auto names = bound.NameHandles();
-    ArrowResult result;
-    Call([&](auto* err) {
-      return duckdb_v2_prepared_statement_execute_arrow(
-          prepared, names.empty() ? nullptr : names.data(),
-          handles.empty() ? nullptr : handles.data(), handles.size(), 0, result.out(), err);
-    });
-    DUCKDB_V2_RESULT_TYPE type{};
-    Call([&](auto* err) { return duckdb_v2_arrow_result_get_result_type(result.get(), &type, err); });
-    if (type != DUCKDB_V2_RESULT_TYPE_QUERY_RESULT) {
-      return Described{false, nullptr};
-    }
-    ArrowSchema c_schema{};
-    Call([&](auto* err) { return duckdb_v2_arrow_result_get_schema(result.get(), &c_schema, err); });
-    auto schema = arrow::ImportSchema(&c_schema);
-    if (!schema.ok()) {
-      return {};
-    }
-    return Described{true, std::move(*schema)};
+    return Described{true, ResultArrowSchema(connection, output.get())};
   } catch (const Error&) {
-    return {};  // e.g. a statement that expands into a group: known only at execution
+    return {};
   }
 }
 
@@ -246,8 +227,7 @@ std::unique_ptr<warpsql::PreparedStatement> DuckDBSession::Prepare(std::string_v
                                                prepared.out(), err);
   });
   ParameterTypes types = ParameterTypes::Load(connection_.get(), statements[0].get());
-  Described described =
-      Describe(*values_, connection_.get(), statements[0].get(), prepared.get(), types);
+  Described described = Describe(connection_.get(), statements[0].get(), types);
   auto parameter_schema = types.ArrowSchema(connection_.get());
   return std::make_unique<DuckDBPrepared>(std::move(statements[0]), std::move(prepared),
                                           std::move(types), std::move(described),

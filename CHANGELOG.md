@@ -196,6 +196,22 @@ spec's version is the repository's version.
 
 ### Fixed
 
+- DuckDB backend: preparing a query no longer runs it. A prepare learned a SELECT's
+  result schema by executing it with NULL parameters and dropping the result unread, on
+  the claim that this ran nothing; but DuckDB's threads could already have picked the plan
+  up, and the drop then waited in `Executor::CancelTasks()` for the whole query (a prepare
+  of a long cross join stalled for minutes, about once in 150-1000 prepares with several
+  sessions busy). The schema now comes from `duckdb_v2_statement_bind` (nothing runs)
+  converted by DuckDB's own Arrow exporter (`duckdb_v2_arrow_exporter_create`), the
+  conversion every result uses, under the session's settings (`arrow_lossless_conversion`,
+  `produce_arrow_string_view`, `arrow_output_list_view`, `arrow_large_buffer_size`,
+  `arrow_output_version`, `TimeZone`). The exporter needs a client context, which the v2
+  C API hands out only in callbacks, so the conversion runs in the bind callback of a new
+  table function, `warp_result_schema()`, bound and never executed (called directly it is
+  refused, as `warp_upload()` is). Conformance: `test_prepare_describe.py`: 4000 prepares
+  of hours-long cross joins in 16 sessions at once, each under a second (failed 5 of 5 runs
+  before), and the described schema equal, metadata included, to the executed one for
+  every DuckDB type (`test_all_types()` and more) under seven setting combinations.
 - DuckDB backend: the session option `arrow_lossless_conversion` reported the value last
   set through the option, not the one the session's results use: after SQL `SET SESSION
   arrow_lossless_conversion = true`, or an administrator's plain `SET` (which for this

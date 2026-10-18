@@ -152,6 +152,7 @@ warpsql_windows_settings(warpsql_client)
 # built on it extend DuckDBBackend and DuckDBSession.
 add_library(warpsql_duckdb
   src/duckdb/duckdb_backend.cc
+  src/duckdb/duckdb_describe.cc
   src/duckdb/duckdb_session.cc
   src/duckdb/duckdb_sql.cc
   src/duckdb/duckdb_upload.cc
