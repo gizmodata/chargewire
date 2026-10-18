@@ -93,7 +93,11 @@ def test_failure_mid_stream_leaves_the_stream_incomplete(warp, session_id):
         # Say what the server thought happened: a clean end here would hand a client a
         # truncated result as if it were whole.
         doc = warp.status(session_id=session_id, statement_id=statement_id)
-        pytest.fail(reason=f"the stream ended cleanly after {len(body)} bytes; statement: {doc}")
+        eos = bytes(body).endswith(b"\xff\xff\xff\xff\x00\x00\x00\x00")
+        pytest.fail(reason=f"the stream ended cleanly after {len(body)} bytes "
+                           f"(ends with the end-of-stream marker: {eos}; headers: {dict(response.headers)}; "
+                           f"first 64 bytes: {bytes(body[:64]).hex()}; last 64: {bytes(body[-64:]).hex()}); "
+                           f"statement: {doc}")
     finally:
         response.close()
     # Whatever arrived (the schema, perhaps some batches) is never a complete stream: it
