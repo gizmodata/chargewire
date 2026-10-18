@@ -33,17 +33,19 @@ Principal TokenStore::Validate(std::string_view token) {
   if (!token.empty()) {
     std::lock_guard lock(mutex_);
     auto it = by_hash_.find(Sha256Hex(token));
-    if (it != by_hash_.end() && it->second.expires > Clock::now()) {
-      return it->second.principal;
+    if (it != by_hash_.end()) {
+      if (it->second.expires > Clock::now()) return it->second.principal;
+      // A token this server issued: its holder may know why it no longer works.
+      throw Error::InvalidToken(reason::kTokenExpired, "the access token has expired; sign in again");
     }
   }
   throw Error(ErrorCode::kInvalidToken, "a valid access token is required");
 }
 
 void TokenStore::Sweep() {
-  const auto now = Clock::now();
+  const auto forget = Clock::now() - kExpiredKept;
   std::lock_guard lock(mutex_);
-  std::erase_if(by_hash_, [now](const auto& item) { return item.second.expires <= now; });
+  std::erase_if(by_hash_, [forget](const auto& item) { return item.second.expires <= forget; });
 }
 
 std::string_view BearerToken(std::string_view authorization) {

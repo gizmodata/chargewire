@@ -51,13 +51,15 @@ class DuckDBSession : public warpsql::EngineSession {
 
  private:
   void EndTransaction(std::string_view sql);
+  // The arrow_lossless_conversion value this session's results use (its own, else the
+  // instance's).
+  bool Lossless();
 
   Connection connection_;
   idx_t batch_rows_ = 0;
   duckdb_v2_factory_handle factory_ = nullptr;
   std::unique_ptr<ValueFactory> values_;
   bool autocommit_ = true;
-  bool lossless_ = false;
   boost::json::value session_tag_ = nullptr;
   bool options_changed_ = false;  // a statement ran that can move the current catalog/schema
 };

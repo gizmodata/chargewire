@@ -7,13 +7,36 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
-### Documentation
-
-- `cpp/README.md` says `warp-duckdb` is for testing and development only: whoever signs in
-  is the administrator with all of DuckDB's file, network and extension access, and it has
-  no users, access control or file guards. Production use is Hardcharger.
-
 ### Added
+
+- Why a token stopped working (spec §4.2): when a server refuses a token it issued and
+  verified (an expired one, or one it ended because the principal's credentials changed,
+  the principal was dropped or disabled, or the token was revoked), the `invalid_token`
+  problem document carries a `reason`: `token_expired`, `token_revoked`,
+  `credentials_changed` or `principal_dropped`. A token the server can't verify as its own
+  gets none, so a reason never tells anyone but the token's holder about its principal.
+  The SDK's `Error::InvalidToken(reason, detail)` sends it, and its default token store
+  answers `token_expired` for its own tokens up to an hour after they expire (before, an
+  expired token was as unknown as a forged one). `warpsql::session_ended_reason` is
+  `warpsql::reason`, with `kTokenRevoked`. Conformance:
+  `test_an_expired_token_is_refused_until_the_client_signs_in_again` now requires
+  `invalid_token` with `reason` `token_expired`, also when creating a session, and no
+  reason for the same token altered (it failed on both servers before);
+  `test_requests_without_a_valid_token_are_refused` asserts no reason. The drivers read
+  `reason` from every problem document already, so they report it unchanged.
+
+- Spec §5.6: `session_ended` has a `token_revoked` reason (the session's token was
+  revoked; `token_expired` is now only for a token that expired), and says how the reason
+  reaches a client: the session's own token is usually ended with the session, so its next
+  request gets `invalid_token` with the same reason first, and `session_ended` reaches a
+  client that signed in again. It used to read as if `session_ended` came first.
+
+- Client library: a TLS alert refusing the client certificate is reported as the refusal
+  it stands for (spec §4.4), `certificate_revoked` or `client_certificate_required`
+  (status 0), and any other TLS failure after the handshake as `tls_failed`; with TLS 1.3
+  these alerts arrive on the first read, and were `connection_failed` ("could not
+  connect"). The spec's §4.4 says clients should do this. Tests:
+  `LiveTls.ARevokedClientCertificateIsReportedAsRevoked`, `LiveTls.MutualTls`.
 
 - CORS with credentials (spec §9.5): the SDK answers an allowed origin, preflights
   included, with `Access-Control-Allow-Credentials: true` beside the origin itself (never
@@ -161,7 +184,25 @@ spec's version is the repository's version.
   port). On Windows DuckDB is linked statically, with the extensions its shared library
   links. The conformance harness stops a server it started with Ctrl+Break on Windows.
 
+- Spec: bind parameters spelled out (§6.1: values never spliced into SQL; positional or
+  named; how `null` is typed); response headers (§2.6); `result_not_ready`; more error
+  codes (`not_found`, `method_not_allowed`, `payload_too_large`, `headers_too_large`,
+  `statement_cancelled`, option errors).
+
+- Server SDK design: GizmoSQL 2.0 targets DuckDB 2.0's v2 C API only (the RBAC plan
+  inspector is the one module allowed DuckDB internals), runs as a standalone server,
+  and keeps statement execution off HTTP request threads. IPC is done by Arrow C++ built
+  with IPC only, not nanoarrow. ADBC client: `gizmodata/warp-sql-adbc` (Go).
+
 ### Fixed
+
+- DuckDB backend: the session option `arrow_lossless_conversion` reported the value last
+  set through the option, not the one the session's results use: after SQL `SET SESSION
+  arrow_lossless_conversion = true`, or an administrator's plain `SET` (which for this
+  setting is DuckDB's `SET GLOBAL`) in the same session, it still said `false`. It is now
+  read from the session's own Arrow export whenever the session document's options are
+  read again (after the session's SET/USE/ATTACH statements and option changes; another
+  session's `SET GLOBAL` shows at the next of those).
 
 - A server stopped during a one-request bulk ingest (`POST …/ingest`) whose body was still
   arriving never finished stopping: `Server::Stop()` joined the engine threads after the
@@ -214,20 +255,6 @@ spec's version is the repository's version.
 - Conformance suite (`conformance/`): 46 black-box tests; fails, never skips, without a
   server.
 
-### Changed
-
-- Spec: bind parameters spelled out (§6.1: values never spliced into SQL; positional or
-  named; how `null` is typed); response headers (§2.6); `result_not_ready`; more error
-  codes (`not_found`, `method_not_allowed`, `payload_too_large`, `headers_too_large`,
-  `statement_cancelled`, option errors).
-
-- Server SDK design: GizmoSQL 2.0 targets DuckDB 2.0's v2 C API only (the RBAC plan
-  inspector is the one module allowed DuckDB internals), runs as a standalone server,
-  and keeps statement execution off HTTP request threads. IPC is done by Arrow C++ built
-  with IPC only, not nanoarrow. ADBC client: `gizmodata/warp-sql-adbc` (Go).
-
-### Fixed
-
 - A JSON bind parameter that is an integer outside the 64-bit range is bound exactly
   (DuckDB backend: HUGEINT, else UHUGEINT; wider is refused with `bad_request`). It was
   read as a double and bound rounded (10^38 - 1 as 1e38). Spec §6.1 now requires exact or
@@ -263,3 +290,9 @@ spec's version is the repository's version.
   keeps the session alive or gets `404 session_not_found`. A session closed for any reason
   (idle, `KILL SESSION`, `DELETE`) also refuses new statements and ingests from requests
   that found it just before. SDK test: `SessionLifetime.*` in `warpsql-sdk-tests`.
+
+### Documentation
+
+- `cpp/README.md` says `warp-duckdb` is for testing and development only: whoever signs in
+  is the administrator with all of DuckDB's file, network and extension access, and it has
+  no users, access control or file guards. Production use is Hardcharger.

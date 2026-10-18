@@ -134,11 +134,36 @@ Issued Issue(const std::string& common_name, const Issued* issuer, const std::ve
 // A CA, a server certificate it signs (for `names`, a subjectAltName list), a client
 // certificate it signs, and an unrelated CA, made with OpenSSL's library (the openssl
 // command differs between machines: LibreSSL on macOS).
+// A CRL of `ca`'s, valid for a day, revoking the certificate with `serial`.
+void WriteCrl(const Issued& ca, const ASN1_INTEGER* serial, const fs::path& path) {
+  X509_CRL* crl = X509_CRL_new();
+  X509_CRL_set_version(crl, 1);
+  X509_CRL_set_issuer_name(crl, X509_get_subject_name(ca.cert));
+  ASN1_TIME* now = ASN1_TIME_adj(nullptr, std::time(nullptr), 0, -60);
+  ASN1_TIME* next = ASN1_TIME_adj(nullptr, std::time(nullptr), 1, 0);
+  X509_CRL_set1_lastUpdate(crl, now);
+  X509_CRL_set1_nextUpdate(crl, next);
+  X509_REVOKED* revoked = X509_REVOKED_new();
+  X509_REVOKED_set_serialNumber(revoked, const_cast<ASN1_INTEGER*>(serial));
+  X509_REVOKED_set_revocationDate(revoked, now);
+  X509_CRL_add0_revoked(crl, revoked);
+  X509_CRL_sort(crl);
+  EXPECT_GT(X509_CRL_sign(crl, ca.key, EVP_sha256()), 0);
+  FILE* out = std::fopen(path.string().c_str(), "w");
+  PEM_write_X509_CRL(out, crl);
+  std::fclose(out);
+  ASN1_TIME_free(now);
+  ASN1_TIME_free(next);
+  X509_CRL_free(crl);
+}
+
 struct Certificates {
   fs::path dir;
   fs::path ca, server_cert, server_key, client_cert, client_key, other_ca;
   // A second client certificate from the same CA, for another identity.
   fs::path other_client_cert, other_client_key;
+  // The CA's CRL, revoking other_client_cert only.
+  fs::path crl;
 
   static Certificates Make(const std::string& names) {
     Certificates c;
@@ -153,6 +178,7 @@ struct Certificates {
     c.other_ca = c.dir / "other-ca.pem";
     c.other_client_cert = c.dir / "other-client.pem";
     c.other_client_key = c.dir / "other-client.key";
+    c.crl = c.dir / "ca.crl";
     const std::vector<std::string> ca_extensions{"basicConstraints=critical,CA:TRUE",
                                                  "keyUsage=critical,keyCertSign,cRLSign",
                                                  "subjectKeyIdentifier=hash"};
@@ -173,6 +199,7 @@ struct Certificates {
                                  "extendedKeyUsage=clientAuth", "subjectAltName=email:other@example.com",
                                  "authorityKeyIdentifier=keyid"},
                                 c.other_client_cert, c.other_client_key);
+    WriteCrl(ca, X509_get_serialNumber(other_client.cert), c.crl);
     for (Issued* issued : {&ca, &other, &server, &client, &other_client}) {
       X509_free(issued->cert);
       EVP_PKEY_free(issued->key);
@@ -981,13 +1008,17 @@ TEST_F(LiveTls, MutualTls) {
   wc::Client client(server.Options(with_cert));
   client.SignInWithPassword(server.username(), server.password());
   EXPECT_EQ(Scalar(*client.CreateSession(), "SELECT 1"), 1);
-  // Without a client certificate the handshake (or the first read) fails.
+  // Without a client certificate the handshake (or, with TLS 1.3, the first read) fails,
+  // as the refusal it is (spec §4.4's code), not as a failure to connect.
   wc::TlsOptions without{.enabled = true, .root_certs_file = certs_->ca.string()};
   try {
     wc::Client(server.Options(without)).Discover();
     FAIL() << "a client without a certificate got in";
   } catch (const wc::Error& e) {
     EXPECT_TRUE(e.IsTransport()) << e.code() << ": " << e.what();
+    EXPECT_EQ(e.code(), "client_certificate_required") << e.what();
+    EXPECT_EQ(std::string(e.what()), "the server at https://127.0.0.1:" + std::to_string(server.Options().port) +
+                                         " requires a client certificate, and none was sent");
   }
   // Skipping verification of the server still presents the client's certificate (with
   // Arrow Flight it didn't, which is why GizmoSQL 1.x refused the combination).
@@ -997,6 +1028,31 @@ TEST_F(LiveTls, MutualTls) {
   wc::Client skipping(server.Options(skip_with_cert));
   skipping.SignInWithPassword(server.username(), server.password());
   EXPECT_EQ(Scalar(*skipping.CreateSession(), "SELECT 2"), 2);
+}
+
+TEST_F(LiveTls, ARevokedClientCertificateIsReportedAsRevoked) {
+  Server server({"--tls-cert", certs_->server_cert.string(), "--tls-key", certs_->server_key.string(),
+                 "--tls-client-ca", certs_->ca.string(), "--mtls-crl-file", certs_->crl.string()},
+                true);
+  wc::TlsOptions good{.enabled = true,
+                      .root_certs_file = certs_->ca.string(),
+                      .cert_file = certs_->client_cert.string(),
+                      .key_file = certs_->client_key.string()};
+  ASSERT_TRUE(server.WaitReady(good));
+  EXPECT_NO_THROW(wc::Client(server.Options(good)).Discover());  // the twin: not revoked
+  wc::TlsOptions revoked = good;
+  revoked.cert_file = certs_->other_client_cert.string();
+  revoked.key_file = certs_->other_client_key.string();
+  const auto options = server.Options(revoked);
+  try {
+    wc::Client(options).Discover();
+    FAIL() << "a revoked certificate got in";
+  } catch (const wc::Error& e) {
+    EXPECT_EQ(e.status(), 0);
+    EXPECT_EQ(e.code(), "certificate_revoked") << e.what();
+    EXPECT_EQ(std::string(e.what()), "the server at https://" + options.host + ":" + std::to_string(options.port) +
+                                         " refused the client certificate: certificate revoked");
+  }
 }
 
 TEST_F(LiveTls, SignsInWithTheClientCertificate) {

@@ -1,5 +1,6 @@
 #include "transport.hpp"
 
+#include <openssl/err.h>
 #include <openssl/ssl.h>
 
 #include <algorithm>
@@ -69,6 +70,39 @@ bool AddWindowsRoots(ssl::context& context) {
   return any;
 }
 #endif
+
+// A TLS failure as the error the client reports. An alert the server sent about the
+// client's certificate is the refusal it stands for (spec §4.4): certificate_revoked, or
+// client_certificate_required when the client sent none. With TLS 1.3 the client's side
+// of the handshake is over before the server checks the certificate, so such an alert
+// arrives with the first read, not in the handshake; it is still not a failure to connect.
+// Anything else at the TLS layer is tls_failed.
+Error TlsFailure(const boost::system::error_code& ec, const std::string& origin, std::string_view during) {
+  if (ec.category() == net::error::get_ssl_category()) {
+    const char* refused = nullptr;
+    switch (ERR_GET_REASON(static_cast<unsigned long>(ec.value()))) {
+      case SSL_R_SSLV3_ALERT_CERTIFICATE_REVOKED:
+        return Error(0, "certificate_revoked", "the server at " + origin + " refused the client certificate: certificate revoked");
+      case SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED:
+        return Error(0, "client_certificate_required",
+                     "the server at " + origin + " requires a client certificate, and none was sent");
+      case SSL_R_SSLV3_ALERT_CERTIFICATE_EXPIRED: refused = "certificate expired"; break;
+      case SSL_R_TLSV1_ALERT_UNKNOWN_CA: refused = "its issuer is not a certificate authority the server trusts"; break;
+      case SSL_R_SSLV3_ALERT_BAD_CERTIFICATE: refused = "bad certificate"; break;
+      case SSL_R_SSLV3_ALERT_UNSUPPORTED_CERTIFICATE: refused = "unsupported certificate"; break;
+      case SSL_R_SSLV3_ALERT_CERTIFICATE_UNKNOWN: refused = "certificate unknown"; break;
+      default: break;
+    }
+    if (refused != nullptr) {
+      return Error(0, "tls_failed", "the server at " + origin + " refused the client certificate: " + refused);
+    }
+  }
+  return Error(0, "tls_failed", std::string(during) + " " + origin + " failed: " + ec.message());
+}
+
+bool IsTlsError(const boost::system::error_code& ec) {
+  return ec.category() == net::error::get_ssl_category();
+}
 
 }  // namespace
 
@@ -204,6 +238,7 @@ std::size_t BodyReader::Read(char* out, std::size_t size) {
       transport_.active_ = nullptr;
       transport_.Drop();
       done_ = true;
+      if (IsTlsError(ec)) throw TlsFailure(ec, transport_.Origin(), "the TLS connection to");
       throw Error(0, "connection_failed",
                   "the connection to " + transport_.Origin() + " ended in the middle of a response: " + ec.message());
     }
@@ -276,6 +311,7 @@ void Transport::SetTimeout(std::chrono::milliseconds timeout) {
 
 void Transport::Fail(std::string_view what, const boost::system::error_code& ec) {
   Drop();
+  if (IsTlsError(ec)) throw TlsFailure(ec, Origin(), "the TLS connection to");
   if (ec == beast::error::timeout) {
     throw Error(0, "connection_failed", std::string(what) + " " + Origin() + " timed out");
   }
@@ -334,10 +370,9 @@ void Transport::Connect() {
     lowest.expires_after(connect_timeout_);
     ec = Run([&](auto handler) { secure_->async_handshake(ssl::stream_base::client, std::move(handler)); });
     if (ec) {
-      const std::string reason = ec.message();
       Drop();
       if (ec == beast::error::timeout) throw Error(0, "tls_failed", "the TLS handshake with " + Origin() + " timed out");
-      throw Error(0, "tls_failed", "the TLS handshake with " + Origin() + " failed: " + reason);
+      throw TlsFailure(ec, Origin(), "the TLS handshake with");
     }
   }
   lowest.expires_never();

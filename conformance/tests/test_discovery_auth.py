@@ -60,8 +60,10 @@ def test_requests_without_a_valid_token_are_refused(server, warp):
                     {"Authorization": f"Bearer {warp.token[:-1]}"},
                     {"Authorization": f"Basic {warp.token}"}]:
         response = httpx.get(url=url, headers=headers)
-        assert_problem(response=response, status=401, code="invalid_token")
+        problem = assert_problem(response=response, status=401, code="invalid_token")
         assert response.headers["www-authenticate"] == "Bearer"
+        # §4.2: a token the server can't verify as its own carries no reason.
+        assert "reason" not in problem, problem
 
 
 def test_unknown_grant_type_is_a_bad_request(server):

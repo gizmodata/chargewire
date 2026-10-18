@@ -140,7 +140,10 @@ json::object Problem(const Error& error, std::string_view request_id) {
   }
   if (error.code() == ErrorCode::kSessionEnded) {
     // Spec §5.6: a session_ended error always says why.
-    problem["reason"] = error.reason().empty() ? std::string(session_ended_reason::kKilled) : error.reason();
+    problem["reason"] = error.reason().empty() ? std::string(reason::kKilled) : error.reason();
+  } else if (error.code() == ErrorCode::kInvalidToken && !error.reason().empty()) {
+    // Spec §4.2: why a token the server issued no longer stands.
+    problem["reason"] = error.reason();
   }
   return problem;
 }

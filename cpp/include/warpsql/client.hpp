@@ -67,12 +67,15 @@ class Error : public std::runtime_error {
   Error(int status, std::string code, std::string detail);
 
   int status() const { return status_; }        // HTTP status; 0 for a transport failure
-  const std::string& code() const { return code_; }  // problem code, or "connection_failed",
-                                                     // "tls_failed", "protocol_error"
+  // The problem code, or one of the client's own (status 0): "connection_failed",
+  // "tls_failed", "protocol_error", and for a TLS alert refusing the client certificate
+  // the §4.4 code it stands for, "certificate_revoked" or "client_certificate_required".
+  const std::string& code() const { return code_; }
   const std::string& detail() const { return detail_; }
   const std::string& sqlstate() const { return sqlstate_; }
   const std::string& request_id() const { return request_id_; }
-  const std::string& reason() const { return reason_; }  // session_ended's reason (§5.6)
+  // Why: session_ended's reason (§5.6), or invalid_token's (§4.2) when the server says.
+  const std::string& reason() const { return reason_; }
   const std::string& cancel_reason() const { return cancel_reason_; }  // a cancelled statement's
 
   // A statement that was cancelled (by a client, a timeout, a kill, ...).

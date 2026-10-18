@@ -75,7 +75,7 @@ engine behaviour; only the calls that send SQL and read results change.
 `query_profile_capture`, `read_only_mode`, `sensitive_path_guard`,
 `session_idle`, `set_query_log_level`, `sqlite_backend`, `statement_queue`,
 `storage_version`, `system_catalog`, `system_managed_catalog_visibility`,
-`tpch_benchmark`, `variant`, and the RBAC suites once they merge.
+`tpch_benchmark` and `variant` (access control is Hardcharger's own, with its own suites).
 
 **Protocol operations: port onto the matching Warp SQL operation.**
 

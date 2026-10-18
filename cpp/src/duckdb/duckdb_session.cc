@@ -730,7 +730,6 @@ warpsql::OptionErrors DuckDBSession::SetOptions(const json::object& options) {
     }
     RunSql(connection_.get(), value.as_bool() ? "SET SESSION arrow_lossless_conversion = true"
                                               : "SET SESSION arrow_lossless_conversion = false");
-    lossless_ = value.as_bool();
   });
   for (const auto& option : options) {
     const std::string_view key = option.key();
@@ -747,12 +746,25 @@ json::object DuckDBSession::Options() {
       {"catalog", QueryText(connection_.get(), "SELECT current_database()")},
       {"schema", QueryText(connection_.get(), "SELECT current_schema()")},
       {"autocommit", autocommit_},
-      {"arrow_lossless_conversion", lossless_},
+      {"arrow_lossless_conversion", Lossless()},
   };
   if (!session_tag_.is_null()) {
     options["session_tag"] = session_tag_;
   }
   return options;
+}
+
+bool DuckDBSession::Lossless() {
+  // The value this session's results use: its own (SET SESSION, or the option above), else
+  // the instance's (a plain SET of this option is GLOBAL in DuckDB, so an administrator's
+  // `SET arrow_lossless_conversion = true` reaches every session that has none of its own).
+  // Read from what a result does, the value that matters whatever scope set it (in this
+  // DuckDB, current_setting() read right after a SQL SET SESSION did not always agree).
+  // The SDK keeps the session document's options and reads them again after this
+  // session's SET/USE/ATTACH statements and option changes, so another session's
+  // SET GLOBAL shows at the next of those.
+  const auto schema = QueryArrow(connection_.get(), "SELECT NULL::HUGEINT AS v")->schema();
+  return schema->num_fields() == 1 && schema->field(0)->type()->id() != arrow::Type::DECIMAL128;
 }
 
 void DuckDBSession::Commit() { EndTransaction("COMMIT"); }

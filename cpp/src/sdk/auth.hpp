@@ -23,8 +23,10 @@ class TokenStore : public TokenService {
   // The whole Principal is kept, its certificate thumbprint included.
   bool BindsCertificates() const override { return true; }
 
-  // Drops expired tokens.
+  // Drops tokens that expired more than kExpiredKept ago. Until then an expired token is
+  // refused with reason token_expired (spec §4.2): only its holder can present it.
   void Sweep();
+  static constexpr std::chrono::hours kExpiredKept{1};
 
  private:
   struct Entry {

@@ -52,13 +52,16 @@ enum class ErrorCode {
   kUnsupportedGrantType,
 };
 
-// Why a session ended (spec §5.6), the `reason` of a session_ended error.
-namespace session_ended_reason {
-inline constexpr const char* kKilled = "killed";
+// Why a session ended (spec §5.6) or a token stopped standing (spec §4.2): the `reason`
+// of a session_ended error, and of an invalid_token error for a token the server issued
+// and verified (never for one it can't tell is its own).
+namespace reason {
+inline constexpr const char* kKilled = "killed";  // session_ended only
 inline constexpr const char* kCredentialsChanged = "credentials_changed";
 inline constexpr const char* kPrincipalDropped = "principal_dropped";
+inline constexpr const char* kTokenRevoked = "token_revoked";
 inline constexpr const char* kTokenExpired = "token_expired";
-}  // namespace session_ended_reason
+}  // namespace reason
 
 // The stable machine-readable name ("permission_denied").
 std::string_view CodeName(ErrorCode code);
@@ -87,9 +90,19 @@ class Error : public std::runtime_error {
     return *this;
   }
 
-  // A session_ended error and its reason (spec §5.6, session_ended_reason).
+  // A session_ended error and its reason (spec §5.6, warpsql::reason).
   static Error SessionEnded(std::string reason, std::string detail) {
     Error error(ErrorCode::kSessionEnded, std::move(detail));
+    error.reason_ = std::move(reason);
+    return error;
+  }
+  // An invalid_token error that says why the token no longer stands (spec §4.2,
+  // warpsql::reason). Only for a token the server issued and verified: a token it can't
+  // tell is its own (malformed, forged, tampered, unknown) gets a plain
+  // Error(kInvalidToken), so a reason never tells anyone but the token's holder about
+  // its principal.
+  static Error InvalidToken(std::string reason, std::string detail) {
+    Error error(ErrorCode::kInvalidToken, std::move(detail));
     error.reason_ = std::move(reason);
     return error;
   }
@@ -97,7 +110,8 @@ class Error : public std::runtime_error {
   ErrorCode code() const { return code_; }
   // The SQL standard's five-character class and subclass, or empty.
   const std::string& sqlstate() const { return sqlstate_; }
-  // A session_ended error's reason; a session_ended error without one reports "killed".
+  // A session_ended error's reason (one without reports "killed"), or an invalid_token
+  // error's (empty when the server doesn't say).
   const std::string& reason() const { return reason_; }
 
  private:

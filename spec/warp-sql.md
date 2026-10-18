@@ -188,6 +188,29 @@ malformed, expired or forged token gets `401` with code `invalid_token` and a
 `WWW-Authenticate: Bearer` header. Servers MUST NOT read credentials from cookies,
 which keeps the protocol immune to cross-site request forgery by construction.
 
+**Why a token stopped working.** A token can stop standing before it expires: a server
+that ends a principal's tokens when its credentials change, when it is dropped or
+disabled, or when a token is revoked refuses them from then on. When the server refuses
+an *authentic* token, one it issued itself and has verified as unaltered (its signature
+checks, or it is one of the server's own opaque tokens), it SHOULD say why in a `reason`
+field of the problem document (§11):
+
+| `reason` | When |
+|---|---|
+| `token_expired` | The token's lifetime ended |
+| `token_revoked` | The token itself was revoked (for example a scoped token, or one it was derived from) |
+| `credentials_changed` | The principal's password or other credentials changed after the token was issued |
+| `principal_dropped` | The principal was dropped or disabled, so it can no longer sign in |
+
+A server MUST NOT send a `reason` for a token it cannot verify as its own (malformed,
+forged, altered, signed with another key, unknown): the reason tells something about the
+principal the token names, and only the holder of a real token may learn it. The same
+token never starts working again, so a client SHOULD NOT retry with it; after
+`token_expired` it signs in again, and after `credentials_changed` or `principal_dropped`
+signing in with the old credentials fails too, so a client SHOULD show the reason to the
+person rather than retry. Sessions the token was used with may have ended for the same
+reason (§5.6).
+
 ### 4.3 Browser sign-in (optional capability `oauth_browser`)
 
 For clients that cannot handle a redirect themselves (command-line tools, desktop
@@ -266,7 +289,13 @@ token (for example a server's scoped tokens) MUST carry the same binding.
 revocation lists) checks every certificate of the client's chain, not only the leaf (a
 revoked intermediate CA revokes what it issued), and refuses a revoked certificate at the
 handshake. It SHOULD fail closed: a CA with no revocation data, or data past its
-`nextUpdate`, fails the chain unless the operator explicitly allows it. It SHOULD pick
+`nextUpdate`, fails the chain unless the operator explicitly allows it. A refusal at the
+handshake is a TLS alert (`certificate_revoked`, or `certificate_required` when the client
+sent no certificate); with TLS 1.3 the client's side of the handshake is already over
+when the server checks the certificate, so the alert reaches the client on its first
+read. Clients SHOULD report such an alert as the refusal it stands for (this section's
+`certificate_revoked` and `client_certificate_required`), not as a server they could
+not reach. It SHOULD pick
 up new revocation data without a restart and SHOULD then re-check the certificates of
 connections already open, answering their next request with `certificate_revoked`; it
 SHOULD also re-check them when the data it verified them with passes its `nextUpdate`. With
@@ -379,9 +408,18 @@ code `session_ended` and a `reason` field in the problem document (§11), one of
 | `reason` | When |
 |---|---|
 | `killed` | An administrator ended it (e.g. SQL `KILL SESSION`) |
-| `credentials_changed` | The principal's password or credentials changed |
-| `principal_dropped` | The principal no longer exists |
-| `token_expired` | The access token used for the request has expired |
+| `credentials_changed` | The principal's password or credentials changed, or something else the server ties the session's rights to |
+| `principal_dropped` | The principal was dropped or disabled |
+| `token_revoked` | The token the session was opened with was revoked |
+| `token_expired` | The token the session was opened with expired, and the session could do nothing more without it (for example a scoped token's session) |
+
+The token is checked before the session (§4.2), and the events that end a session for
+`credentials_changed`, `principal_dropped`, `token_revoked` or `token_expired` usually
+end the token it was opened with too. So a request with the session's own token gets
+`invalid_token` with the same `reason` first, and `session_ended` reaches a client that
+has signed in again (or holds another token of the same principal) and uses the old
+session; a `killed` session's token still stands, so its next request gets
+`session_ended` directly. Either way the client learns the reason from the first refusal.
 
 After `session_ended` the client MUST get a new access token before creating a new
 session.

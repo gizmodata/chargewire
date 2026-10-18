@@ -147,6 +147,13 @@ def test_an_idle_session_is_not_found_and_never_recreated():
         assert stop_server(server=server) == 0, server.log_tail()
 
 
+def tampered(token: str) -> str:
+    """The token with one character changed, well inside it (the last base64url
+    character of a signature can carry only padding bits)."""
+    at = len(token) - 10
+    return token[:at] + ("B" if token[at] == "A" else "A") + token[at + 1:]
+
+
 def test_an_expired_token_is_refused_until_the_client_signs_in_again():
     flag = os.environ.get("WARP_SQL_TEST_SERVER_TOKEN_LIFETIME_FLAG", "--token-lifetime-seconds")
     server = own_server(flag, "2")
@@ -154,15 +161,20 @@ def test_an_expired_token_is_refused_until_the_client_signs_in_again():
         warp = Warp(base_url=server.base_url, username=server.username, password=server.password)
         sid = warp.new_session()
         time.sleep(3)
+        # §4.2: the server's own token, expired, says why; the session itself still stands.
         response = warp.submit(session_id=sid, sql="SELECT 1", arrow=True)
-        assert response.status_code == 401, response.text
-        problem = response.json()
-        assert problem["code"] in ("invalid_token", "session_ended"), problem
-        if problem["code"] == "session_ended":
-            assert problem["reason"] == "token_expired", problem
-        assert "Bearer" in response.headers.get("www-authenticate", "")
+        problem = assert_problem(response=response, status=401, code="invalid_token")
+        assert problem.get("reason") == "token_expired", problem
+        assert response.headers.get("www-authenticate") == "Bearer"
+        no_session = warp.http.post(url="/warp/v1/sessions", headers=warp.headers(), json={})
+        assert assert_problem(response=no_session, status=401, code="invalid_token").get("reason") == "token_expired"
+        # The same token altered is not one the server can tell is its own: no reason,
+        # so nothing about its principal reaches someone who doesn't hold the real one.
+        forged = warp.http.get(url=warp.session_url(sid), headers={"Authorization": f"Bearer {tampered(warp.token)}"})
+        assert "reason" not in assert_problem(response=forged, status=401, code="invalid_token"), forged.text
         warp.token = warp.login()
         assert warp.http.post(url="/warp/v1/sessions", headers=warp.headers(), json={}).status_code == 201
+        assert warp.submit(session_id=sid, sql="SELECT 1", arrow=True).status_code == 200
         warp.close()
     finally:
         assert stop_server(server=server) == 0, server.log_tail()
