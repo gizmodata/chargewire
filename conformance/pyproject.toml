@@ -12,4 +12,7 @@ dependencies = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["mtls: starts servers of its own with mutual TLS (needs WARP_SQL_TEST_SERVER_BINARY)"]
+markers = [
+  "mtls: starts servers of its own with mutual TLS (needs WARP_SQL_TEST_SERVER_BINARY)",
+  "own_server: starts a server of its own with other flags (needs WARP_SQL_TEST_SERVER_BINARY)",
+]

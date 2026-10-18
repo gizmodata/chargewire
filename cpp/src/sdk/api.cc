@@ -221,11 +221,16 @@ Task<Response> Api::Handle(Request& request) {
   }
   response.headers.emplace_back("Warp-Request-Id", request.request_id);
 
-  // CORS: only for origins on the allow-list (spec §9.5).
+  // CORS: only for origins on the allow-list (spec §9.5), each named exactly (never "*").
+  // Credentials are allowed for them: a browser presents the user's client certificate
+  // (§4.4) on a cross-origin request only in credentials mode "include", and then reads the
+  // answer only if it says Access-Control-Allow-Credentials. The server reads no cookies
+  // (§4.2), so this adds no cross-site request forgery exposure.
   const std::string_view origin = request.Header("Origin");
   const auto& allowed = state_.options.cors_allowed_origins;
   if (!origin.empty() && std::ranges::find(allowed, origin) != allowed.end()) {
     response.headers.emplace_back("Access-Control-Allow-Origin", std::string(origin));
+    response.headers.emplace_back("Access-Control-Allow-Credentials", "true");
     response.headers.emplace_back("Vary", "Origin");
     response.headers.emplace_back(
         "Access-Control-Expose-Headers",

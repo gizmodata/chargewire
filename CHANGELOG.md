@@ -9,6 +9,14 @@ spec's version is the repository's version.
 
 ### Added
 
+- CORS with credentials (spec §9.5): the SDK answers an allowed origin, preflights
+  included, with `Access-Control-Allow-Credentials: true` beside the origin itself (never
+  `*`), so a page there can send requests with `credentials: "include"` and a browser
+  presents the user's client certificate for the `client_certificate` grant. Other origins
+  still get no CORS headers. Conformance: `test_http.py`'s `own_server` tests (an allowed
+  origin's answers and preflight, another origin's), with `WARP_SQL_TEST_SERVER_CORS_FLAG`
+  naming a server's own flag (Hardcharger: `--cors-origins`).
+
 - Mutual TLS that carries identity (spec §4.4, §9.6; capability `mtls_identity`): the
   `client_certificate` grant signs in with the connection's verified client certificate and
   no password. The identity is one configured part of the certificate (SAN e-mail by

@@ -836,6 +836,15 @@ same rules, so a client can't read around them.
 - Servers MUST NOT send `Access-Control-Allow-Origin: *` together with
   `Access-Control-Allow-Credentials`. Cross-origin access SHOULD be an explicit
   allow-list of origins, off by default.
+- To an origin on the allow-list a server SHOULD answer (preflights included) with that
+  origin in `Access-Control-Allow-Origin` and `Access-Control-Allow-Credentials: true`. A
+  browser presents the user's client certificate (§4.4) on a cross-origin request only
+  when the page asks for credentials (`credentials: "include"`), and then lets the page
+  read the answer only if it carries both. CORS preflights carry no credentials (Fetch
+  standard), and a browser may not present a certificate on one: a server that refuses
+  handshakes without a certificate can fail the preflight, so for browsers on another
+  origin, make certificates optional at the handshake. On the server's own origin there is
+  no preflight.
 - Every response MUST carry `X-Content-Type-Options: nosniff`. Responses with query
   results MUST carry `Cache-Control: no-store`.
 - Because credentials are bearer tokens in a header (never cookies), the protocol is
