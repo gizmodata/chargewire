@@ -105,23 +105,28 @@ void Session::DestroyEngine() {
   // Destroyed outside the lock: closing an engine session can take a while.
 }
 
-void Session::Interrupt() {
+void Session::Interrupt(CancelReason reason) {
   std::lock_guard lock(engine_mutex_);
   if (engine_) {
-    engine_->Interrupt();
+    engine_->Cancel(CancelReasonName(reason));
   }
 }
 
-void Session::InterruptIfRunning(const Statement* statement) {
+void Session::InterruptIfRunning(const Statement* statement, CancelReason reason) {
   std::lock_guard lock(engine_mutex_);
   if (engine_ && running_ == statement) {
-    engine_->Interrupt();
+    engine_->Cancel(CancelReasonName(reason));
   }
 }
 
 void Session::SetRunning(const Statement* statement) {
   std::lock_guard lock(engine_mutex_);
   running_ = statement;
+}
+
+bool Session::IsRunning(const Statement* statement) const {
+  std::lock_guard lock(engine_mutex_);
+  return running_ != nullptr && running_ == statement;
 }
 
 std::optional<double> Session::Progress() {
@@ -169,11 +174,16 @@ void Session::RefreshTransaction() {
   transaction_ = now;
 }
 
-void Session::AddIngest(std::shared_ptr<IngestOperation> ingest) {
-  std::lock_guard lock(mutex_);
+void Session::ThrowIfClosedLocked() const {
+  if (ended_) throw *ended_;
   if (closed_) {
     throw Error(ErrorCode::kSessionNotFound, "no such session");  // closed since the request found it
   }
+}
+
+void Session::AddIngest(std::shared_ptr<IngestOperation> ingest) {
+  std::lock_guard lock(mutex_);
+  ThrowIfClosedLocked();
   ingests_[ingest->id()] = std::move(ingest);
 }
 
@@ -205,6 +215,21 @@ void Session::AddUpload(const std::shared_ptr<ByteQueue>& upload) {
 void Session::RemoveUpload(const ByteQueue* upload) {
   std::lock_guard lock(mutex_);
   std::erase_if(uploads_, [upload](const auto& held) { return held.get() == upload; });
+}
+
+std::size_t Session::UploadCount() const {
+  std::lock_guard lock(mutex_);
+  return uploads_.size();
+}
+
+std::size_t Session::AbortUploads() {
+  std::vector<std::shared_ptr<ByteQueue>> uploads;
+  {
+    std::lock_guard lock(mutex_);
+    uploads = uploads_;  // each removes itself when its request ends
+  }
+  for (const auto& upload : uploads) upload->Abort();
+  return uploads.size();
 }
 
 std::vector<std::shared_ptr<IngestOperation>> Session::Ingests() const {
@@ -243,9 +268,7 @@ std::shared_ptr<PreparedStatement> Session::RemovePrepared(const std::string& id
 
 void Session::AddStatement(std::shared_ptr<Statement> statement) {
   std::lock_guard lock(mutex_);
-  if (closed_) {
-    throw Error(ErrorCode::kSessionNotFound, "no such session");  // closed since the request found it
-  }
+  ThrowIfClosedLocked();
   statements_[statement->id()] = std::move(statement);
 }
 
@@ -298,12 +321,23 @@ void Session::ForgetFinished(WallClock::time_point now, std::chrono::seconds kee
   }
 }
 
-void Session::Touch() {
+void Session::Touch(const Client& client) {
+  const auto now = WallClock::now();
   std::lock_guard lock(mutex_);
-  if (closed_) {
-    throw Error(ErrorCode::kSessionNotFound, "no such session");
-  }
+  ThrowIfClosedLocked();
   last_activity_ = Clock::now();
+  // Assigned only when they change: a session's requests mostly come over one connection.
+  LastRequest& last = last_request_;
+  if (last.address != client.address) last.address.assign(client.address);
+  if (last.user_agent != client.user_agent) last.user_agent.assign(client.user_agent);
+  if (last.tls_version != client.tls_version) last.tls_version.assign(client.tls_version);
+  if (last.certificate != client.certificate) last.certificate = client.certificate;
+  last.at = now;
+}
+
+Session::LastRequest Session::last_request() const {
+  std::lock_guard lock(mutex_);
+  return last_request_;
 }
 
 bool Session::IdleLocked(Clock::time_point cutoff) const {
@@ -327,12 +361,28 @@ bool Session::IdleLocked(Clock::time_point cutoff) const {
 void Session::Close(CancelReason reason) {
   {
     std::lock_guard lock(mutex_);
-    if (closed_) {
+    if (torn_down_) {
       return;
     }
     closed_ = true;
+    torn_down_ = true;
   }
   Teardown(reason);
+}
+
+bool Session::End(const Error& why) {
+  std::lock_guard lock(mutex_);
+  if (closed_) {
+    return false;
+  }
+  closed_ = true;
+  ended_ = why;
+  return true;
+}
+
+std::optional<Error> Session::ended() const {
+  std::lock_guard lock(mutex_);
+  return ended_;
 }
 
 bool Session::CloseIfIdle(Clock::time_point cutoff, CancelReason reason) {
@@ -342,6 +392,7 @@ bool Session::CloseIfIdle(Clock::time_point cutoff, CancelReason reason) {
       return false;
     }
     closed_ = true;
+    torn_down_ = true;
   }
   Teardown(reason);
   return true;
@@ -377,7 +428,7 @@ void Session::Teardown(CancelReason reason) {
     statement->Release();
   }
   if (interrupt) {
-    Interrupt();
+    Interrupt(reason);
   }
 }
 
@@ -395,8 +446,20 @@ std::shared_ptr<Session> SessionRegistry::Find(const std::string& id,
                                                const Principal& principal) const {
   std::lock_guard lock(mutex_);
   auto it = sessions_.find(id);
-  if (it == sessions_.end() || !it->second->owner().SameIdentity(principal) ||
-      it->second->closed()) {
+  if (it == sessions_.end()) {
+    // An ended session's owner learns why (spec §5.6), as long as it is remembered.
+    if (auto ended = ended_.find(id); ended != ended_.end() && ended->second.owner.SameIdentity(principal)) {
+      throw ended->second.why;
+    }
+    throw Error(ErrorCode::kSessionNotFound, "no such session");
+  }
+  if (!it->second->owner().SameIdentity(principal)) {
+    throw Error(ErrorCode::kSessionNotFound, "no such session");
+  }
+  if (auto why = it->second->ended()) {
+    throw *why;
+  }
+  if (it->second->closed()) {
     throw Error(ErrorCode::kSessionNotFound, "no such session");
   }
   // A session keeps the binding of the token that opened it (spec §4.4): every request on
@@ -412,6 +475,32 @@ std::shared_ptr<Session> SessionRegistry::Find(const std::string& id,
                                 "it with a token from that certificate's sign-in");
   }
   return it->second;
+}
+
+std::shared_ptr<Session> SessionRegistry::Get(const std::string& id) const {
+  std::lock_guard lock(mutex_);
+  auto it = sessions_.find(id);
+  return it == sessions_.end() ? nullptr : it->second;
+}
+
+void SessionRegistry::Retire(const std::string& id, const Principal& owner, const Error& why,
+                             Clock::time_point until) {
+  std::lock_guard lock(mutex_);
+  sessions_.erase(id);
+  ended_.insert_or_assign(id, Ended{owner, why, until});
+}
+
+bool SessionRegistry::ForgetEnded(const std::string& id, const Principal& principal) {
+  std::lock_guard lock(mutex_);
+  auto it = ended_.find(id);
+  if (it == ended_.end() || !it->second.owner.SameIdentity(principal)) return false;
+  ended_.erase(it);
+  return true;
+}
+
+void SessionRegistry::SweepEnded(Clock::time_point now) {
+  std::lock_guard lock(mutex_);
+  std::erase_if(ended_, [now](const auto& item) { return item.second.until <= now; });
 }
 
 std::shared_ptr<Session> SessionRegistry::Remove(const std::string& id) {

@@ -527,7 +527,10 @@ three are terminal. `progress` is optional and every field in it is optional;
 
 A failed or cancelled statement carries `error`, a problem document (§11), and a
 cancelled one also carries `cancel_reason`: `client`, `timeout`, `session_closed`,
-`killed`, `privilege_revoked` or `server_shutdown`. A cancelled statement's error code
+`killed`, `cancelled`, `privilege_revoked` or `server_shutdown`. `killed`: an
+administrator ended the session (§5.6) and its work with it; `cancelled`: the engine
+cancelled it for someone else, the session going on (an administrator's, or the same
+principal's, SQL such as Hardcharger's `hardcharger_cancel()`). A cancelled statement's error code
 is `statement_timeout` when its timeout ran out and `statement_cancelled` otherwise.
 A client MUST treat a `failed` or `cancelled` document as the statement's error whatever
 the response's status code (an idempotent replay, §6.7, answers `200` with the

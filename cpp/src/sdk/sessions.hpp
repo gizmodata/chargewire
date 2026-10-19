@@ -31,13 +31,16 @@ class Session {
   // Destroys the engine session. Call on strand(), after Close().
   void DestroyEngine();
 
-  // Safe from any thread while the engine is busy.
-  void Interrupt();
+  // Safe from any thread while the engine is busy. `reason`: the cancel_reason it is for
+  // (EngineSession::Cancel).
+  void Interrupt(CancelReason reason);
   // Interrupts the engine only while `statement` is the one running on it, so a late
   // interrupt never reaches the session's next statement. Safe from any thread.
-  void InterruptIfRunning(const Statement* statement);
+  void InterruptIfRunning(const Statement* statement, CancelReason reason);
   // The statement the engine is running (nullptr when idle). Set on strand().
   void SetRunning(const Statement* statement);
+  // Whether `statement` is the one running on the engine. Safe from any thread.
+  bool IsRunning(const Statement* statement) const;
   std::optional<double> Progress();
   std::optional<std::chrono::milliseconds> DefaultStatementTimeout();
   // Throws session_ended when the engine ended the session (EngineSession::CheckEnded).
@@ -72,6 +75,10 @@ class Session {
   // ones). On a closed session it is aborted at once.
   void AddUpload(const std::shared_ptr<ByteQueue>& upload);
   void RemoveUpload(const ByteQueue* upload);
+  // Aborts every one-request bulk ingest body still arriving (its load rolls back);
+  // returns how many.
+  std::size_t AbortUploads();
+  std::size_t UploadCount() const;
 
   void AddStatement(std::shared_ptr<Statement> statement);
   // Throws statement_not_found.
@@ -83,13 +90,37 @@ class Session {
   void ForgetFinished(WallClock::time_point now, std::chrono::seconds keep,
                       std::size_t max_finished);
 
-  // Records a request on the session. Throws session_not_found once it is closed: a
-  // request that found the session just before an idle sweep (or a KILL) closed it must
-  // not go on to run in it.
-  void Touch();
+  // Where a request came from, for Server::Sessions().
+  struct Client {
+    std::string_view address;
+    std::string_view user_agent;
+    std::string_view tls_version;  // empty without TLS
+    std::shared_ptr<const ClientCertificate> certificate;
+  };
+  // Records a request on the session. Throws session_not_found once it is closed (or the
+  // session's own error once it was ended): a request that found the session just before
+  // an idle sweep (or a KILL) closed it must not go on to run in it.
+  void Touch(const Client& client = {});
+  // The latest request's client, and when it came.
+  struct LastRequest {
+    std::string address;
+    std::string user_agent;
+    std::string tls_version;
+    std::shared_ptr<const ClientCertificate> certificate;
+    WallClock::time_point at;
+  };
+  LastRequest last_request() const;
+  WallClock::time_point created_at() const { return created_at_; }
 
-  // Ends the session: cancels its statements and frees their results.
+  // Ends the session: cancels its statements and frees their results. Also finishes ending
+  // a session End() ended.
   void Close(CancelReason reason);
+  // Ends the session for `why` (Server::EndSession): it takes nothing new, and every
+  // request naming it gets `why` (Touch). Nothing it runs is cancelled; Close() then tears
+  // it down. Returns false when it was already closed or ended.
+  bool End(const Error& why);
+  // The error End() ended it with.
+  std::optional<Error> ended() const;
   // Closes the session if it has been idle since `cutoff`: no request since then, nothing
   // running, and no retained result kept. The check and the close are one step under the
   // session's lock, as Touch() is, so a request either touches it first (and it stays) or
@@ -102,6 +133,7 @@ class Session {
   const std::string id_;
   const Principal owner_;
   EngineStrand strand_;
+  const WallClock::time_point created_at_ = WallClock::now();
 
   mutable std::mutex engine_mutex_;  // guards engine_ lifetime against Interrupt/Progress
   std::unique_ptr<EngineSession> engine_;
@@ -115,25 +147,45 @@ class Session {
   std::map<std::string, std::shared_ptr<IngestOperation>> ingests_;
   std::vector<std::shared_ptr<ByteQueue>> uploads_;
   Clock::time_point last_activity_;
-  bool closed_ = false;
+  LastRequest last_request_;
+  bool closed_ = false;      // takes nothing new
+  bool torn_down_ = false;   // its statements were cancelled and their results freed
+  std::optional<Error> ended_;  // End()'s error
 
   bool IdleLocked(Clock::time_point cutoff) const;  // mutex_ held
-  void Teardown(CancelReason reason);              // after closed_ was set
+  void Teardown(CancelReason reason);              // after closed_ and torn_down_ were set
+  void ThrowIfClosedLocked() const;                // mutex_ held
 };
 
 class SessionRegistry {
  public:
   void Add(std::shared_ptr<Session> session);
   // The caller's session. Unknown ids and other principals' sessions both get
-  // session_not_found (spec §9.2).
+  // session_not_found (spec §9.2); a session that was ended, for its owner, the error it
+  // was ended with, as long as it is remembered (Retire).
   std::shared_ptr<Session> Find(const std::string& id, const Principal& principal) const;
+  // Any principal's session, or null.
+  std::shared_ptr<Session> Get(const std::string& id) const;
   std::shared_ptr<Session> Remove(const std::string& id);
+  // Removes an ended session, remembering until `until` that its owner's requests get
+  // `why`.
+  void Retire(const std::string& id, const Principal& owner, const Error& why, Clock::time_point until);
+  // Forgets an ended session: a DELETE of it. Returns whether it was remembered.
+  bool ForgetEnded(const std::string& id, const Principal& principal);
+  // Forgets ended sessions remembered until before `now`.
+  void SweepEnded(Clock::time_point now);
   std::vector<std::shared_ptr<Session>> All() const;
   std::size_t size() const;
 
  private:
+  struct Ended {
+    Principal owner;
+    Error why;
+    Clock::time_point until;
+  };
   mutable std::mutex mutex_;
   std::map<std::string, std::shared_ptr<Session>> sessions_;
+  std::map<std::string, Ended> ended_;
 };
 
 }  // namespace warpsql::detail

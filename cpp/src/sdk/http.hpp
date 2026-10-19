@@ -37,6 +37,7 @@ struct Request {
   // expired), or empty. Checked before each request on the connection.
   std::string client_certificate_problem;
   std::string peer;  // the client's address:port
+  std::string_view tls_version;  // the connection's TLS version ("TLSv1.3"), empty without TLS
   // Filled in as the request is authenticated, for SecurityEvents: the token's principal
   // once Validate() accepted it, and the identity a sign-in named.
   mutable std::optional<Principal> token_principal;

@@ -654,8 +654,12 @@ std::shared_ptr<Session> Api::OwnSession(const Request& request, const std::stri
   const Principal principal = Authenticate(request, false);
   auto session = state_.sessions.Find(session_id, principal);
   state_.tokens->Accepted(BearerToken(request.Header("Authorization")), principal);
-  session->Touch();
+  session->Touch(ClientOf(request));
   return session;
+}
+
+Session::Client Api::ClientOf(const Request& request) {
+  return {request.peer, request.Header("User-Agent"), request.tls_version, request.client_certificate};
 }
 
 void Api::RejectIfDraining() const {
@@ -697,6 +701,7 @@ Task<Response> Api::CreateSession(Request& request) {
   });
   session->SetEngine(std::move(opened.first));
   session->set_options(std::move(opened.second));
+  session->Touch(ClientOf(request));
   // The engine's first answer (a session opened with autocommit off starts in one), on its
   // thread as every engine call is.
   co_await net::co_spawn(session->strand(), [session]() -> Task<void> {
@@ -738,7 +743,16 @@ Task<Response> Api::UpdateSession(Request& request, const std::string& session_i
 }
 
 Task<Response> Api::DeleteSession(Request& request, const std::string& session_id) {
-  auto session = OwnSession(request, session_id);
+  std::shared_ptr<Session> session;
+  try {
+    session = OwnSession(request, session_id);
+  } catch (const Error& error) {
+    // A session the engine ended (spec §5.6): its client is done with it, and there is
+    // nothing left to free (or its teardown, under way, frees it).
+    if (error.code() != ErrorCode::kSessionEnded) throw;
+    state_.sessions.ForgetEnded(session_id, Authenticate(request, false));
+  }
+  if (!session) co_return NoContent();
   state_.sessions.Remove(session_id);
   session->Close(CancelReason::kSessionClosed);
   net::post(session->strand(), [session] { session->DestroyEngine(); });
@@ -771,7 +785,7 @@ json::object Api::StatementDocument(Session& session, Statement& statement) cons
 void Api::Cancel(const std::shared_ptr<Session>& session, const std::shared_ptr<Statement>& statement,
                  CancelReason reason) {
   if (statement->RequestCancel(reason)) {
-    session->InterruptIfRunning(statement.get());
+    session->InterruptIfRunning(statement.get(), statement->cancel_reason());
     // A running statement may not have reached the engine yet (the backend is still
     // checking or queueing it), and an engine forgets an interrupt that comes before
     // its query starts (DuckDB clears it then): keep interrupting until it ends.
@@ -786,7 +800,7 @@ void Api::KeepInterrupting(std::shared_ptr<Session> session, std::shared_ptr<Sta
     if (ec || statement->IsTerminal()) {
       return;
     }
-    session->InterruptIfRunning(statement.get());
+    session->InterruptIfRunning(statement.get(), statement->cancel_reason());
     KeepInterrupting(std::move(session), std::move(statement));
   });
 }
@@ -1759,6 +1773,95 @@ Task<Response> Api::CancelSession(Request& request, const std::string& session_i
     }
   }
   co_return JsonResponse(http::status::accepted, json::object{{"cancelled", std::move(cancelled)}});
+}
+
+std::size_t Api::CancelWork(const std::shared_ptr<Session>& session, CancelReason reason) {
+  std::size_t stopped = 0;
+  for (const auto& statement : session->Statements()) {
+    if (!statement->IsTerminal()) {
+      Cancel(session, statement, reason);
+      stopped++;
+    }
+  }
+  for (const auto& ingest : session->Ingests()) {
+    if (!ingest->Finished()) {
+      ingest->Abort(Error(ErrorCode::kStatementCancelled,
+                          "the ingest was aborted (" + std::string(CancelReasonName(reason)) + ")"));
+      stopped++;
+    }
+  }
+  stopped += session->AbortUploads();
+  return stopped;
+}
+
+SessionActivity Api::Describe(Session& session) const {
+  SessionActivity out;
+  out.session_id = session.id();
+  out.username = session.owner().name;
+  out.created_at = session.created_at();
+  out.token_certificate_bound = !session.owner().certificate_thumbprint.empty();
+  out.ended = session.ended().has_value();
+  const Session::LastRequest last = session.last_request();
+  out.last_request_at = last.at;
+  out.client_address = last.address;
+  out.user_agent = last.user_agent;
+  out.tls = !last.tls_version.empty();
+  out.tls_version = last.tls_version;
+  if (last.certificate) {
+    out.client_certificate_thumbprint = last.certificate->thumbprint;
+    if (state_.options.tls) {
+      try {
+        out.certificate_identity = CertificateIdentity(*last.certificate, state_.options.tls->client_identity_source);
+      } catch (const std::exception&) {
+        // no single identity in it: it signs nobody in
+      }
+    }
+  }
+  // The statement it works on: the one on the engine, else the oldest queued one, else
+  // one whose result is being read.
+  const Statement* current = nullptr;
+  Statement::Snapshot chosen;
+  int rank = 0;  // 3 running on the engine, 2 queued, 1 read
+  for (const auto& statement : session.Statements()) {
+    const Statement::Snapshot snap = statement->Describe();
+    out.open_result_streams += snap.active_readers;
+    if (snap.holds_retained_result) {
+      out.retained_results++;
+      out.retained_rows += snap.rows;
+    }
+    const bool terminal = snap.state == StatementState::kSucceeded || snap.state == StatementState::kFailed ||
+                          snap.state == StatementState::kCancelled;
+    int mine = 0;
+    if (!terminal && session.IsRunning(statement.get())) {
+      mine = 3;
+    } else if (!terminal) {
+      mine = 2;
+    } else if (snap.active_readers > 0) {
+      mine = 1;
+    }
+    if (mine > rank || (mine == rank && mine > 0 && snap.submitted_at < chosen.submitted_at)) {
+      rank = mine;
+      current = statement.get();
+      chosen = snap;
+    }
+  }
+  if (current != nullptr) {
+    out.statement_id = current->id();
+    out.statement_state = StateName(chosen.state);
+    out.statement_has_rows = chosen.has_rows;
+    out.statement_batches = chosen.batches;
+    out.statement_submitted_at = chosen.submitted_at;
+    out.statement_started_at = chosen.started_at;
+    if (chosen.state == StatementState::kRunning || chosen.state == StatementState::kQueued) {
+      out.cancel_reason = CancelReasonName(chosen.cancel_reason);
+    }
+    out.result_partitions = static_cast<int>(chosen.partitions.value_or(0));
+  }
+  for (const auto& ingest : session.Ingests()) {
+    if (!ingest->Finished()) out.open_ingest_parts += ingest->ActiveUploads();
+  }
+  out.open_ingest_parts += static_cast<int>(session.UploadCount());
+  return out;
 }
 
 Task<Response> Api::DeleteStatement(Request& request, const std::string& session_id,

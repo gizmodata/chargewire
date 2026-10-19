@@ -224,6 +224,11 @@ void IngestOperation::Abort(const Error& why) {
   state_ = State::kAborted;
 }
 
+int IngestOperation::ActiveUploads() const {
+  std::lock_guard lock(mutex_);
+  return active_uploads_;
+}
+
 bool IngestOperation::Finished() const {
   std::lock_guard lock(mutex_);
   return state_ == State::kCommitted || state_ == State::kFailed || state_ == State::kAborted;

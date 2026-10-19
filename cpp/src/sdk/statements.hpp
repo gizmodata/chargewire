@@ -22,9 +22,11 @@ namespace warpsql::detail {
 
 enum class StatementState { kQueued, kRunning, kSucceeded, kFailed, kCancelled };
 
-enum class CancelReason { kNone, kClient, kTimeout, kSessionClosed, kServerShutdown };
+enum class CancelReason { kNone, kClient, kTimeout, kSessionClosed, kServerShutdown, kKilled, kCancelled };
 
 std::string_view StateName(StatementState state);
+// The statement document's cancel_reason (spec §6.2): "client", "timeout", ...; empty for kNone.
+std::string_view CancelReasonName(CancelReason reason);
 
 // What a reader finds at a batch position.
 enum class ReadStep { kBatch, kWait, kEnd, kFailed };
@@ -119,6 +121,23 @@ class Statement {
   bool Forgettable(WallClock::time_point now, std::chrono::seconds keep) const;
   // When the statement finished, if it has.
   std::optional<WallClock::time_point> finished_at() const;
+
+  // What a description of the session reads (Server::Sessions()), in one look.
+  struct Snapshot {
+    StatementState state = StatementState::kQueued;
+    CancelReason cancel_reason = CancelReason::kNone;
+    bool has_rows = false;
+    WallClock::time_point submitted_at;
+    std::optional<WallClock::time_point> started_at;
+    std::optional<std::size_t> partitions;  // once the split is decided, for a result with rows
+    int active_readers = 0;
+    bool holds_retained_result = false;
+    int64_t rows = 0;     // produced so far
+    int64_t batches = 0;  // produced so far
+  };
+  Snapshot Describe() const;
+  // The reason a cancellation was requested for (kNone: none was).
+  CancelReason cancel_reason() const;
 
  private:
   void Terminate(StatementState state, std::optional<Error> error);  // mutex_ held

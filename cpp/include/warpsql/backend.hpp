@@ -201,6 +201,16 @@ class EngineSession {
   // Asks the running Execute(), or the read of its rows, to stop. Safe from any thread.
   virtual void Interrupt();
 
+  // Interrupt(), for a statement cancelled for `reason`: the statement document's
+  // cancel_reason (spec §6.2: "client", "timeout", "session_closed", "killed",
+  // "cancelled", "server_shutdown"), for an engine that records why its work stopped. The
+  // SDK calls this, never Interrupt() directly, when it cancels a statement; the default
+  // calls Interrupt(). Safe from any thread.
+  virtual void Cancel(std::string_view reason) {
+    (void)reason;
+    Interrupt();
+  }
+
   // Fraction of the running statement done, in [0, 1], when the engine knows.
   virtual std::optional<double> Progress();
 

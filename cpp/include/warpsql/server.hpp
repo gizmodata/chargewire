@@ -147,6 +147,52 @@ struct ServerOptions {
   PlainHandler plain_handler;
 };
 
+// One session as the server sees it, for an engine's own view of its sessions (a sessions
+// table, say): Server::Sessions().
+struct SessionActivity {
+  std::string session_id;
+  std::string username;  // the owner (Principal::name)
+  std::chrono::system_clock::time_point created_at;
+  std::chrono::system_clock::time_point last_request_at;
+  // The latest request's connection.
+  std::string client_address;  // address:port
+  std::string user_agent;      // its User-Agent header, or empty
+  bool tls = false;
+  std::string tls_version;     // e.g. "TLSv1.3"; empty without TLS
+  std::string client_certificate_thumbprint;  // its verified client certificate (x5t#S256), or empty
+  // The identity that certificate maps to (TlsOptions::client_identity_source), or empty.
+  std::string certificate_identity;
+  // The session's token is bound to a client certificate (spec §4.4).
+  bool token_certificate_bound = false;
+  // Server::EndSession() ended it: it is unwinding and takes no requests.
+  bool ended = false;
+
+  // The statement the session is working on: the one running on the engine, else the
+  // oldest queued one, else one whose result is being read. Empty id: none.
+  std::string statement_id;
+  std::string statement_state;  // "queued", "running", "succeeded", ...
+  bool statement_has_rows = false;  // its outcome is rows (not an update count)
+  int64_t statement_batches = 0;    // result batches it has produced so far
+  std::chrono::system_clock::time_point statement_submitted_at;
+  std::optional<std::chrono::system_clock::time_point> statement_started_at;
+  // While a cancelled statement unwinds: why (spec §6.2's cancel_reason); else empty.
+  std::string cancel_reason;
+  // That statement's result partitions, once decided; 0: none (no rows, or undecided).
+  int result_partitions = 0;
+
+  int open_result_streams = 0;  // result reads under way, over every statement
+  int open_ingest_parts = 0;    // bulk-ingest bodies being uploaded (spec §8.1, §8.3)
+  int retained_results = 0;     // statements whose retained result is kept (spec §6.5)
+  int64_t retained_rows = 0;    // the rows they hold
+};
+
+// Why Server::CancelSession() cancels a session's work: the statement document's
+// cancel_reason (spec §6.2).
+enum class SessionCancelReason {
+  kCancelled,  // "cancelled": the engine cancelled it for someone (SQL hardcharger_cancel(), ...)
+  kKilled,     // "killed": an administrator ended the session (SQL KILL SESSION, ...)
+};
+
 // Call first in main(), before anything uses OpenSSL. It keeps OpenSSL from freeing its
 // global state at exit: a thread that finishes after that (an engine or HTTP worker
 // still winding down) would otherwise crash in its thread-local RNG cleanup.
@@ -175,6 +221,28 @@ class Server {
   void Stop();
   // Blocks until the server has stopped.
   void Wait();
+
+  // ---- For the engine, about its own sessions (safe from any thread, an engine thread
+  // included, once Start() has run) ----
+
+  // Every session, the ones EndSession() is ending included.
+  std::vector<SessionActivity> Sessions() const;
+  // Stops the work of session `session_id`: every statement queued or running (each ends
+  // cancelled, with `reason` as its cancel_reason, and its result readers get an
+  // incomplete stream, spec §6.6), every partitioned ingest still open (aborted, nothing
+  // written) and every bulk-ingest body still arriving (its load rolls back). The session
+  // itself goes on, ready for its next statement. Returns how many statements and ingests
+  // it stopped (0: it was idle), or nullopt when there is no such session. Must not be
+  // called for the session whose engine call is calling it (its own statement would be
+  // cancelled under it).
+  std::optional<std::size_t> CancelSession(const std::string& session_id, SessionCancelReason reason);
+  // Ends session `session_id`: from now on every request naming it, by its owner, gets
+  // `why` (Error::SessionEnded, spec §5.6), and nothing new starts in it. Once the work it
+  // is running has stopped (cancel it first: this waits for it), its retained results are
+  // freed and its engine session is destroyed, on its engine strand. A DELETE of the
+  // session is then answered 204. Returns false when there is no such session (or it is
+  // already ending).
+  bool EndSession(const std::string& session_id, const Error& why);
 
  private:
   class Impl;

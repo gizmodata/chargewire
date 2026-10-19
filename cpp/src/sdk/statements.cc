@@ -11,23 +11,12 @@ namespace warpsql::detail {
 
 namespace {
 
-std::string_view ReasonName(CancelReason reason) {
-  switch (reason) {
-    case CancelReason::kNone: return "";
-    case CancelReason::kClient: return "client";
-    case CancelReason::kTimeout: return "timeout";
-    case CancelReason::kSessionClosed: return "session_closed";
-    case CancelReason::kServerShutdown: return "server_shutdown";
-  }
-  return "";
-}
-
 Error CancelError(CancelReason reason) {
   if (reason == CancelReason::kTimeout) {
     return Error(ErrorCode::kStatementTimeout, "the statement ran longer than its timeout");
   }
   return Error(ErrorCode::kStatementCancelled,
-               "the statement was cancelled (" + std::string(ReasonName(reason)) + ")");
+               "the statement was cancelled (" + std::string(CancelReasonName(reason)) + ")");
 }
 
 int64_t BatchBytes(const arrow::RecordBatch& batch) {
@@ -43,6 +32,19 @@ int64_t BatchBytes(const arrow::RecordBatch& batch) {
 }
 
 }  // namespace
+
+std::string_view CancelReasonName(CancelReason reason) {
+  switch (reason) {
+    case CancelReason::kNone: return "";
+    case CancelReason::kClient: return "client";
+    case CancelReason::kTimeout: return "timeout";
+    case CancelReason::kSessionClosed: return "session_closed";
+    case CancelReason::kServerShutdown: return "server_shutdown";
+    case CancelReason::kKilled: return "killed";
+    case CancelReason::kCancelled: return "cancelled";
+  }
+  return "";
+}
 
 std::string_view StateName(StatementState state) {
   switch (state) {
@@ -345,7 +347,7 @@ json::object Statement::Document(std::optional<double> progress) const {
     doc["error"] = Problem(*error_, "");
   }
   if (state_ == StatementState::kCancelled) {
-    doc["cancel_reason"] = ReasonName(cancel_reason_);
+    doc["cancel_reason"] = CancelReasonName(cancel_reason_);
   }
 
   json::value result = nullptr;
@@ -505,6 +507,33 @@ bool Statement::Forgettable(WallClock::time_point now, std::chrono::seconds keep
 std::optional<WallClock::time_point> Statement::finished_at() const {
   std::lock_guard lock(mutex_);
   return finished_at_;
+}
+
+Statement::Snapshot Statement::Describe() const {
+  std::lock_guard lock(mutex_);
+  Snapshot out;
+  out.state = state_;
+  out.cancel_reason = cancel_reason_;
+  out.has_rows = kind_ == Kind::kRows;
+  out.submitted_at = submitted_at_;
+  out.started_at = started_at_;
+  if (kind_ == Kind::kRows && split_decided_) out.partitions = partitions_.size();
+  for (const auto& partition : partitions_) {
+    if (partition.reader_active) out.active_readers++;
+  }
+  if (config_.retain && !expired_) {
+    for (const auto& partition : partitions_) {
+      if (!partition.batches.empty()) out.holds_retained_result = true;
+    }
+  }
+  out.rows = row_count_;
+  out.batches = batch_count_;
+  return out;
+}
+
+CancelReason Statement::cancel_reason() const {
+  std::lock_guard lock(mutex_);
+  return cancel_reason_;
 }
 
 bool Statement::HoldsRetainedResult() const {

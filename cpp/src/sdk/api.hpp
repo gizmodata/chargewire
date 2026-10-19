@@ -116,12 +116,18 @@ class Api {
                               const std::string& subject, const std::string& peer) const;
   // Reports the summaries of windows that ended with refusals held back.
   void FlushSecurityEvents() const;
+  // Stops a session's work (Server::CancelSession): its statements queued or running, its
+  // open partitioned ingests and its ingest bodies still arriving. Returns how many.
+  std::size_t CancelWork(const std::shared_ptr<Session>& session, CancelReason reason);
+  // Server::Sessions()'s description of `session`.
+  SessionActivity Describe(Session& session) const;
 
  private:
   void Emit(const SecurityEvent& event) const;
   // Whether the client_certificate grant is offered (spec §4.4).
   bool OffersCertificateSignIn() const;
   std::shared_ptr<Session> OwnSession(const Request& request, const std::string& session_id);
+  static Session::Client ClientOf(const Request& request);
   void RejectIfDraining() const;
   json::object SessionDocument(Session& session) const;
   json::object StatementDocument(Session& session, Statement& statement) const;

@@ -11,6 +11,8 @@
 #include <chrono>
 #include <memory>
 
+#include <arrow/api.h>
+
 #include "sessions.hpp"
 #include "warpsql/errors.hpp"
 
@@ -24,7 +26,9 @@ using warpsql::detail::Clock;
 using warpsql::detail::IngestOperation;
 using warpsql::IngestTarget;
 using warpsql::detail::Session;
+using warpsql::detail::SessionRegistry;
 using warpsql::detail::Statement;
+using warpsql::detail::StatementState;
 
 class SessionLifetime : public ::testing::Test {
  protected:
@@ -88,3 +92,90 @@ TEST_F(SessionLifetime, ARunningStatementKeepsTheSessionOpen) {
 }
 
 }  // namespace
+
+// Server::EndSession (KILL SESSION): an ended session refuses everything with its own
+// error at once, but cancels nothing itself (the engine cancels its work first, then ends
+// it); Close() then tears it down.
+TEST_F(SessionLifetime, AnEndedSessionSaysWhyAndCancelsNothingUntilClosed) {
+  auto session = NewSession();
+  auto running = NewStatement("q_running");
+  session->AddStatement(running);
+  ASSERT_TRUE(running->BeginRunning());
+  const Error why = Error::SessionEnded("killed", "killed by an administrator");
+  ASSERT_TRUE(session->End(why));
+  EXPECT_FALSE(session->End(why));  // once
+  for (const auto& call : std::vector<std::function<void()>>{
+           [&] { session->Touch(); }, [&] { session->AddStatement(NewStatement("q_late")); },
+           [&] { session->AddIngest(std::make_shared<IngestOperation>("i_late", IngestTarget{})); }}) {
+    try {
+      call();
+      FAIL() << "expected session_ended";
+    } catch (const Error& error) {
+      EXPECT_EQ(error.code(), ErrorCode::kSessionEnded);
+      EXPECT_EQ(error.reason(), "killed");
+    }
+  }
+  EXPECT_EQ(running->state(), StatementState::kRunning);  // not cancelled by the end itself
+  EXPECT_FALSE(session->CloseIfIdle(Clock::now() + std::chrono::seconds(1), CancelReason::kSessionClosed));
+  session->Close(CancelReason::kKilled);
+  EXPECT_TRUE(running->CancelRequested());
+  EXPECT_EQ(running->cancel_reason(), CancelReason::kKilled);
+}
+
+// After its teardown the registry remembers an ended session for its owner only, until a
+// DELETE (or the time is up).
+TEST_F(SessionLifetime, ARetiredSessionAnswersItsOwnerWithItsError) {
+  SessionRegistry registry;
+  auto session = NewSession();
+  registry.Add(session);
+  const Error why = Error::SessionEnded("killed", "killed by an administrator");
+  registry.Retire(session->id(), session->owner(), why, Clock::now() + std::chrono::minutes(1));
+  EXPECT_EQ(registry.Get(session->id()), nullptr);
+  try {
+    registry.Find(session->id(), Principal{.name = "alice"});
+    FAIL() << "expected session_ended";
+  } catch (const Error& error) {
+    EXPECT_EQ(error.code(), ErrorCode::kSessionEnded);
+  }
+  ExpectNotFound([&] { registry.Find(session->id(), Principal{.name = "mallory"}); });
+  EXPECT_FALSE(registry.ForgetEnded(session->id(), Principal{.name = "mallory"}));
+  EXPECT_TRUE(registry.ForgetEnded(session->id(), Principal{.name = "alice"}));
+  ExpectNotFound([&] { registry.Find(session->id(), Principal{.name = "alice"}); });
+  // And the sweep forgets one whose time is up.
+  registry.Retire("s_old", session->owner(), why, Clock::now() - std::chrono::seconds(1));
+  registry.SweepEnded(Clock::now());
+  ExpectNotFound([&] { registry.Find("s_old", Principal{.name = "alice"}); });
+}
+
+// What Server::Sessions() reads of a statement.
+TEST(StatementDescribe, ItSaysStateRowsPartitionsReadersAndWhyItWasCancelled) {
+  Statement::Config config;
+  config.retain = true;
+  auto statement = std::make_shared<Statement>("q_d", config);
+  EXPECT_EQ(statement->Describe().state, StatementState::kQueued);
+  ASSERT_TRUE(statement->BeginRunning());
+  auto schema = arrow::schema({arrow::field("v", arrow::int64())});
+  statement->SetRows(schema);
+  arrow::Int64Builder builder;
+  ASSERT_TRUE(builder.AppendValues({1, 2, 3}).ok());
+  std::shared_ptr<arrow::Array> values;
+  ASSERT_TRUE(builder.Finish(&values).ok());
+  ASSERT_TRUE(statement->AddBatch(arrow::RecordBatch::Make(schema, 3, {values})));
+  auto running = statement->Describe();
+  EXPECT_EQ(running.state, StatementState::kRunning);
+  EXPECT_TRUE(running.has_rows && running.started_at.has_value());
+  EXPECT_EQ(running.batches, 1);
+  EXPECT_EQ(running.rows, 3);
+  statement->Finish();
+  statement->ClaimRead(0, 0);
+  auto done = statement->Describe();
+  EXPECT_EQ(done.active_readers, 1);
+  EXPECT_TRUE(done.holds_retained_result);
+  EXPECT_EQ(done.partitions, std::optional<std::size_t>(1));
+  auto cancelled = std::make_shared<Statement>("q_c", Statement::Config{});
+  EXPECT_FALSE(cancelled->RequestCancel(CancelReason::kCancelled));  // queued: cancelled at once
+  EXPECT_EQ(cancelled->cancel_reason(), CancelReason::kCancelled);
+  EXPECT_EQ(cancelled->Describe().state, StatementState::kCancelled);
+  EXPECT_EQ(warpsql::detail::CancelReasonName(CancelReason::kKilled), "killed");
+  EXPECT_EQ(warpsql::detail::CancelReasonName(CancelReason::kCancelled), "cancelled");
+}
