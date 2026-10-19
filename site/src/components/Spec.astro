@@ -1,0 +1,16 @@
+---
+// A link to a section of the specification by its number: <Spec s="6.1" /> renders "§6.1",
+// pointing at that heading's anchor (src/data/spec-sections.json, made by scripts/generate.mjs).
+// A number the specification doesn't have fails the build.
+import sections from '../data/spec-sections.json';
+interface Props {
+	s: string;
+	label?: string;
+}
+const { s, label } = Astro.props;
+const anchor = (sections as Record<string, string>)[s];
+if (!anchor) throw new Error(`<Spec s="${s}">: the specification has no section ${s}`);
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+---
+
+<a href={`${base}/specification/#${anchor}`}>{label ?? `§${s}`}</a>

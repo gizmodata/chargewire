@@ -1,0 +1,11 @@
+sequenceDiagram
+  participant C as Client
+  participant S as Warp SQL server
+  C->>S: POST /warp/v1/sessions/{id}/statements<br/>Accept: application/vnd.apache.arrow.stream<br/>{"sql", "parameters"}
+  alt a query
+    S-->>C: 200 Arrow IPC stream (schema, batches, end-of-stream)<br/>Warp-Statement-Id
+  else no rows (DDL, DML)
+    S-->>C: 200 application/json statement document
+  else fails before the answer starts
+    S-->>C: 4xx problem document, with Warp-Statement-Id when it ran
+  end

@@ -1,0 +1,18 @@
+sequenceDiagram
+  participant C as Client
+  participant S as Warp SQL server
+  C->>S: POST /warp/v1/sessions/{id}/ingests {"table", "mode"}
+  S-->>C: 201 {"ingest_id", "state": "open", "parts": []}
+  par one connection per part
+    C->>S: POST …/ingests/{ingest_id}/parts/0 (Arrow stream)
+    S-->>C: 200 {"part": 0, "rows_received"}
+  and
+    C->>S: POST …/ingests/{ingest_id}/parts/1 (Arrow stream)
+    S-->>C: 200 {"part": 1, "rows_received"}
+  end
+  C->>S: POST …/ingests/{ingest_id}/commit {"part_count": 2}
+  alt every part has arrived
+    S-->>C: 200 {"rows_ingested"}, all parts in one transaction
+  else a part is missing
+    S-->>C: 409 ingest_incomplete (still open: upload it, commit again)
+  end

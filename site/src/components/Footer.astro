@@ -1,0 +1,59 @@
+---
+// Starlight's footer (edit link, last updated, pagination), then a small line saying who
+// maintains the protocol. The protocol is vendor-neutral: no product branding here.
+import Default from '@astrojs/starlight/components/Footer.astro';
+import { Image } from 'astro:assets';
+import logo from '../assets/gizmodata-logo.png';
+---
+
+<Default><slot /></Default>
+<div class="ws-footer">
+	<p>
+		<a href="https://gizmodata.com" class="ws-footer-logo" aria-label="GizmoData"><Image src={logo} alt="" width={20} height={21} /></a>
+		Warp SQL is an open protocol, Apache 2.0 licensed. It is maintained by <a href="https://gizmodata.com">GizmoData</a>.
+	</p>
+	<p class="ws-footer-small">
+		Warp SQL is an independent project, not part of or endorsed by the Apache Software Foundation. Apache Arrow,
+		Arrow, Apache, the Apache logo, and the Apache Arrow project logo are either registered trademarks or
+		trademarks of The Apache Software Foundation in the United States and other countries.
+	</p>
+</div>
+
+<style>
+	.ws-footer {
+		margin-top: 3rem;
+		padding-top: 1.25rem;
+		text-align: center;
+		border-top: 1px solid var(--sl-color-hairline);
+		position: relative;
+	}
+	.ws-footer::before {
+		content: '';
+		position: absolute;
+		top: -1px;
+		left: 50%;
+		width: 8rem;
+		height: 2px;
+		transform: translateX(-50%);
+		background: var(--ws-gradient);
+	}
+	.ws-footer p {
+		margin: 0.35rem auto 0;
+		max-width: 46rem;
+		font-size: var(--sl-text-sm);
+		color: var(--sl-color-gray-3);
+	}
+	.ws-footer a {
+		color: var(--ws-link);
+	}
+	.ws-footer-small {
+		font-size: var(--sl-text-xs) !important;
+	}
+	.ws-footer-logo img {
+		display: inline-block;
+		height: 20px;
+		width: auto;
+		vertical-align: -4px;
+		margin-inline-end: 0.25rem;
+	}
+</style>

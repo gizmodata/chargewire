@@ -1,0 +1,143 @@
+---
+title: Warp SQL
+description: "Warp SQL is an open protocol for running SQL over plain HTTP. Results, parameters and uploads are Apache Arrow IPC streams; control messages are small JSON documents. No gRPC, no protobuf."
+template: splash
+editUrl: false
+lastUpdated: false
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import HeroBanner from '../../components/HeroBanner.astro';
+import Diagram from '../../components/Diagram.astro';
+import banner from '../../assets/warp-sql-banner.svg';
+
+<HeroBanner src={banner} alt="Warp SQL: an open protocol for SQL over HTTP, powered by Apache Arrow" />
+
+<p class="ws-tagline not-content"><span>Run SQL from anything that speaks HTTP. Get Arrow back.</span></p>
+
+**Warp SQL** is an open protocol for running SQL against a database server over plain HTTP.
+Query results, query parameters and bulk uploads travel as
+[Apache Arrow IPC streams](https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format)
+(`application/vnd.apache.arrow.stream`), so every Arrow library reads them directly. Control
+messages are small JSON documents. A browser `fetch`, `curl` or any language's standard HTTP
+library is a complete client: there is no gRPC, no protobuf and no generated code.
+
+It does for HTTP what [Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html)
+does for gRPC: a small set of operations that any engine can implement and any HTTP client can
+call. Its metadata endpoints return Flight SQL's result schemas, so driver code written for
+Flight SQL carries over.
+
+## Status
+
+**Version 1, specification 1.0.0.** Version 1 is stable: it changes only by addition (new
+endpoints, fields, capabilities and error codes), so a client written for 1.0.0 keeps working
+with every later 1.x server. See [Versioning and compatibility](/versioning/).
+
+## Why
+
+<CardGrid>
+	<Card title="Plain HTTP" icon="seti:html">
+		Every operation works over HTTP/1.1 through an ordinary reverse proxy. Nothing relies on
+		HTTP/2 streams, trailers or server push, and no request has to outlive a proxy timeout.
+	</Card>
+	<Card title="Arrow all the way" icon="seti:db">
+		Results, Arrow query parameters and uploads are Arrow IPC streams, with optional `lz4_frame`
+		or `zstd` buffer compression. No row-by-row conversion on either side.
+	</Card>
+	<Card title="Short queries stay short" icon="rocket">
+		One `POST` runs a query and streams its result. Long queries are submitted, long-polled
+		and fetched later, and a dropped download resumes from the batch where it stopped.
+	</Card>
+	<Card title="Wide when it pays" icon="random">
+		A large result can be read as several partitions over separate connections at once, in
+		order when the query has one. A large upload can be sent as several parts and committed
+		as one transaction.
+	</Card>
+	<Card title="Security in the core" icon="approve-check">
+		Credentials are bearer tokens, never cookies, so cross-site request forgery is impossible
+		by construction. Every handle is bound to the identity that created it and checked on
+		every use. Mutual TLS and browser sign-in are in the protocol.
+	</Card>
+	<Card title="Engine-neutral and open" icon="open-book">
+		Apache 2.0 licensed. Nothing in the protocol depends on one engine, and a black-box
+		conformance suite tells an implementation when it is done.
+	</Card>
+</CardGrid>
+
+## A quick look
+
+Sign in, open a session, run a query and read the Arrow result. These commands run against
+`warp-duckdb`, the reference server, listening on `127.0.0.1:31337` with user `joe`:
+
+```bash test
+WARP=http://127.0.0.1:31337
+TOKEN=$(curl -s $WARP/warp/v1/auth/token -H 'Content-Type: application/json' \
+  -d '{"grant_type": "password", "username": "joe", "password": "s3:cret"}' | jq -r .access_token)
+SESSION=$(curl -s $WARP/warp/v1/sessions -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
+curl -s $WARP/warp/v1/sessions/$SESSION/statements -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -H 'Accept: application/vnd.apache.arrow.stream' \
+  -d '{"sql": "SELECT 42 AS answer, ? AS greeting", "parameters": ["hello"]}' -o result.arrows
+python3 -c "import pyarrow.ipc as ipc; print(ipc.open_stream('result.arrows').read_all().to_pylist())"
+```
+
+```text output
+[{'answer': 42, 'greeting': 'hello'}]
+```
+
+Every server describes itself at `GET /warp` (no credentials needed), so a client knows which
+optional features it may use:
+
+```bash test
+curl -s http://127.0.0.1:31337/warp | jq .
+```
+
+```json output
+{
+  "protocol": "warp-sql",
+  "protocol_versions": [
+    "1"
+  ],
+  "server": {
+    "name": "warp-duckdb",
+    "version": "1.0.0 (DuckDB …)"
+  },
+  "capabilities": [
+    "prepared_statements",
+    "transactions",
+    "ingest",
+    "partitioned_ingest",
+    "long_poll",
+    "ipc_compression_zstd",
+    "ipc_compression_lz4_frame",
+    "result_partitions",
+    "openapi"
+  ],
+  "auth": {
+    "grant_types": [
+      "password"
+    ]
+  },
+  "links": {
+    "openapi": "/warp/v1/openapi.json"
+  }
+}
+```
+
+## How it works
+
+<Diagram name="async-query" alt="The client submits a statement, long-polls its status until it has succeeded, then fetches the Arrow result and closes the statement." caption="A long query: submit, long-poll, fetch. A short one is a single POST that streams its result." />
+
+The [flows](/flows/sign-in/) walk through every operation with a sequence diagram and commands
+you can run.
+
+## Where to go
+
+<CardGrid>
+	<LinkCard title="The specification" href="/specification/" description="The protocol's definition: every endpoint, header, document and error code. Version 1, specification 1.0.0." />
+	<LinkCard title="OpenAPI reference" href="/reference/openapi/" description="Every JSON endpoint and schema as an OpenAPI 3.1 document, in Swagger UI. Servers also serve it at GET /warp/v1/openapi.json." />
+	<LinkCard title="Flows" href="/flows/sign-in/" description="Sign-in, sessions, queries, partitions, prepared statements, ingest, cancel, errors and shutdown, step by step." />
+	<LinkCard title="Conformance" href="/conformance/" description="A black-box test suite any server can run, and what it does not test yet." />
+	<LinkCard title="Implementations" href="/implementations/" description="Servers and clients that speak Warp SQL: ADBC (Go, Python), JDBC, JavaScript and C++." />
+	<LinkCard title="Endpoints" href="/reference/endpoints/" description="All 38 endpoints of version 1 on one page, each with its section and OpenAPI operation." />
+</CardGrid>

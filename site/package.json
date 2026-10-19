@@ -1,0 +1,39 @@
+{
+  "name": "warp-sql-site",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The Warp SQL protocol's documentation site: the specification, flows, the OpenAPI reference, conformance and implementations",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "generate": "node scripts/generate.mjs",
+    "check:generated": "node scripts/generate.mjs --check",
+    "diagrams": "node scripts/render_diagrams.mjs",
+    "lint:openapi": "../spec/scripts/lint-openapi.sh",
+    "prebuild": "node scripts/generate.mjs --public-only",
+    "build": "astro build",
+    "predev": "node scripts/generate.mjs --public-only",
+    "dev": "astro dev",
+    "preview": "astro preview",
+    "screenshots": "node scripts/screenshots.mjs"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "0.42.6",
+    "astro": "7.4.0",
+    "github-slugger": "2.0.0",
+    "js-yaml": "4.3.2",
+    "sharp": "0.35.5",
+    "starlight-links-validator": "0.27.0",
+    "starlight-llms-txt": "0.12.0",
+    "swagger-ui-dist": "5.33.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "mermaid": "11.17.2"
+  },
+  "scarfSettings": {
+    "enabled": false
+  }
+}

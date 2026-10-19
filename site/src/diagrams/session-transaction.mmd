@@ -1,0 +1,15 @@
+sequenceDiagram
+  participant C as Client
+  participant S as Warp SQL server
+  C->>S: PATCH /warp/v1/sessions/{id} {"options": {"autocommit": false}}
+  S-->>C: 200 (a transaction is open)
+  C->>S: POST …/statements INSERT …
+  S-->>C: 201 succeeded
+  C->>S: GET /warp/v1/sessions/{id}
+  S-->>C: 200 "transaction": "open"
+  alt keep it
+    C->>S: POST /warp/v1/sessions/{id}/commit
+  else drop it
+    C->>S: POST /warp/v1/sessions/{id}/rollback
+  end
+  S-->>C: 204, and the next statement starts a new transaction

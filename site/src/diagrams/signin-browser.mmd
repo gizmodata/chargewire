@@ -1,0 +1,21 @@
+sequenceDiagram
+  participant C as Client
+  participant B as Browser
+  participant S as Server
+  participant I as Identity provider
+  C->>S: POST /warp/v1/auth/oauth/flows<br/>{"return_to": "/ui/"}
+  S-->>C: 201 flow_id, poll_secret,<br/>authorize_url, expires_at
+  C->>B: open authorize_url
+  B->>I: authorize<br/>(state, PKCE, nonce)
+  Note over B,I: the person signs in
+  I-->>B: 302 to the callback<br/>with code and state
+  B->>S: GET …/auth/oauth/callback<br/>?code=…&state=…
+  S->>I: exchange the code<br/>(PKCE verifier)
+  I-->>S: ID token
+  S-->>B: 303 to return_to,<br/>flow id in the fragment
+  loop every poll_interval_s
+    C->>S: POST …/flows/{flow_id}<br/>{"poll_secret"}
+    S-->>C: 200 {"state": "pending"}
+  end
+  C->>S: POST …/flows/{flow_id}<br/>{"poll_secret"}
+  S-->>C: 200 {"state": "complete",<br/>"access_token", …} (once)

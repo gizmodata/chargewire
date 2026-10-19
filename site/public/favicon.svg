@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Warp SQL">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f15a24"/>
+      <stop offset="1" stop-color="#31a8db"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#0b1416"/>
+  <g fill="none" stroke="url(#g)" stroke-linecap="round" stroke-width="5">
+    <path d="M10 22h18M6 32h22M10 42h18"/>
+    <path d="M34 18l14 14-14 14M44 18l14 14-14 14" stroke-linejoin="round"/>
+  </g>
+</svg>

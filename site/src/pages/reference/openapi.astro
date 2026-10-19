@@ -1,0 +1,164 @@
+---
+// The OpenAPI reference: spec/openapi.yaml in Swagger UI (swagger-ui-dist, bundled with the
+// site: nothing loads from a CDN, and its online validator is off). The document is copied
+// to /openapi.json and /openapi.yaml at build time (scripts/generate.mjs --public-only). The
+// endpoint table under it is static HTML, for readers without script and for search.
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import { Aside } from '@astrojs/starlight/components';
+import Spec from '../../components/Spec.astro';
+import fs from 'node:fs';
+import { load as loadYaml } from 'js-yaml';
+
+const doc = loadYaml(fs.readFileSync(new URL('../../../../spec/openapi.yaml', import.meta.url), 'utf8')) as {
+	info: { version: string };
+	paths: Record<string, Record<string, { summary?: string; operationId?: string; tags?: string[]; security?: unknown[] }>>;
+};
+const methods = ['get', 'post', 'patch', 'delete', 'put'];
+const operations = Object.entries(doc.paths).flatMap(([path, item]) =>
+	Object.entries(item)
+		.filter(([method]) => methods.includes(method))
+		.map(([method, op]) => ({ method: method.toUpperCase(), path, ...op })),
+);
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+---
+
+<StarlightPage
+	frontmatter={{
+		title: 'OpenAPI reference',
+		description: `Every Warp SQL endpoint, request, response, header and error as an OpenAPI 3.1 document (version ${doc.info.version}), in Swagger UI.`,
+		tableOfContents: false,
+		editUrl: 'https://github.com/gizmodata/warp-sql/edit/main/spec/openapi.yaml',
+	}}
+>
+	<p>
+		The protocol's endpoints described for tools: every operation's parameters, headers, request and response
+		schemas, the problem document of every error, and Arrow bodies as
+		<code>application/vnd.apache.arrow.stream</code> binary. The <a href={`${base}/specification/`}>specification</a>
+		{' '}is the definition; this document describes it, and where they differ the specification is right.
+	</p>
+	<ul>
+		<li>
+			Download it: <a href={`${base}/openapi.yaml`} download>openapi.yaml</a> or{' '}
+			<a href={`${base}/openapi.json`} download>openapi.json</a>{' '}
+			(the source is <a href="https://github.com/gizmodata/warp-sql/blob/main/spec/openapi.yaml"><code>spec/openapi.yaml</code></a>).
+		</li>
+		<li>
+			Servers with capability <code>openapi</code> serve the same document at <code>GET /warp/v1/openapi.json</code>,
+			without credentials (<Spec s="3.3" />). The conformance suite checks every response it gets against it.
+		</li>
+	</ul>
+	<Aside type="note" title="Try it out against your own server">
+		<ol>
+			<li>Set <strong>origin</strong> under <em>Servers</em> to your server's scheme, host and port.</li>
+			<li>
+				Open <code>POST /warp/v1/auth/token</code>, choose <em>Try it out</em>, sign in, and copy the
+				<code>access_token</code>.
+			</li>
+			<li>Choose <strong>Authorize</strong> and paste the token; every request then carries it as a bearer token.</li>
+		</ol>
+		The browser sends these requests from this site's origin, so the server must allow it: a server's cross-origin
+		allow-list is off by default (<Spec s="9.5" />). Hardcharger takes <code>--cors-origins</code>, and the reference server
+		<code>--cors-origin</code>. Bodies that are Arrow streams can't be shown here; use the <a href={`${base}/flows/sign-in/`}>flows</a>' commands for those.
+	</Aside>
+
+	<div id="swagger-ui" class="not-content ws-swagger" data-url={`${base}/openapi.json`}>
+		<noscript>
+			<p>Swagger UI needs JavaScript. The operations are listed below, and the document can be downloaded above.</p>
+		</noscript>
+	</div>
+
+	<h2 id="operations">All operations</h2>
+	<p>
+		The same {operations.length} operations without script. <a href={`${base}/reference/endpoints/`}>Endpoints</a> lists them
+		with their sections of the specification.
+	</p>
+	<table>
+		<thead>
+			<tr><th>Method</th><th>Path</th><th>Operation</th><th>Auth</th></tr>
+		</thead>
+		<tbody>
+			{
+				operations.map((op) => (
+					<tr>
+						<td><code>{op.method}</code></td>
+						<td><a href={`#/${encodeURIComponent(op.tags?.[0] ?? 'default')}/${op.operationId}`}><code>{op.path}</code></a></td>
+						<td>{op.summary}</td>
+						<td>{Array.isArray(op.security) && op.security.length === 0 ? 'none' : 'bearer'}</td>
+					</tr>
+				))
+			}
+		</tbody>
+	</table>
+</StarlightPage>
+
+<script>
+	import 'swagger-ui-dist/swagger-ui.css';
+	import { SwaggerUIBundle } from 'swagger-ui-dist';
+
+	const element = document.getElementById('swagger-ui');
+	if (element) {
+		SwaggerUIBundle({
+			url: element.dataset.url,
+			domNode: element,
+			deepLinking: true,
+			docExpansion: 'list',
+			defaultModelsExpandDepth: 0,
+			displayRequestDuration: true,
+			filter: true,
+			tryItOutEnabled: false,
+			persistAuthorization: false,
+			// The online validator would send the document to another site.
+			validatorUrl: 'none',
+			syntaxHighlight: { activated: true, theme: 'agate' },
+		});
+	}
+</script>
+
+<style is:global>
+	/* Swagger UI needs room: this page is wider than the others, without a table of contents. */
+	:root {
+		--sl-content-width: 76rem;
+	}
+	.ws-swagger {
+		/* Form controls in their light look, whatever the page's theme: the dark theme inverts them. */
+		color-scheme: light;
+		margin-block: 1.5rem 2.5rem;
+		border: 1px solid var(--ws-card-border);
+		border-radius: 0.9rem;
+		background: #fff;
+		overflow: hidden;
+	}
+	.ws-swagger .swagger-ui {
+		font-family: var(--sl-font);
+	}
+	.ws-swagger .swagger-ui .wrapper {
+		padding-inline: 1rem;
+		max-width: none;
+	}
+	.ws-swagger .swagger-ui .information-container {
+		display: none; /* the title and description are this page's own */
+	}
+	.ws-swagger .swagger-ui .scheme-container {
+		box-shadow: none;
+		border-bottom: 1px solid #e3e8e7;
+		padding: 1rem 0;
+	}
+	.ws-swagger .swagger-ui .btn.authorize {
+		color: #c8410f;
+		border-color: #c8410f;
+	}
+	.ws-swagger .swagger-ui .btn.authorize svg {
+		fill: #c8410f;
+	}
+	/* Dark theme: Swagger UI has none of its own. Its colours are inverted, then turned back
+	   to their hue, so methods keep their usual colours on a dark background. */
+	:root:not([data-theme='light']) .ws-swagger {
+		background: #fff;
+		filter: invert(0.9) hue-rotate(180deg);
+	}
+	:root:not([data-theme='light']) .ws-swagger img,
+	:root:not([data-theme='light']) .ws-swagger .highlight-code,
+	:root:not([data-theme='light']) .ws-swagger .microlight {
+		filter: invert(1) hue-rotate(180deg);
+	}
+</style>

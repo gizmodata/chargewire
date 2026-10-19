@@ -1,0 +1,14 @@
+sequenceDiagram
+  participant C as Client
+  participant S as Warp SQL server
+  C->>S: POST …/statements, Warp-Retain-Result: true
+  S-->>C: statement document, result.retained: true, expires_at
+  C->>S: GET …/result
+  S--xC: connection drops after batch 4
+  C->>S: GET …/result?from_batch=5
+  S-->>C: 200 Arrow stream from batch 5 (the schema first)
+  C->>S: GET …/result (read it again)
+  S-->>C: 200 the whole result
+  Note over S: expires_at passes
+  C->>S: GET …/result
+  S-->>C: 410 result_expired

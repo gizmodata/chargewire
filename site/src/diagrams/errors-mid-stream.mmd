@@ -1,0 +1,10 @@
+sequenceDiagram
+  participant C as Client
+  participant S as Warp SQL server
+  C->>S: POST …/statements<br/>Accept: application/vnd.apache.arrow.stream
+  S-->>C: 200, Warp-Statement-Id:<br/>schema, batch 0, batch 1, …
+  Note over S: the statement fails<br/>at row 3,000,000
+  S--xC: the body ends WITHOUT<br/>the end-of-stream marker
+  Note over C: incomplete stream:<br/>the result failed
+  C->>S: GET …/statements/{statement_id}
+  S-->>C: 200 {"state": "failed",<br/>"error": {"code": "execution_error", …}}

@@ -1,0 +1,11 @@
+sequenceDiagram
+  participant C as Client
+  participant S as Warp SQL server
+  C->>S: POST /warp/v1/sessions/{id}/prepared<br/>{"sql": "INSERT INTO events VALUES (?, ?)"}
+  S-->>C: 201 prepared_id, parameter_schema,<br/>result_schema, result_kind (not run)
+  C->>S: POST …/prepared/{prepared_id}/execute<br/>{"parameters": [1, "signup"]}
+  S-->>C: as a submit: a statement document,<br/>or an Arrow stream for a query
+  C->>S: POST …/prepared/{prepared_id}/execute<br/>an Arrow stream, one row per execution
+  S-->>C: 201 succeeded, rows_affected
+  C->>S: DELETE …/prepared/{prepared_id}
+  S-->>C: 204

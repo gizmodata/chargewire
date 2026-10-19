@@ -1,0 +1,47 @@
+---
+title: Implementations
+description: "Servers, a server SDK and clients that speak Warp SQL: a production server, the reference server, ADBC (Go and Python), JDBC, JavaScript and C++."
+---
+
+import Spec from '../../components/Spec.astro';
+
+Any engine can implement Warp SQL, and any HTTP client can call it. These implement version 1.
+A server is conformant when it passes the [conformance suite](/conformance/); clients are tested
+by their own suites against conformant servers.
+
+## Servers
+
+| Server | What it is |
+|---|---|
+| [Hardcharger](https://github.com/gizmodata/hardcharger) | A production server for DuckDB 2.0, built on `libwarpsql`, with access control, TLS and mutual TLS, browser sign-in and token exchange |
+| [`warp-duckdb`](https://github.com/gizmodata/warp-sql/tree/main/cpp) | The reference server, in this protocol's repository: DuckDB 2.0 through its C API, on `libwarpsql`. For testing and development only, not production |
+
+## Server SDK
+
+| SDK | What it is |
+|---|---|
+| [`libwarpsql`](https://github.com/gizmodata/warp-sql/tree/main/cpp) (C++20) | The protocol's server side. An engine implements a `Backend`; the SDK owns authentication, handles bound to their principal, idempotency, retention, partitioned results, cancellation and draining, and streams every result through an asynchronous pipeline. It serves the OpenAPI document (<Spec s="3.3" />) too |
+
+## Clients
+
+| Client | Language | What it is |
+|---|---|---|
+| [`warp-sql-adbc`](https://github.com/gizmodata/warp-sql-adbc) | Go, Python | An ADBC driver in Go, with Python bindings, loadable by any ADBC driver manager |
+| [`warp-sql-jdbc`](https://github.com/gizmodata/warp-sql-jdbc) | Java 17+ | A JDBC driver in one jar, with no gRPC or Netty |
+| [`warp-sql-js`](https://github.com/gizmodata/warp-sql-js) | TypeScript | `@gizmodata/warp-sql`, over plain `fetch` and Arrow JS, for Node, browsers, Deno, Bun and Cloudflare Workers |
+| [`libwarpsql_client`](https://github.com/gizmodata/warp-sql/tree/main/cpp) | C++20 | The protocol's client side, synchronous: sign-in, both statement paths, prepared statements, ingest, metadata, cancellation from another thread, TLS and mutual TLS. Needs Arrow, Boost and OpenSSL |
+| `curl` and any HTTP library | any | Every [flow](/flows/sign-in/) on this site runs with `curl`, `jq` and an Arrow reader |
+
+The drivers read a large result as 8 partitions at once by default (<Spec s="6.10" />). The
+JavaScript client also resumes dropped downloads of retained results (<Spec s="6.5" />), retries
+idempotently (<Spec s="6.7" />) and cancels through an `AbortSignal`.
+
+## Writing an implementation
+
+- Start from the [specification](/specification/) and its [OpenAPI document](/reference/openapi/),
+  which describes every endpoint's requests, responses, headers and errors for tools.
+- A server lists in discovery (`GET /warp`) the optional features it has; everything else is core
+  (<Spec s="3.1" />). Names of its own (capabilities, session options, `server-info` keys, error
+  codes) carry a prefix naming the implementation (<Spec s="2.7" />).
+- Run the [conformance suite](/conformance/) against it. It starts the server itself, or talks
+  to a running one, and fails, never skips, without one.

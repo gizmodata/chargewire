@@ -1,0 +1,130 @@
+---
+title: Bulk ingest
+description: "Upload Arrow data into a Warp SQL table in one request, or as several parts over separate connections committed atomically as one transaction."
+---
+
+import Diagram from '../../../components/Diagram.astro';
+import Spec from '../../../components/Spec.astro';
+
+Uploads are Arrow IPC streams, written into a table as one transaction where the engine
+supports it: on failure, no row of the upload remains (<Spec s="8" />). The server maps each
+Arrow type to a column type that preserves its values, and refuses one it can't preserve with
+`415 unsupported_arrow_type`; it never falls back to storing values as text.
+
+```bash test
+WARP=http://127.0.0.1:31337
+TOKEN=$(curl -s $WARP/warp/v1/auth/token -H 'Content-Type: application/json' \
+  -d '{"grant_type": "password", "username": "joe", "password": "s3:cret"}' | jq -r .access_token)
+AUTH="Authorization: Bearer $TOKEN"
+SESSION=$(curl -s $WARP/warp/v1/sessions -H "$AUTH" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
+python3 - <<'EOF'
+import pyarrow as pa, pyarrow.ipc as ipc
+def write(name, start, stop):
+    table = pa.table({"trip_id": pa.array(range(start, stop), pa.int64()),
+                      "fare": pa.array([round(2.5 + i % 40, 2) for i in range(start, stop)])})
+    with ipc.new_stream(name, table.schema) as writer:
+        writer.write_table(table)
+write("trips.arrows", 0, 100_000)
+write("trips-part0.arrows", 0, 50_000)
+write("trips-part1.arrows", 50_000, 100_000)
+EOF
+```
+
+## In one request
+
+<Diagram name="ingest-single" alt="The client posts an Arrow stream to the ingest endpoint with the table and mode as query parameters; the server answers rows_ingested, or an error with nothing written." />
+
+With capability `ingest`. The target is in the query string: `table`, optionally `catalog`
+and `schema` (default: the session's), `mode` (`create`, `append`, `replace`, or the default
+`create_append`) and `temporary`. The body may be sent with chunked transfer encoding, at any
+size:
+
+```bash test
+curl -s "$WARP/warp/v1/sessions/$SESSION/ingest?table=trips&mode=create" -H "$AUTH" \
+  -H 'Content-Type: application/vnd.apache.arrow.stream' --data-binary @trips.arrows
+```
+
+```json output
+{"rows_ingested":100000}
+```
+
+`create` on a table that exists fails, with the SQL standard's `sqlstate` for "already exists"
+so a client can tell (<Spec s="11" />); `append` to a missing table gets `42P01`:
+
+```bash test
+curl -s "$WARP/warp/v1/sessions/$SESSION/ingest?table=trips&mode=create" -H "$AUTH" \
+  -H 'Content-Type: application/vnd.apache.arrow.stream' --data-binary @trips.arrows \
+  | jq -c '{status, code, sqlstate}'
+```
+
+```json output
+{"status":400,"code":"sql_error","sqlstate":"42P07"}
+```
+
+`Idempotency-Key` makes a retried upload safe (<Spec s="6.7" />).
+
+:::caution[Behind a reverse proxy]
+Proxies commonly cap request bodies (often at 1 MB) and buffer them. A deployment that offers
+ingest must lift the body-size limit for this path and should turn request buffering off, or
+uploads fail with `413` after the whole body has been sent (<Spec s="8.1" />).
+:::
+
+## In parts, committed together
+
+<Diagram name="ingest-partitioned" alt="The client opens an ingest, uploads parts 0 and 1 at once on separate connections, and commits with part_count 2; a missing part answers 409 ingest_incomplete and the ingest stays open." />
+
+With capability `partitioned_ingest`, a large upload goes over several connections at once into
+one ingest, which the server commits as one transaction (<Spec s="8.3" />).
+
+**Open** the ingest, with the target as JSON:
+
+```bash test
+INGEST=$(curl -s $WARP/warp/v1/sessions/$SESSION/ingests -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"table": "trips_copy", "mode": "create"}' | tee ingest.json | jq -r .ingest_id)
+jq -c '{state, parts}' ingest.json
+```
+
+```json output
+{"state":"open","parts":[]}
+```
+
+**Upload the parts** at once, each on its own connection. `part` is a number from 0 to 255 the
+client chooses; every part has the same schema. The rows are not visible yet:
+
+```bash test
+for part in 0 1; do
+  curl -s "$WARP/warp/v1/sessions/$SESSION/ingests/$INGEST/parts/$part" -H "$AUTH" \
+    -H 'Content-Type: application/vnd.apache.arrow.stream' --data-binary @trips-part$part.arrows \
+    -o part$part.json &
+done
+wait
+cat part0.json part1.json; echo
+```
+
+```text output
+{"part":0,"rows_received":50000}{"part":1,"rows_received":50000}
+```
+
+**Commit** with the number of parts. A part that hasn't finished gets `409 ingest_incomplete`
+and the ingest stays open, so the client uploads it and commits again; a commit whose answer
+was lost is safe to send again:
+
+```bash test
+curl -s $WARP/warp/v1/sessions/$SESSION/ingests/$INGEST/commit -H "$AUTH" \
+  -H 'Content-Type: application/json' -d '{"part_count": 3}' | jq -c '{status, code}'
+curl -s $WARP/warp/v1/sessions/$SESSION/ingests/$INGEST/commit -H "$AUTH" \
+  -H 'Content-Type: application/json' -d '{"part_count": 2}'
+echo
+curl -s $WARP/warp/v1/sessions/$SESSION/ingests/$INGEST -H "$AUTH" | jq -c '{state, rows_ingested}'
+```
+
+```text output
+{"status":409,"code":"ingest_incomplete"}
+{"rows_ingested":100000}
+{"state":"committed","rows_ingested":100000}
+```
+
+All or nothing: if any part fails (its data is invalid, its connection breaks), the whole ingest
+fails and no row of any part remains. `DELETE …/ingests/{ingest_id}` aborts an open ingest. The
+rows of different parts arrive in no defined order, so a client that needs the upload's order
+uses one part.

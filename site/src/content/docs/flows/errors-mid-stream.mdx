@@ -1,0 +1,73 @@
+---
+title: Errors mid-stream
+description: "Once a Warp SQL result stream has started, its status can't change: a failure ends the body without the Arrow end-of-stream marker, and the statement document says why."
+---
+
+import Diagram from '../../../components/Diagram.astro';
+import Spec from '../../../components/Spec.astro';
+
+Once a `200` response with an Arrow body has started, its status code can't change. If the
+statement fails while its result streams, the server ends the body **without** the Arrow
+end-of-stream marker (in HTTP/1.1, by closing the connection or ending the chunked body early).
+A client that reads an incomplete stream must treat the result as failed, and should fetch the
+statement document for the error (<Spec s="6.6" />). A complete stream always ends with the
+marker: the continuation token `0xFFFFFFFF` followed by a zero length.
+
+<Diagram name="errors-mid-stream" alt="The server answers 200 and streams batches; the statement fails part way; the body ends without the end-of-stream marker; the client reads the statement document, which says failed with execution_error." />
+
+```bash test
+WARP=http://127.0.0.1:31337
+TOKEN=$(curl -s $WARP/warp/v1/auth/token -H 'Content-Type: application/json' \
+  -d '{"grant_type": "password", "username": "joe", "password": "s3:cret"}' | jq -r .access_token)
+AUTH="Authorization: Bearer $TOKEN"
+SESSION=$(curl -s $WARP/warp/v1/sessions -H "$AUTH" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
+```
+
+A query that fails at its 3,000,000th row, after the first batches have gone out. `curl` notices
+that the body was cut (exit status 18), but an Arrow reader may not: a stream reader that hits
+the end of its input reads what it got as the whole result. Check the marker:
+
+```bash test
+curl -s -D headers.txt $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" \
+  -H 'Content-Type: application/json' -H 'Accept: application/vnd.apache.arrow.stream' \
+  -d "{\"sql\": \"SELECT CASE WHEN i < 3000000 THEN i ELSE error('boom') END AS v FROM range(10000000) t(i)\"}" \
+  -o result.arrows || echo "curl exit status: $?"
+STATEMENT=$(tr -d '\r' < headers.txt | awk 'tolower($1) == "warp-statement-id:" {print $2}')
+if [ "$(tail -c 8 result.arrows | od -An -tx1 | tr -d ' \n')" = ffffffff00000000 ]; then
+  echo "complete"
+else
+  echo "incomplete: the result failed"
+fi
+```
+
+```text output
+curl exit status: 18
+incomplete: the result failed
+```
+
+The statement document has the error:
+
+```bash test
+curl -s $WARP/warp/v1/sessions/$SESSION/statements/$STATEMENT -H "$AUTH" -H 'Prefer: wait=10' \
+  | jq '{state, error: (.error | {code, status, detail})}'
+```
+
+```json output
+{
+  "state": "failed",
+  "error": {
+    "code": "execution_error",
+    "status": 422,
+    "detail": "Invalid Input Error: boom"
+  }
+}
+```
+
+A statement's own failure is a `4xx` (`execution_error` is `422`), never a `5xx`: `5xx` is for
+the server's own faults, so proxies and monitoring that count `5xx` count only real outages
+(<Spec s="11" />).
+
+When the failure comes before the answer starts, the answer is an ordinary error response with
+`Warp-Statement-Id` instead; a server may answer either way, so clients handle both. The same
+applies to every partition of a [partitioned result](/flows/partitioned-results/): if the
+statement fails, every partition still open ends without the marker.

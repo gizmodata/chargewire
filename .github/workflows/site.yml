@@ -1,0 +1,125 @@
+name: site
+
+# The protocol's site (site/), on pull requests and pushes that touch it or what it is made
+# from (the spec, the OpenAPI document, the conformance suite's README and test files):
+#   - check: the generated pages (specification, endpoints, conformance) match their sources
+#     and every diagram is rendered from its current source; spec/openapi.yaml lints clean
+#     (Redocly CLI and openapi-spec-validator); the site builds, which fails on a broken
+#     internal link or anchor; lychee checks the external links of the built site.
+#   - pages, deploy: on a push to main only, the site is built for GitHub Pages and deployed
+#     (a private preview until the public launch; see site/README.md).
+#
+# The examples on the pages run against real servers with site/scripts/verify_examples.py,
+# and the browser checks with site/scripts/screenshots.mjs, locally: they need a built
+# reference server, and building DuckDB in CI would cost far more than these checks.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "spec/**"
+      - "conformance/README.md"
+      - "conformance/tests/test_*.py"
+      - ".github/workflows/site.yml"
+  pull_request:
+    paths:
+      - "site/**"
+      - "spec/**"
+      - "conformance/README.md"
+      - "conformance/tests/test_*.py"
+      - ".github/workflows/site.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  # swagger-ui-dist's install-time analytics, off (site/package.json says so too).
+  SCARF_ANALYTICS: "false"
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - uses: astral-sh/setup-uv@v10
+      - run: npm ci
+      - name: Generated pages and diagrams match their sources
+        run: npm run check:generated
+      - name: OpenAPI lint
+        run: ../spec/scripts/lint-openapi.sh
+      - name: Build (fails on a broken internal link)
+        run: npm run build
+      - name: External links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          workingDirectory: site
+          args: --config lychee.toml --root-dir ${{ github.workspace }}/site/dist --no-progress "dist/**/*.html"
+          fail: true
+
+  pages:
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: read
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - id: pages
+        uses: actions/configure-pages@v6
+      - run: npm ci
+      - name: Build for GitHub Pages
+        env:
+          # The preview's address until launch; at launch, the custom domain (site/README.md).
+          DOCS_SITE: ${{ steps.pages.outputs.origin }}
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}
+        run: |
+          # The pages link to each other from the root (/specification/): the site must be
+          # served at the root of its host, as a private preview or a custom domain is.
+          if [ -n "$BASE_PATH" ] && [ "$BASE_PATH" != "/" ]; then
+            echo "::error::GitHub Pages serves this site under $BASE_PATH; it must be at the root of its host"
+            exit 1
+          fi
+          npm run build
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site/dist
+
+  deploy:
+    needs: pages
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # A deploy is never cut off half way by a newer push; it queues behind it.
+    concurrency:
+      group: site-deploy
+      cancel-in-progress: false
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

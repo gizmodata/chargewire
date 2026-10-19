@@ -1,0 +1,13 @@
+sequenceDiagram
+  participant C as Client
+  participant S as Warp SQL server
+  C->>S: POST …/statements, Prefer: respond-async
+  S-->>C: 201 statement_id (running)
+  C->>S: POST …/statements/{statement_id}/cancel
+  S-->>C: 202 (a finished statement: still 202, nothing changes)
+  C->>S: GET …/statements/{statement_id}
+  S-->>C: 200 cancelled, cancel_reason "client", error statement_cancelled
+  C->>S: POST /warp/v1/sessions/{id}/cancel
+  S-->>C: 202 {"cancelled": [every statement queued or running]}
+  C->>S: DELETE …/statements/{statement_id}
+  S-->>C: 204 (result freed, id forgotten)

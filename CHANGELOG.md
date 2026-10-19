@@ -16,6 +16,19 @@ spec's version is the repository's version.
   instrumentation, logs) keys them by the ids clients see in `Warp-Statement-Id`, errors
   and prepare answers. `warpsql::NewId(prefix)` makes ids in the SDK's shape (§2.3) for an
   engine's own kinds.
+- **The protocol's site** (`site/`, Astro Starlight; future address `warpsql.gizmodata.com`,
+  a private GitHub Pages preview until launch): the specification, generated from
+  `spec/warp-sql.md` with every "§" linked; eleven flows (sign-in by password, token exchange
+  and browser, sessions and transactions, the streamed and submit/long-poll/fetch paths,
+  retention and resumption, partitioned results, prepared statements, single and partitioned
+  ingest, cancel and close, errors mid-stream, graceful shutdown), each with sequence diagrams
+  rendered at build time to light and dark SVG and `curl` commands that
+  `site/scripts/verify_examples.py` runs against the reference server (60 examples); the
+  OpenAPI reference in Swagger UI 5.33.1, bundled, with "Try it out" against a server of the
+  reader's choosing; the endpoint list; the conformance page, generated from the suite; the
+  implementations; and versioning. `.github/workflows/site.yml` checks the generated pages
+  and diagrams, lints the OpenAPI document, builds (failing on broken internal links), checks
+  external links with lychee, and deploys to GitHub Pages on pushes to `main`.
 
 ## [1.0.0] - 2026-10-19
 
