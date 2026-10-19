@@ -986,7 +986,7 @@ On the streamed path (§6.1) the `200` Arrow response is partition 0, and its he
 how the result is split: when `k` is more than 1 the response MUST carry both
 `Warp-Result-Partitions: <k>` and `Warp-Result-Order: interleaved` or `any`; for one
 partition it carries neither. A client MUST NOT guess a missing `Warp-Result-Order`. The client reads partitions 1 to
-`k - 1` with `GET …/result?partition=<i>` (§6.4), each on its own connection, all at
+`k - 1` with `GET …/statements/{statement_id}/result?partition=<i>` (§6.4), each on its own connection, all at
 once. Until the server has decided how to split a running statement's result, its
 document lists partition 0 only and has no `partition_order`; a client that reads the
 result while the statement runs waits for `partition_order` or a finished statement.

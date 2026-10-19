@@ -309,9 +309,9 @@ paths:
             Location:
               $ref: "#/components/headers/Location"
         "4XX":
-          $ref: "#/components/responses/Problem"
+          $ref: "#/components/responses/CallbackError"
         "5XX":
-          $ref: "#/components/responses/Problem"
+          $ref: "#/components/responses/CallbackError"
 
   /warp/v1/sessions:
     post:
@@ -1430,6 +1430,17 @@ components:
         WWW-Authenticate:
           $ref: "#/components/headers/WwwAuthenticate"
       content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    CallbackError:
+      description: |
+        A page saying why the callback was refused (an unknown or finished flow, say), for
+        the person in the browser; a problem document when no page fits (spec §4.3.4)
+      content:
+        text/html:
+          schema:
+            type: string
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"

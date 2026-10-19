@@ -1301,7 +1301,10 @@ Task<Response> Api::Launch(Request& request, std::shared_ptr<Session> session, S
           ReserveIdempotencyKey(request, *session, statement_id, idempotency_material)) {
     auto original = state_.sessions.Find(existing->session_id, session->owner())
                         ->FindStatement(existing->statement_id);
-    co_return JsonResponse(http::status::ok, StatementDocument(*session, *original));
+    // A statement response, so it names the statement (spec §2.6), as the first answer did.
+    Response replay = JsonResponse(http::status::ok, StatementDocument(*session, *original));
+    replay.headers.emplace_back("Warp-Statement-Id", original->id());
+    co_return replay;
   }
 
   Statement::Config config;
