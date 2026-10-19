@@ -163,7 +163,7 @@ SETTINGS = {
 
 def session_with(warp, setting: str) -> str:
     steps = SETTINGS[setting]
-    session_id = warp.new_session(options={"arrow_lossless_conversion": True} if "lossless" in steps else None)
+    session_id = warp.new_session(options={"duckdb_arrow_lossless_conversion": True} if "lossless" in steps else None)
     for sql in steps:
         if sql != "lossless":
             warp.execute(session_id=session_id, sql=sql)

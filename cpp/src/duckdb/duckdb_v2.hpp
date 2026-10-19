@@ -54,6 +54,10 @@ inline warpsql::Error Translate(DUCKDB_V2_ERROR code, std::string message) {
       return warpsql::Error(ErrorCode::kPermissionDenied, std::move(message), "42501");
     case DUCKDB_V2_ERROR_RUNTIME_INTERRUPT:
       return warpsql::Error(ErrorCode::kStatementCancelled, std::move(message), "57014");
+    case DUCKDB_V2_ERROR_RUNTIME_INTERNAL:
+    case DUCKDB_V2_ERROR_RUNTIME_FATAL:
+      // The engine's own fault, not the statement's (spec §11).
+      return warpsql::Error(ErrorCode::kInternalError, std::move(message), "XX000");
     default:
       return warpsql::Error(ErrorCode::kExecutionError, std::move(message));
   }

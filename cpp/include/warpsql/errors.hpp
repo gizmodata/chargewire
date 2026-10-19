@@ -35,6 +35,7 @@ enum class ErrorCode {
   kStatementTimeout,
   kStatementCancelled,
   kExecutionError,
+  kInternalError,
   kNotImplemented,
   kServerDraining,
   kUnknownOption,
@@ -43,8 +44,9 @@ enum class ErrorCode {
   kIngestIncomplete,
   kIngestPartExists,
   kIngestExpired,
+  kPartitionNotFound,
   // Client certificates (spec §4.4).
-  kClientCertificateRequired,
+  kCertificateRequired,
   kUnknownCertificateIdentity,
   kCertificateRevoked,
   kCertificateMismatch,
@@ -68,6 +70,9 @@ inline constexpr const char* kTokenExpired = "token_expired";
 
 // The stable machine-readable name ("permission_denied").
 std::string_view CodeName(ErrorCode code);
+// The problem document's human-readable title ("Permission denied"), the same for every
+// error with this code (spec §11).
+std::string_view CodeTitle(ErrorCode code);
 // The HTTP status a response carrying this code uses.
 int HttpStatus(ErrorCode code);
 
@@ -82,13 +87,14 @@ class Error : public std::runtime_error {
   // outlives its thread must not depend on it).
   Error(const Error& other)
       : std::runtime_error(std::string(other.what())), code_(other.code_), sqlstate_(other.sqlstate_),
-        reason_(other.reason_) {}
+        reason_(other.reason_), cancel_reason_(other.cancel_reason_) {}
   Error& operator=(const Error& other) {
     if (this != &other) {
       static_cast<std::runtime_error&>(*this) = std::runtime_error(std::string(other.what()));
       code_ = other.code_;
       sqlstate_ = other.sqlstate_;
       reason_ = other.reason_;
+      cancel_reason_ = other.cancel_reason_;
     }
     return *this;
   }
@@ -110,17 +116,29 @@ class Error : public std::runtime_error {
     return error;
   }
 
+  // A cancelled statement's error (spec §6.2): statement_cancelled, or statement_timeout
+  // for `cancel_reason` "timeout", carrying the cancel_reason its problem document shows.
+  static Error Cancelled(std::string cancel_reason, std::string detail) {
+    Error error(cancel_reason == "timeout" ? ErrorCode::kStatementTimeout : ErrorCode::kStatementCancelled,
+                std::move(detail), "57014");
+    error.cancel_reason_ = std::move(cancel_reason);
+    return error;
+  }
+
   ErrorCode code() const { return code_; }
   // The SQL standard's five-character class and subclass, or empty.
   const std::string& sqlstate() const { return sqlstate_; }
   // A session_ended error's reason (one without reports "killed"), or an invalid_token
   // error's (empty when the server doesn't say).
   const std::string& reason() const { return reason_; }
+  // A cancelled statement's cancel_reason (spec §6.2), or empty.
+  const std::string& cancel_reason() const { return cancel_reason_; }
 
  private:
   ErrorCode code_;
   std::string sqlstate_;
   std::string reason_;
+  std::string cancel_reason_;
 };
 
 }  // namespace warpsql

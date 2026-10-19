@@ -114,7 +114,7 @@ std::shared_ptr<arrow::RecordBatchReader> QueryArrow(
     const std::vector<std::string>& names, const std::vector<duckdb_v2_value_handle>& values) {
   auto statements = Parse(connection, sql);
   if (statements.size() != 1) {
-    throw Error(ErrorCode::kExecutionError, "internal query must be one statement");
+    throw Error(ErrorCode::kInternalError, "internal query must be one statement");
   }
   auto statement = std::make_shared<SqlStatement>(std::move(statements[0]));
   std::vector<duckdb_v2_identifier_t> name_handles;
@@ -127,7 +127,7 @@ std::shared_ptr<arrow::RecordBatchReader> QueryArrow(
   });
   auto outcome = Outcome(result, statement);
   if (!outcome.rows) {
-    throw Error(ErrorCode::kExecutionError, "internal query returned no rows");
+    throw Error(ErrorCode::kInternalError, "internal query returned no rows");
   }
   return outcome.rows;
 }

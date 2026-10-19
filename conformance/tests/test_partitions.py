@@ -195,7 +195,7 @@ def test_retained_partitions_are_reread_and_resumed(warp, session_id):
     assert tail.status_code == 200
     assert pa.Table.from_batches(batches=read_complete(tail.content)).equals(
         pa.Table.from_batches(batches=first[1][1:], schema=first[1][0].schema))
-    assert_problem(response=reader.get(k), status=404, code="not_found")
+    assert_problem(response=reader.get(k), status=404, code="partition_not_found")
 
 
 def test_unretained_partition_is_read_once(warp, session_id):
@@ -334,9 +334,10 @@ def test_a_failure_mid_stream_fails_every_partition(warp, session_id):
                 params={"partition": str(index)}, headers=warp.headers())
             opened = client.send(request=request, stream=True)
             if opened.status_code != 200:
-                # Asked for after the failure: the statement's error, never rows.
+                # Asked for after the failure: the statement's error, never rows (§6.10).
                 opened.read()
-                assert opened.status_code >= 400
+                problem = assert_problem(response=opened, status=422, code="execution_error")
+                assert "boom" in problem["detail"], problem
                 return b""
             return read_until_cut(opened)
         finally:
@@ -348,7 +349,8 @@ def test_a_failure_mid_stream_fails_every_partition(warp, session_id):
     assert not any(body.endswith(EOS) for body in bodies), "a partition ended cleanly after a failure"
     doc = warp.wait_done(session_id=session_id, statement_id=statement_id)
     assert doc["state"] == "failed" and doc["error"]["code"] == "execution_error"
-    assert reader.get(0).status_code >= 400
+    problem = assert_problem(response=reader.get(0), status=422, code="execution_error")
+    assert problem["detail"] == doc["error"]["detail"], (problem, doc)
 
 
 def test_bad_partition_headers_are_refused(warp, session_id):

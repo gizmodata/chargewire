@@ -27,10 +27,12 @@ class IngestOperation : public std::enable_shared_from_this<IngestOperation> {
  public:
   enum class State { kOpen, kCommitting, kCommitted, kFailed, kAborted };
 
-  IngestOperation(std::string id, IngestTarget target);
+  IngestOperation(std::string id, IngestTarget target, std::optional<boost::json::object> query_tag = std::nullopt);
 
   const std::string& id() const { return id_; }
   const IngestTarget& target() const { return target_; }
+  // The opening request's Warp-Query-Tag (spec §2.5), if it had one.
+  const std::optional<boost::json::object>& query_tag() const { return query_tag_; }
   Signal& changed() { return changed_; }
 
   // ---- Part uploads (HTTP) ----
@@ -89,6 +91,7 @@ class IngestOperation : public std::enable_shared_from_this<IngestOperation> {
 
   const std::string id_;
   const IngestTarget target_;
+  const std::optional<boost::json::object> query_tag_;
   mutable std::mutex mutex_;
   std::condition_variable work_;  // engine threads: a part to read, a seal, a failure
   Signal changed_;                // HTTP coroutines: a part ended, committed, failed

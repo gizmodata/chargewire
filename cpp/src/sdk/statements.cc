@@ -11,12 +11,13 @@ namespace warpsql::detail {
 
 namespace {
 
+// A cancelled statement's error (spec §6.2): its problem document carries cancel_reason.
 Error CancelError(CancelReason reason) {
   if (reason == CancelReason::kTimeout) {
-    return Error(ErrorCode::kStatementTimeout, "the statement ran longer than its timeout");
+    return Error::Cancelled("timeout", "the statement ran longer than its timeout");
   }
-  return Error(ErrorCode::kStatementCancelled,
-               "the statement was cancelled (" + std::string(CancelReasonName(reason)) + ")");
+  return Error::Cancelled(std::string(CancelReasonName(reason)),
+                          "the statement was cancelled (" + std::string(CancelReasonName(reason)) + ")");
 }
 
 int64_t BatchBytes(const arrow::RecordBatch& batch) {
@@ -245,7 +246,12 @@ void Statement::Fail(const Error& error) {
     if (IsTerminalLocked()) {
       return;
     }
-    // An engine error after a cancel request is the engine stopping as asked.
+    // An engine error after a cancel request is the engine stopping as asked. An engine
+    // that cancelled the statement itself, for someone else (spec §6.2's "cancelled"),
+    // reports statement_cancelled: the statement is cancelled, not failed.
+    if (cancel_reason_ == CancelReason::kNone && error.code() == ErrorCode::kStatementCancelled) {
+      cancel_reason_ = CancelReason::kCancelled;
+    }
     if (cancel_reason_ != CancelReason::kNone) {
       Terminate(StatementState::kCancelled, CancelError(cancel_reason_));
     } else {
@@ -454,7 +460,7 @@ void Statement::ClaimRead(std::size_t partition, int64_t from_batch) {
     throw Error(ErrorCode::kBadRequest, "from_batch must not be negative");
   }
   if (partition >= partitions_.size()) {
-    throw Error(ErrorCode::kNotFound,
+    throw Error(ErrorCode::kPartitionNotFound,
                 std::format("this result has {} partition{}", partitions_.size(),
                             partitions_.size() == 1 ? ", 0" : "s"));
   }

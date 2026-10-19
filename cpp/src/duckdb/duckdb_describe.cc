@@ -73,7 +73,7 @@ void Bind(duckdb_v2_function_bind_info_handle, duckdb_v2_table_function_bind_inf
     if (slot->schema.release != nullptr) slot->schema.release(&slot->schema);  // bound again
     Call([&](auto* e) { return duckdb_v2_arrow_exporter_get_schema(exporter.get(), &slot->schema, e); });
     if (count == 0) {
-      throw Error(ErrorCode::kExecutionError, "warp_result_schema(): a result without columns");
+      throw Error(ErrorCode::kInternalError, "warp_result_schema(): a result without columns");
     }
     const duckdb_v2_identifier_t column = Str("described");
     Call([&](auto* e) { return duckdb_v2_table_function_bind_add_result_column(result, &column, types[0], e); });
@@ -118,11 +118,11 @@ std::shared_ptr<arrow::Schema> ResultArrowSchema(duckdb_v2_connection_handle con
     });
   }
   if (slot.schema.release == nullptr) {
-    throw Error(ErrorCode::kExecutionError, "warp_result_schema() was not bound");
+    throw Error(ErrorCode::kInternalError, "warp_result_schema() was not bound");
   }
   auto schema = arrow::ImportSchema(&slot.schema);  // takes the schema over
   if (!schema.ok()) {
-    throw Error(ErrorCode::kExecutionError, schema.status().message());
+    throw Error(ErrorCode::kInternalError, schema.status().message());
   }
   return std::move(*schema);
 }

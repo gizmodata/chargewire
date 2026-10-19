@@ -47,6 +47,27 @@ def test_unknown_option_is_reported_per_option(warp, session_id):
     assert response.json()["errors"]["no_such_option"]["code"] == "unknown_option"
 
 
+def test_patch_answers_every_option_and_its_errors(warp, session_id):
+    # §5.3: 200, every option the session has (not only the ones set), and errors ({} when
+    # none); a bad option doesn't stop the others and keeps its earlier value.
+    current = warp.http.get(url=warp.session_url(session_id), headers=warp.headers()).json()["options"]
+    response = warp.http.patch(url=warp.session_url(session_id), headers=warp.headers(),
+                               json={"options": {"schema": current["schema"]}})
+    assert response.status_code == 200, response.text
+    doc = response.json()
+    assert doc["errors"] == {}, doc
+    assert set(doc["options"]) == set(current), (doc, current)
+    warp.execute(session_id=session_id, sql="CREATE SCHEMA IF NOT EXISTS patched_into")
+    mixed = warp.http.patch(url=warp.session_url(session_id), headers=warp.headers(),
+                            json={"options": {"schema": "patched_into", "autocommit": "maybe"}})
+    assert mixed.status_code == 200, mixed.text
+    doc = mixed.json()
+    assert set(doc["errors"]) == {"autocommit"}, doc
+    assert doc["errors"]["autocommit"]["code"] == "invalid_option_value" and doc["errors"]["autocommit"]["detail"]
+    assert doc["options"]["schema"] == "patched_into" and doc["options"]["autocommit"] == current["autocommit"]
+    assert doc["options"] == warp.http.get(url=warp.session_url(session_id), headers=warp.headers()).json()["options"]
+
+
 def test_autocommit_off_then_rollback(warp, session_id):
     warp.execute(session_id=session_id, sql="CREATE TABLE tx_rollback (v INTEGER)")
     response = warp.http.patch(url=warp.session_url(session_id), headers=warp.headers(),
@@ -93,10 +114,12 @@ def test_session_document_follows_sql_use(warp, session_id):
 def test_session_create_reports_the_option_failure_by_kind(warp):
     unknown = warp.http.post(url="/warp/v1/sessions", headers=warp.headers(),
                              json={"options": {"no_such_option": 1}})
-    assert_problem(response=unknown, status=400, code="unknown_option")
+    problem = assert_problem(response=unknown, status=400, code="unknown_option")
+    assert "no_such_option" in problem["detail"], problem  # §5.1: the detail names the option
     invalid = warp.http.post(url="/warp/v1/sessions", headers=warp.headers(),
                              json={"options": {"autocommit": "maybe"}})
-    assert_problem(response=invalid, status=400, code="invalid_option_value")
+    problem = assert_problem(response=invalid, status=400, code="invalid_option_value")
+    assert "autocommit" in problem["detail"], problem
 
 
 # ---- Sessions that no longer exist (spec §5.6), each from a server of the test's own ----
@@ -193,6 +216,11 @@ def outcome(warp, session_id: str, sql: str) -> str:
     own problem document, or as a failed statement)."""
     response = warp.submit(session_id=session_id, sql=sql)
     if response.status_code >= 400:
+        # The submit's own error: the engine's refusal, with its code's status (§11).
+        expected = {"sql_error": 400, "execution_error": 422}
+        problem = response.json()
+        assert problem.get("code") in expected, response.text
+        assert_problem(response=response, status=expected[problem["code"]], code=problem["code"])
         return "failed"
     doc = response.json()
     if doc["state"] not in ("succeeded", "failed", "cancelled"):

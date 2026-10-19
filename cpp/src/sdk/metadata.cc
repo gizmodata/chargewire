@@ -89,19 +89,19 @@ std::shared_ptr<arrow::Table> ConformMetadata(MetadataKind kind, bool include_sc
   for (;;) {
     auto next = rows.Next();
     if (!next.ok()) {
-      throw Error(ErrorCode::kExecutionError, next.status().message());
+      throw Error(ErrorCode::kInternalError, next.status().message());
     }
     auto batch = std::move(next).ValueUnsafe();
     if (batch == nullptr) {
       break;
     }
     if (batch->num_columns() != schema->num_fields()) {
-      throw Error(ErrorCode::kExecutionError,
+      throw Error(ErrorCode::kInternalError,
                   "the server's metadata has the wrong number of columns");
     }
     for (int i = 0; i < schema->num_fields(); i++) {
       if (!batch->column(i)->type()->Equals(*schema->field(i)->type())) {
-        throw Error(ErrorCode::kExecutionError,
+        throw Error(ErrorCode::kInternalError,
                     "the server's metadata column '" + schema->field(i)->name() +
                         "' has type " + batch->column(i)->type()->ToString());
       }
@@ -111,7 +111,7 @@ std::shared_ptr<arrow::Table> ConformMetadata(MetadataKind kind, bool include_sc
   }
   auto table = arrow::Table::FromRecordBatches(schema, batches);
   if (!table.ok()) {
-    throw Error(ErrorCode::kExecutionError, table.status().message());
+    throw Error(ErrorCode::kInternalError, table.status().message());
   }
   return *table;
 }

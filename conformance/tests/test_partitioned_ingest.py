@@ -50,7 +50,7 @@ class Ingests:
 
     def commit(self, ingest_id: str, parts: int) -> httpx.Response:
         return self.warp.http.post(url=f"{self.base}/{ingest_id}/commit", headers=self.warp.headers(),
-                                   json={"parts": parts})
+                                   json={"part_count": parts})
 
     def get(self, ingest_id: str) -> httpx.Response:
         return self.warp.http.get(url=f"{self.base}/{ingest_id}", headers=self.warp.headers())
@@ -230,10 +230,14 @@ def test_a_part_with_another_schema_fails_everything(warp, session_id):
     good = ingests.part(ingest_id, 0, ipc_bytes(rows(0, 100_000)))
     assert good.status_code == 200, good.text
     bad = ingests.part(ingest_id, 1, ipc_bytes(pa.table({"other": [1, 2, 3]})))
-    assert bad.status_code >= 400
-    commit = ingests.commit(ingest_id, parts=2)
-    assert commit.status_code >= 400
-    assert ingests.get(ingest_id).json()["state"] == "failed"
+    problem = assert_problem(response=bad, status=400, code="bad_request")
+    assert "schema" in problem["detail"], problem
+    # The commit gets the ingest's error, and so does its document (§8.3).
+    commit = assert_problem(response=ingests.commit(ingest_id, parts=2), status=400, code="bad_request")
+    assert commit["detail"] == problem["detail"], (commit, problem)
+    doc = ingests.get(ingest_id).json()
+    assert doc["state"] == "failed" and doc["error"]["code"] == "bad_request", doc
+    assert "rows_ingested" not in doc, doc
     assert not table_exists(warp, session_id, "pi_schema")
     # The session goes on.
     assert warp.query(session_id=session_id, sql="SELECT 1 AS one").to_pylist() == [{"one": 1}]
@@ -247,8 +251,17 @@ def test_invalid_data_in_one_part_writes_nothing(warp, session_id):
     broken = bytearray(ipc_bytes(rows(0, 50_000)))
     broken[len(broken) // 2: len(broken) // 2 + 64] = b"\xff" * 64  # inside a batch's buffers
     answers = ingests.upload_all(ingest_id, [good, good, bytes(broken), good])
-    assert any(a.status_code >= 400 for a in answers), [a.status_code for a in answers]
-    assert ingests.commit(ingest_id, parts=4).status_code >= 400
+    # The broken part is refused as data the server can't read; the others, and the
+    # commit, get that same error (§8.3).
+    refused = [a for a in answers if a.status_code != 200]
+    assert refused, [a.status_code for a in answers]
+    codes = {a.json()["code"] for a in refused}
+    assert codes <= {"unsupported_arrow_type", "bad_request"} and len(codes) == 1, [a.text for a in refused]
+    code = codes.pop()
+    status = 415 if code == "unsupported_arrow_type" else 400
+    for answer in refused:
+        assert_problem(response=answer, status=status, code=code)
+    assert_problem(response=ingests.commit(ingest_id, parts=4), status=status, code=code)
     assert checksum(warp, session_id, "pi_invalid")["n"] == 0
 
 
@@ -279,9 +292,8 @@ def test_a_client_that_disconnects_in_the_middle_of_a_part(warp, session_id):
     while (doc := ingests.get(ingest_id).json())["state"] != "failed":
         assert time.monotonic() < deadline, doc
         time.sleep(0.1)
-    commit = ingests.commit(ingest_id, parts=2)
-    assert commit.status_code >= 400, commit.text
-    assert "part 1" in commit.json()["detail"], commit.text
+    commit = assert_problem(response=ingests.commit(ingest_id, parts=2), status=422, code="execution_error")
+    assert "part 1" in commit["detail"], commit
     assert not table_exists(warp, session_id, "pi_cut")
 
 

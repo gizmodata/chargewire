@@ -415,7 +415,7 @@ TEST(ClientUnit, RefusesASchemaThatIsNotBase64) {
     wc::DecodeSchema("not base64!");
     FAIL() << "accepted";
   } catch (const wc::Error& e) {
-    EXPECT_EQ(e.code(), "protocol_error");
+    EXPECT_EQ(e.code(), "client_protocol_error");
     EXPECT_NE(std::string(e.what()).find("not base64"), std::string::npos) << e.what();
   }
 }
@@ -433,10 +433,16 @@ TEST(ClientUnit, ReadsAProblemDocument) {
   EXPECT_STREQ(error.what(), "killed by an administrator");
   EXPECT_FALSE(error.IsTransport());
   EXPECT_FALSE(error.IsCancelled());
-  // The HTTP status wins over the document's; a missing code comes from the status.
+  // The HTTP status wins over the document's; a missing code is the client's own, named by
+  // the status (spec §11: client-made codes begin with client_).
   auto bare = wc::Error::FromProblem(503, boost::json::object{{"status", 500}});
   EXPECT_EQ(bare.status(), 503);
-  EXPECT_EQ(bare.code(), "server_draining");
+  EXPECT_EQ(bare.code(), "client_http_503");
+  // A cancelled statement's problem document carries its cancel_reason (spec §6.1).
+  auto cancelled = wc::Error::FromProblem(409, boost::json::parse(R"({"status":409,"code":"statement_cancelled",
+    "detail":"cancelled","cancel_reason":"client"})").as_object());
+  EXPECT_EQ(cancelled.cancel_reason(), "client");
+  EXPECT_TRUE(cancelled.IsCancelled());
 }
 
 TEST(ClientUnit, BaseUrls) {
@@ -469,7 +475,7 @@ TEST(ClientUnit, MissingTlsFilesAreReportedBeforeConnecting) {
     wc::Client client(options);
     FAIL() << "accepted";
   } catch (const wc::Error& e) {
-    EXPECT_EQ(e.code(), "tls_failed");
+    EXPECT_EQ(e.code(), "client_tls_failed");
     EXPECT_NE(std::string(e.what()).find("/nonexistent/ca.pem"), std::string::npos) << e.what();
   }
   options.tls.root_certs_file.clear();
@@ -478,7 +484,7 @@ TEST(ClientUnit, MissingTlsFilesAreReportedBeforeConnecting) {
     wc::Client client(options);
     FAIL() << "accepted a certificate without its key";
   } catch (const wc::Error& e) {
-    EXPECT_EQ(e.code(), "tls_failed");
+    EXPECT_EQ(e.code(), "client_tls_failed");
     EXPECT_NE(std::string(e.what()).find("both"), std::string::npos) << e.what();
   }
 }
@@ -493,7 +499,7 @@ TEST(ClientUnit, ConnectionRefusedIsATransportError) {
     FAIL() << "connected";
   } catch (const wc::Error& e) {
     EXPECT_TRUE(e.IsTransport());
-    EXPECT_EQ(e.code(), "connection_failed");
+    EXPECT_EQ(e.code(), "client_connection_failed");
     EXPECT_NE(std::string(e.what()).find("could not connect to http://127.0.0.1:"), std::string::npos) << e.what();
   }
 }
@@ -911,7 +917,7 @@ TEST_F(Live, AClosedSessionIsGone) {
     session->Execute("SELECT 1");
     FAIL() << "ran on a closed session";
   } catch (const wc::Error& e) {
-    EXPECT_EQ(e.code(), "session_closed");
+    EXPECT_EQ(e.code(), "client_session_closed");
   }
 }
 
@@ -967,7 +973,7 @@ TEST_F(LiveTls, VerifiesTheServerAgainstTheGivenRoots) {
     bad.Discover();
     FAIL() << "trusted a certificate its roots didn't sign";
   } catch (const wc::Error& e) {
-    EXPECT_EQ(e.code(), "tls_failed");
+    EXPECT_EQ(e.code(), "client_tls_failed");
     EXPECT_NE(std::string(e.what()).find("certificate verify failed"), std::string::npos) << e.what();
   }
   // Plain HTTP to a TLS server is not a Warp SQL answer.
@@ -988,7 +994,7 @@ TEST_F(LiveTls, ChecksTheHostName) {
     wc::Client(server.Options(trusted)).Discover();
     FAIL() << "accepted a certificate for another host";
   } catch (const wc::Error& e) {
-    EXPECT_EQ(e.code(), "tls_failed");
+    EXPECT_EQ(e.code(), "client_tls_failed");
   }
   wc::TlsOptions skip{.enabled = true, .skip_verify = true};
   EXPECT_NO_THROW(wc::Client(server.Options(skip)).Discover());
@@ -1016,7 +1022,7 @@ TEST_F(LiveTls, MutualTls) {
     FAIL() << "a client without a certificate got in";
   } catch (const wc::Error& e) {
     EXPECT_TRUE(e.IsTransport()) << e.code() << ": " << e.what();
-    EXPECT_EQ(e.code(), "client_certificate_required") << e.what();
+    EXPECT_EQ(e.code(), "certificate_required") << e.what();
     EXPECT_EQ(std::string(e.what()), "the server at https://127.0.0.1:" + std::to_string(server.Options().port) +
                                          " requires a client certificate, and none was sent");
   }

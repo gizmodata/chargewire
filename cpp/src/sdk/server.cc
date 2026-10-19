@@ -29,7 +29,7 @@ ErrorCode CodeForStatus(http::status status) {
     case http::status::request_header_fields_too_large: return ErrorCode::kHeadersTooLarge;
     case http::status::payload_too_large: return ErrorCode::kPayloadTooLarge;
     case http::status::bad_request: return ErrorCode::kBadRequest;
-    default: return ErrorCode::kExecutionError;
+    default: return ErrorCode::kInternalError;
   }
 }
 

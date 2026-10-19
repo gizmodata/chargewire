@@ -227,7 +227,7 @@ def test_no_certificate_is_refused_at_the_handshake_when_required(pki, strict):
 
 def test_no_certificate_cannot_use_the_grant_when_optional(pki, optional):
     with client(server=optional, pki=pki, cert=None) as http:
-        assert_problem(response=certificate_grant(http=http), status=401, code="client_certificate_required")
+        assert_problem(response=certificate_grant(http=http), status=401, code="certificate_required")
         # Without a certificate a client still signs in with its password.
         response = http.post(url="/warp/v1/auth/token",
                              json={"grant_type": "password", "username": optional.username,
@@ -405,7 +405,7 @@ def test_ingest_parts_need_the_bound_certificate_on_every_connection(pki, strict
     assert [a.status_code for a in answers] == [200, 200], [a.text for a in answers]
     assert_problem(response=upload(part=2, cert=pki.bob), status=401, code="certificate_mismatch")
     with client(server=strict, pki=pki, cert=pki.alice) as alice:
-        committed = alice.post(url=f"{base}/{ingest_id}/commit", headers=bearer(token=token), json={"parts": 2})
+        committed = alice.post(url=f"{base}/{ingest_id}/commit", headers=bearer(token=token), json={"part_count": 2})
         assert committed.status_code == 200, committed.text
         assert committed.json()["rows_ingested"] == 2000
 
@@ -749,7 +749,7 @@ def test_a_connection_that_keeps_failing_authentication_is_closed(pki, optional)
     with client(server=optional, pki=pki, cert=None) as http:
         answers = [certificate_grant(http=http) for _ in range(5)]
     for answer in answers:
-        assert_problem(response=answer, status=401, code="client_certificate_required")
+        assert_problem(response=answer, status=401, code="certificate_required")
     assert [a.headers.get("connection") for a in answers][:4] == [None] * 4 or \
         all(a.headers.get("connection") != "close" for a in answers[:4]), [a.headers for a in answers]
     assert answers[4].headers.get("connection") == "close", answers[4].headers

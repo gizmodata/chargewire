@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(warpsql VERSION 0.1.0 LANGUAGES C CXX)
+project(warpsql VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -147,6 +147,7 @@ target_include_directories(warpsql_client PUBLIC include PRIVATE src/client)
 target_link_libraries(warpsql_client PUBLIC Boost::beast Boost::json Boost::url Arrow::arrow_static
                                             OpenSSL::SSL OpenSSL::Crypto)
 target_compile_options(warpsql_client PRIVATE ${WARPSQL_WARNINGS})
+target_compile_definitions(warpsql_client PRIVATE WARPSQL_VERSION="${PROJECT_VERSION}")
 warpsql_windows_settings(warpsql_client)
 
 # The DuckDB backend: DuckDB 2.0 behind the SDK, through its v2 C API only. Servers

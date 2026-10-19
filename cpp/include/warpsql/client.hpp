@@ -54,7 +54,8 @@ struct ConnectOptions {
   std::string base_path = "/warp";  // where the server mounts the protocol (spec §2.1)
   TlsOptions tls;
   std::chrono::milliseconds connect_timeout{10000};
-  std::string user_agent = "warpsql-client-cpp";
+  // Empty: "warpsql-client-cpp/<version>".
+  std::string user_agent;
 };
 
 // The base URL these options name: http(s)://host:port/warp.
@@ -67,9 +68,11 @@ class Error : public std::runtime_error {
   Error(int status, std::string code, std::string detail);
 
   int status() const { return status_; }        // HTTP status; 0 for a transport failure
-  // The problem code, or one of the client's own (status 0): "connection_failed",
-  // "tls_failed", "protocol_error", and for a TLS alert refusing the client certificate
-  // the §4.4 code it stands for, "certificate_revoked" or "client_certificate_required".
+  // The problem code, or one of the client's own (spec §11: they begin with "client_"):
+  // "client_connection_failed", "client_tls_failed", "client_protocol_error",
+  // "client_http_<status>" for an error answer without a problem document, and for a TLS
+  // alert refusing the client certificate the §4.4 code it stands for,
+  // "certificate_revoked" or "certificate_required".
   const std::string& code() const { return code_; }
   const std::string& detail() const { return detail_; }
   const std::string& sqlstate() const { return sqlstate_; }

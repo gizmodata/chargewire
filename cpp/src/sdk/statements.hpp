@@ -103,7 +103,7 @@ class Statement {
   // "interleaved" or "any" for a result in several partitions (spec §6.10).
   std::string_view PartitionOrder() const;
 
-  // Starts reading partition `partition` at `from_batch`. Throws not_found (no such
+  // Starts reading partition `partition` at `from_batch`. Throws partition_not_found (no such
   // partition), result_not_resumable (an unretained partition read before, or from a
   // later batch) or result_expired. Call once the partition count is decided.
   void ClaimRead(std::size_t partition, int64_t from_batch);

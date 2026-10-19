@@ -136,6 +136,8 @@ class Api {
   std::shared_ptr<Session> OwnSession(const Request& request, const std::string& session_id);
   static Session::Client ClientOf(const Request& request);
   void RejectIfDraining() const;
+  // Throws not_implemented unless the backend has `feature` (spec §3.1).
+  void RequireCapability(bool BackendCapabilities::*feature, std::string_view name) const;
   json::object SessionDocument(Session& session) const;
   json::object StatementDocument(Session& session, Statement& statement) const;
   Response ResultStream(std::shared_ptr<Session> session, std::shared_ptr<Statement> statement,

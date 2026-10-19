@@ -96,8 +96,10 @@ def assert_failed_statement_answer(warp, session_id, headers: dict[str, str], ur
     try:
         if response.status_code != 200:
             response.read()
-            problem = assert_problem(response=response, status=500, code="execution_error")
+            # §11: a statement's own failure is 422, never a 5xx; §6.1: the answer names it.
+            problem = assert_problem(response=response, status=422, code="execution_error")
             assert "boom" in problem["detail"], problem
+            assert response.headers.get("warp-statement-id"), response.headers
             return "error response"
         content_type = response.headers.get("content-type", "")
         if not content_type.startswith(ARROW_STREAM):

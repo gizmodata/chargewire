@@ -122,7 +122,7 @@ json::object Problem(ErrorCode code, std::string_view detail, std::string_view r
   const std::string_view name = CodeName(code);
   json::object problem{
       {"type", std::format("urn:warp-sql:error:{}", name)},
-      {"title", name},
+      {"title", CodeTitle(code)},
       {"status", HttpStatus(code)},
       {"code", name},
       {"detail", detail},
@@ -144,6 +144,9 @@ json::object Problem(const Error& error, std::string_view request_id) {
   } else if (error.code() == ErrorCode::kInvalidToken && !error.reason().empty()) {
     // Spec §4.2: why a token the server issued no longer stands.
     problem["reason"] = error.reason();
+  }
+  if (!error.cancel_reason().empty()) {
+    problem["cancel_reason"] = error.cancel_reason();  // spec §6.2, §11
   }
   return problem;
 }

@@ -32,7 +32,26 @@ def test_large_headers_are_accepted_up_to_16_kib(warp, session_id):
 
 def test_oversized_header_block_gets_431(server):
     response = httpx.get(url=f"{server.base_url}/warp", headers={"X-Padding": "a" * 100_000})
-    assert response.status_code == 431
+    assert_problem(response=response, status=431, code="headers_too_large")
+
+
+def test_every_response_with_query_results_says_no_store(warp, session_id):
+    # §9.5: results are not cached, whichever way they are read.
+    doc = warp.execute(session_id=session_id, sql="SELECT 1 AS v")
+    retained = warp.submit(session_id=session_id, sql="SELECT 2 AS v",
+                           headers={"Prefer": "wait=30", "Warp-Retain-Result": "true"}).json()
+    responses = {
+        "streamed submit": warp.submit(session_id=session_id, sql="SELECT 3 AS v", arrow=True),
+        "statement document": warp.http.get(url=warp.statement_url(session_id, doc["statement_id"]),
+                                            headers=warp.headers()),
+        "result": warp.result(session_id=session_id, statement_id=retained["statement_id"]),
+        "metadata": warp.http.get(url=f"{warp.session_url(session_id)}/metadata/catalogs", headers=warp.headers()),
+        "server-info": warp.http.get(url=f"{warp.session_url(session_id)}/metadata/server-info",
+                                     headers=warp.headers()),
+    }
+    for what, response in responses.items():
+        assert response.status_code == 200, (what, response.text)
+        assert response.headers.get("cache-control") == "no-store", (what, response.headers)
 
 
 def test_no_cross_origin_access_by_default(server):

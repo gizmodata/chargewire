@@ -36,31 +36,15 @@ namespace {
 constexpr const char* kArrowStream = "application/vnd.apache.arrow.stream";
 constexpr auto kNoTimeout = std::chrono::milliseconds(0);
 
-std::string CodeForStatus(int status) {
-  switch (status) {
-    case 400: return "bad_request";
-    case 401: return "invalid_token";
-    case 403: return "permission_denied";
-    case 404: return "not_found";
-    case 405: return "method_not_allowed";
-    case 409: return "conflict";
-    case 410: return "result_expired";
-    case 413: return "payload_too_large";
-    case 415: return "unsupported_arrow_type";
-    case 421: return "session_elsewhere";
-    case 422: return "idempotency_key_reused";
-    case 429: return "rate_limited";
-    case 431: return "headers_too_large";
-    case 500: return "execution_error";
-    case 501: return "not_implemented";
-    case 503: return "server_draining";
-    default: return "http_" + std::to_string(status);
-  }
-}
+// The code of an error answer that carries none (no problem document, as a proxy's own
+// error page): the client's, so it can't be taken for a server's code (spec §11).
+std::string CodeForStatus(int status) { return "client_http_" + std::to_string(status); }
+
+std::string DefaultUserAgent() { return "warpsql-client-cpp/" WARPSQL_VERSION; }
 
 std::string RandomKey() {
   unsigned char bytes[16];
-  if (RAND_bytes(bytes, sizeof(bytes)) != 1) throw Error(0, "protocol_error", "no random bytes for an idempotency key");
+  if (RAND_bytes(bytes, sizeof(bytes)) != 1) throw Error(0, "client_protocol_error", "no random bytes for an idempotency key");
   static constexpr char kHex[] = "0123456789abcdef";
   std::string out;
   for (unsigned char b : bytes) {
@@ -120,7 +104,7 @@ std::string Base64Decode(std::string_view text) {
   int bits = -8;
   for (unsigned char c : text) {
     if (c == '=' || std::isspace(c)) continue;
-    if (kTable[c] < 0) throw Error(0, "protocol_error", "an embedded Arrow schema is not base64");
+    if (kTable[c] < 0) throw Error(0, "client_protocol_error", "an embedded Arrow schema is not base64");
     value = (value << 6) + kTable[c];
     bits += 6;
     if (bits >= 0) {
@@ -161,7 +145,7 @@ class StreamChunks {
   std::optional<std::string> operator()() {
     if (done_) return std::nullopt;
     auto check = [](const arrow::Status& status) {
-      if (!status.ok()) throw Error(0, "bad_request", "cannot write the Arrow stream: " + status.ToString());
+      if (!status.ok()) throw Error(0, "client_invalid_argument", "cannot write the Arrow stream: " + status.ToString());
     };
     if (!writer_) {
       sink_ = std::make_shared<StringSink>();
@@ -269,6 +253,7 @@ Error Error::FromProblem(int status, const json::object& problem) {
   error.sqlstate_ = String(problem, "sqlstate");
   error.request_id_ = String(problem, "request_id");
   error.reason_ = String(problem, "reason");
+  error.cancel_reason_ = String(problem, "cancel_reason");
   return error;
 }
 
@@ -298,16 +283,16 @@ std::shared_ptr<arrow::Schema> DecodeSchema(const std::string& base64) {
   arrow::io::BufferReader input(arrow::Buffer::FromString(bytes));
   arrow::ipc::DictionaryMemo memo;
   auto schema = arrow::ipc::ReadSchema(&input, &memo);
-  if (!schema.ok()) throw Error(0, "protocol_error", "cannot read an embedded Arrow schema: " + schema.status().ToString());
+  if (!schema.ok()) throw Error(0, "client_protocol_error", "cannot read an embedded Arrow schema: " + schema.status().ToString());
   return *schema;
 }
 
 std::shared_ptr<arrow::Table> ReadStream(const std::string& bytes) {
   auto input = std::make_shared<arrow::io::BufferReader>(arrow::Buffer::FromString(bytes));
   auto reader = arrow::ipc::RecordBatchStreamReader::Open(input);
-  if (!reader.ok()) throw Error(0, "protocol_error", "cannot read an Arrow stream: " + reader.status().ToString());
+  if (!reader.ok()) throw Error(0, "client_protocol_error", "cannot read an Arrow stream: " + reader.status().ToString());
   auto table = (*reader)->ToTable();
-  if (!table.ok()) throw Error(0, "protocol_error", "cannot read an Arrow stream: " + table.status().ToString());
+  if (!table.ok()) throw Error(0, "client_protocol_error", "cannot read an Arrow stream: " + table.status().ToString());
   return *table;
 }
 
@@ -334,7 +319,7 @@ class ClientCore {
   http::request<http::string_body> Request(http::verb verb, const std::string& target, bool authorized) {
     http::request<http::string_body> request(verb, target, 11);
     request.set(http::field::host, host_header);
-    request.set(http::field::user_agent, options.user_agent);
+    request.set(http::field::user_agent, options.user_agent.empty() ? DefaultUserAgent() : options.user_agent);
     request.set(http::field::accept, "application/json");
     if (authorized) {
       const std::string bearer = Token();
@@ -357,7 +342,7 @@ class ClientCore {
     if (reply.status != 200) throw ProblemOf(reply);
     auto object = ParseObject(reply.body);
     if (!object || String(*object, "access_token").empty()) {
-      throw Error(reply.status, "protocol_error", "the sign-in answer has no access_token");
+      throw Error(reply.status, "client_protocol_error", "the sign-in answer has no access_token");
     }
     std::lock_guard token_lock(token_mutex);
     token = String(*object, "access_token");
@@ -427,7 +412,7 @@ class SessionCore : public std::enable_shared_from_this<SessionCore> {
   std::string Path(std::string_view rest) const { return client->V1("/sessions/" + id + std::string(rest)); }
 
   void CheckOpen() const {
-    if (closed) throw Error(0, "session_closed", "the session is closed");
+    if (closed) throw Error(0, "client_session_closed", "the session is closed");
   }
 
   Reply Call(http::verb verb, const std::string& target, const json::value* body = nullptr,
@@ -444,7 +429,7 @@ class SessionCore : public std::enable_shared_from_this<SessionCore> {
     if (std::find(ok.begin(), ok.end(), reply.status) == ok.end()) throw ProblemOf(reply);
     if (reply.body.empty()) return {};
     auto object = ParseObject(reply.body);
-    if (!object) throw Error(reply.status, "protocol_error", "the server's answer is not a JSON object");
+    if (!object) throw Error(reply.status, "client_protocol_error", "the server's answer is not a JSON object");
     return *object;
   }
 
@@ -516,7 +501,7 @@ class SessionCore : public std::enable_shared_from_this<SessionCore> {
     Reply reply = (on != nullptr ? *on : *transport).Exchange(std::move(request));
     if (reply.status != 200) throw ProblemOf(reply);
     auto object = ParseObject(reply.body);
-    if (!object) throw Error(reply.status, "protocol_error", "the statement document is not JSON");
+    if (!object) throw Error(reply.status, "client_protocol_error", "the statement document is not JSON");
     return ParseStatement(*object);
   }
 
@@ -529,7 +514,7 @@ class SessionCore : public std::enable_shared_from_this<SessionCore> {
 
   // Why the result of `statement_id` failed, from its statement document (spec §6.6).
   Error ErrorOf(const std::string& statement_id, const std::string& fallback) {
-    if (statement_id.empty()) return Error(0, "protocol_error", fallback);
+    if (statement_id.empty()) return Error(0, "client_protocol_error", fallback);
     try {
       const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
       while (true) {
@@ -540,7 +525,7 @@ class SessionCore : public std::enable_shared_from_this<SessionCore> {
     } catch (const Error& e) {
       if (e.IsTransport()) return e;
     }
-    return Error(0, "protocol_error", "the result of statement " + statement_id + " ended early: " + fallback);
+    return Error(0, "client_protocol_error", "the result of statement " + statement_id + " ended early: " + fallback);
   }
 
   // ---- Statements running now, for CancelRunning ----
@@ -946,7 +931,7 @@ std::shared_ptr<arrow::Table> ResultReader::ToTable(int64_t limit, bool* more) {
     batches.push_back(std::move(batch));
   }
   auto table = arrow::Table::FromRecordBatches(schema(), batches);
-  if (!table.ok()) throw Error(0, "protocol_error", table.status().ToString());
+  if (!table.ok()) throw Error(0, "client_protocol_error", table.status().ToString());
   return *table;
 }
 
@@ -1051,7 +1036,7 @@ ExecuteResult SessionCore::Execute(const std::string& target, const json::value*
     auto object = ParseObject(text);
     if (!object) {
       EndRun(serial);
-      throw Error(status, "protocol_error", "the statement document is not JSON");
+      throw Error(status, "client_protocol_error", "the statement document is not JSON");
     }
     return Finish(ParseStatement(*object), serial, options.ipc_compression);
   }
@@ -1203,7 +1188,7 @@ StatementDocument Session::Submit(const std::string& sql, int wait_s, const Stat
   Reply reply = core_->transport->Exchange(std::move(request));
   if (reply.status != 200 && reply.status != 201) throw ProblemOf(reply);
   auto object = ParseObject(reply.body);
-  if (!object) throw Error(reply.status, "protocol_error", "the statement document is not JSON");
+  if (!object) throw Error(reply.status, "client_protocol_error", "the statement document is not JSON");
   return SessionCore::ParseStatement(*object);
 }
 
@@ -1309,7 +1294,7 @@ int64_t IngestParts(SessionCore& core, const std::string& table, SharedBatches& 
   if (opened.status != 201 && opened.status != 200) throw ProblemOf(opened);
   auto doc = ParseObject(opened.body);
   const std::string ingest_id = doc ? String(*doc, "ingest_id") : std::string();
-  if (ingest_id.empty()) throw Error(opened.status, "protocol_error", "the ingest answer has no ingest_id");
+  if (ingest_id.empty()) throw Error(opened.status, "client_protocol_error", "the ingest answer has no ingest_id");
   const std::string base = core.Path("/ingests/" + ingest_id);
 
   const int parts = std::clamp(options.parts, 1, 256);
@@ -1349,7 +1334,7 @@ int64_t IngestParts(SessionCore& core, const std::string& table, SharedBatches& 
     abort();
     throw *failure;
   }
-  json::value commit = json::object{{"parts", parts}};
+  json::value commit = json::object{{"part_count", parts}};
   try {
     json::object answer = core.CallJson(http::verb::post, base + "/commit", &commit, {200});
     return Integer(answer, "rows_ingested").value_or(0);
@@ -1375,7 +1360,7 @@ int64_t Session::Ingest(const std::string& table, arrow::RecordBatchReader& data
   while (may_split && ahead.size() < 2) {
     std::shared_ptr<arrow::RecordBatch> batch;
     if (auto status = data.ReadNext(&batch); !status.ok()) {
-      throw Error(0, "bad_request", "cannot read the rows to ingest: " + status.ToString());
+      throw Error(0, "client_invalid_argument", "cannot read the rows to ingest: " + status.ToString());
     }
     if (!batch) break;
     ahead.push_back(std::move(batch));
@@ -1398,7 +1383,7 @@ int64_t Session::Ingest(const std::string& table, arrow::RecordBatchReader& data
     Reply reply = core_->transport->Exchange(std::move(request), &source);
     if (reply.status != 200) throw ProblemOf(reply);
     auto object = ParseObject(reply.body);
-    if (!object) throw Error(reply.status, "protocol_error", "the ingest answer is not JSON");
+    if (!object) throw Error(reply.status, "client_protocol_error", "the ingest answer is not JSON");
     return Integer(*object, "rows_ingested").value_or(0);
   }
   return IngestParts(*core_, table, shared, options);
@@ -1469,7 +1454,7 @@ Discovery Client::Discover() {
   if (reply.status != 200) throw ProblemOf(reply);
   auto object = ParseObject(reply.body);
   if (!object || String(*object, "protocol") != "warp-sql") {
-    throw Error(reply.status, "protocol_error", BaseUrl(core_->options) + " is not a Warp SQL server");
+    throw Error(reply.status, "client_protocol_error", BaseUrl(core_->options) + " is not a Warp SQL server");
   }
   Discovery discovery;
   discovery.document = *object;
@@ -1619,7 +1604,7 @@ std::unique_ptr<Session> Client::CreateSession(const json::object& options) {
   if (reply.status != 201 && reply.status != 200) throw ProblemOf(reply);
   auto object = ParseObject(reply.body);
   if (!object || String(*object, "session_id").empty()) {
-    throw Error(reply.status, "protocol_error", "the session answer has no session_id");
+    throw Error(reply.status, "client_protocol_error", "the session answer has no session_id");
   }
   auto core = std::make_shared<SessionCore>(core_, String(*object, "session_id"),
                                             Integer(*object, "idle_timeout_s").value_or(0));
@@ -1635,9 +1620,9 @@ namespace {
 std::pair<int, json::value> ExchangeJson(http::verb method, const std::string& url, std::string form_body,
                                          const TlsOptions& tls, std::chrono::milliseconds timeout) {
   auto parsed = boost::urls::parse_uri(url);
-  if (!parsed) throw Error(0, "bad_request", "not a URL: " + url);
+  if (!parsed) throw Error(0, "client_invalid_argument", "not a URL: " + url);
   const std::string scheme(parsed->scheme());
-  if (scheme != "http" && scheme != "https") throw Error(0, "bad_request", "not an http(s) URL: " + url);
+  if (scheme != "http" && scheme != "https") throw Error(0, "client_invalid_argument", "not an http(s) URL: " + url);
   std::string host(parsed->encoded_host_address());
   if (host.size() > 2 && host.front() == '[') host = host.substr(1, host.size() - 2);
   const std::string port_text(parsed->port());
@@ -1653,7 +1638,7 @@ std::pair<int, json::value> ExchangeJson(http::verb method, const std::string& u
   Transport transport(host, port, context, timeout);
   http::request<http::string_body> request(method, target, 11);
   request.set(http::field::host, std::string(parsed->encoded_authority()));
-  request.set(http::field::user_agent, "warpsql-client-cpp");
+  request.set(http::field::user_agent, DefaultUserAgent());
   request.set(http::field::accept, "application/json");
   if (method == http::verb::post) {
     request.set(http::field::content_type, "application/x-www-form-urlencoded");

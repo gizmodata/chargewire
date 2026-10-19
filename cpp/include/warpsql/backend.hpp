@@ -236,6 +236,13 @@ class EngineSession {
   virtual void Commit();
   virtual void Rollback();
 
+  // The request's Warp-Query-Tag (spec §2.5), a JSON object, for the statement or ingest
+  // about to run in this session; null when the request carried none. Called on the
+  // session's engine thread right before Execute(), ExecutePrepared() and Ingest(), and
+  // with null right after they return. An engine that records statements (a query history,
+  // an audit log) records the tag with the statement it starts; the default ignores it.
+  virtual void SetQueryTag(const boost::json::object* tag) { (void)tag; }
+
   // The session's transaction (spec §5.2), as the engine has it now. Called on the
   // session's engine thread after every call that runs work in it (a statement, an ingest,
   // an option change, a commit or rollback), whether it succeeded or failed; the SDK keeps
@@ -249,16 +256,30 @@ struct ServerIdentity {
   std::string version;
 };
 
+// The optional features (spec §3.1) whose support depends on the engine. The SDK lists
+// each in discovery only when the backend has it, refuses its endpoints otherwise
+// (not_implemented), and says sql_transactions_supported in server-info accordingly.
+struct BackendCapabilities {
+  bool prepared_statements = false;  // EngineSession::Prepare() and ExecutePrepared() (spec §7)
+  bool transactions = false;         // Commit(), Rollback() and autocommit false (spec §5.5)
+  bool ingest = false;               // EngineSession::Ingest(): bulk and partitioned ingest (spec §8)
+};
+
 class Backend {
  public:
   virtual ~Backend() = default;
 
   virtual ServerIdentity Identity() = 0;
 
+  // What the engine supports of the optional features (spec §3.1). The default: none.
+  virtual BackendCapabilities Capabilities() { return {}; }
+
   // Opens the engine side of a new session for `principal`. `session_id` is the session's
   // id (spec §2.3), the one its client holds: an engine that shows or takes session ids
   // (a sessions table, a command that ends a session, logs) uses this one, so a client
-  // finds its own session without a second id to translate.
+  // finds its own session without a second id to translate. `options` are the create
+  // request's session options (spec §5.1): one that fails fails the create, so throw its
+  // error (unknown_option or invalid_option_value, naming the option).
   virtual std::unique_ptr<EngineSession> OpenSession(const Principal& principal, const std::string& session_id,
                                                      const boost::json::object& options) = 0;
 
@@ -266,7 +287,10 @@ class Backend {
   // the SDK gives up on it after the health timeout either way.
   virtual void CheckHealth() {}
 
-  // Facts for GET …/metadata/server-info (spec §10), merged over the SDK's own.
+  // Facts for GET …/metadata/server-info (spec §10), merged over the SDK's own
+  // (server_name, server_version, server_arrow_version, sql_identifier_quote_char,
+  // sql_transactions_supported). Protocol keys are Flight SQL SqlInfo names (server_read_only,
+  // ...); an engine's own keys take its prefix (spec §2.7: duckdb_version).
   virtual boost::json::object ServerInfo() { return {}; }
 };
 

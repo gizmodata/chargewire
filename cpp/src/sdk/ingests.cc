@@ -121,8 +121,8 @@ class IngestOperation::Reader : public IngestBatches {
   std::shared_ptr<IngestOperation> op_;
 };
 
-IngestOperation::IngestOperation(std::string id, IngestTarget target)
-    : id_(std::move(id)), target_(std::move(target)), last_activity_(Clock::now()) {}
+IngestOperation::IngestOperation(std::string id, IngestTarget target, std::optional<boost::json::object> query_tag)
+    : id_(std::move(id)), target_(std::move(target)), query_tag_(std::move(query_tag)), last_activity_(Clock::now()) {}
 
 void IngestOperation::Touch() { last_activity_ = Clock::now(); }
 
@@ -273,7 +273,7 @@ void IngestOperation::EngineDone(std::optional<int64_t> rows, std::exception_ptr
       } catch (const Error& e) {
         FailLocked(e);
       } catch (const std::exception& e) {
-        FailLocked(Error(ErrorCode::kExecutionError, e.what()));
+        FailLocked(Error(ErrorCode::kInternalError, e.what()));
       }
     } else {
       // The engine committed. An abort that came after it had read every part (while

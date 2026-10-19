@@ -1,8 +1,10 @@
 """Spec §6: statements, the two response paths, and bind parameters."""
 
 import base64
+import concurrent.futures
 import io
 import re
+import time
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -160,3 +162,63 @@ def test_statement_document_timestamps_are_rfc3339(warp, session_id):
         stamps["expires_at"] = doc["result"]["expires_at"]
     for key, value in stamps.items():
         assert re.fullmatch(pattern=RFC3339, string=value), f"{key} is not RFC 3339: {value!r}"
+
+
+SLOW = "SELECT sum(i) FROM range(100000000000) t(i)"  # runs until stopped
+
+
+def test_a_finished_statement_says_when_it_finished(warp, session_id):
+    # §6.2: finished_at in every terminal state, after started_at.
+    doc = warp.execute(session_id=session_id, sql="SELECT 1")
+    assert doc["state"] == "succeeded", doc
+    assert doc["submitted_at"] <= doc["started_at"] <= doc["finished_at"], doc
+    cancelled = warp.submit(session_id=session_id, sql=SLOW, headers={"Prefer": "respond-async"}).json()
+    warp.http.post(url=f"{warp.statement_url(session_id, cancelled['statement_id'])}/cancel", headers=warp.headers())
+    doc = warp.wait_done(session_id=session_id, statement_id=cancelled["statement_id"])
+    assert doc["state"] == "cancelled" and doc["finished_at"], doc
+    assert doc["result"] is None, doc
+
+
+def test_a_running_query_already_has_its_rows_result(warp, session_id):
+    # §6.2: once the schema is known, a running statement's result is a rows result whose
+    # partitions say batches and rows are not known yet.
+    statement_id = warp.submit(session_id=session_id, sql=SLOW, headers={"Prefer": "respond-async"}).json()[
+        "statement_id"]
+    try:
+        deadline = time.monotonic() + 30
+        while True:
+            doc = warp.status(session_id=session_id, statement_id=statement_id, wait=1)
+            if doc["result"] is not None:
+                break
+            assert doc["state"] in ("queued", "running"), doc
+            assert time.monotonic() < deadline, doc
+        assert doc["state"] == "running", doc
+        assert "finished_at" not in doc, doc
+        result = doc["result"]
+        assert result["kind"] == "rows" and result["schema"], doc
+        assert isinstance(result["retained"], bool), doc
+        assert result["partitions"] and all(p["batches"] is None and p["rows"] is None for p in result["partitions"]), doc
+    finally:
+        warp.http.post(url=f"{warp.statement_url(session_id, statement_id)}/cancel", headers=warp.headers())
+
+
+def test_a_statement_cancelled_before_its_answer_is_an_error_response(warp, session_id):
+    # §6.1: the submit's answer for a statement cancelled by then is its error (409), with
+    # the statement named and its cancel_reason, never a success status with a document.
+    response = warp.submit(session_id=session_id, sql=SLOW,
+                           headers={"Prefer": "wait=30", "Warp-Statement-Timeout": "300"})
+    problem = assert_problem(response=response, status=409, code="statement_timeout")
+    assert problem["cancel_reason"] == "timeout", problem
+    statement_id = response.headers["warp-statement-id"]
+    doc = warp.status(session_id=session_id, statement_id=statement_id)
+    assert doc["state"] == "cancelled" and doc["error"]["code"] == "statement_timeout", doc
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        waiting = pool.submit(warp.submit, session_id=session_id, sql=SLOW, headers={"Prefer": "wait=30"})
+        time.sleep(1)
+        cancel = warp.http.post(url=f"{warp.session_url(session_id)}/cancel", headers=warp.headers())
+        assert cancel.status_code == 202 and len(cancel.json()["cancelled"]) == 1, cancel.text
+        response = waiting.result(timeout=60)
+    problem = assert_problem(response=response, status=409, code="statement_cancelled")
+    assert problem["cancel_reason"] == "client", problem
+    assert response.headers["warp-statement-id"] == cancel.json()["cancelled"][0]

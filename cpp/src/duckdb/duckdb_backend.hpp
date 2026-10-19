@@ -24,6 +24,8 @@ class DuckDBBackend : public warpsql::Backend {
     std::vector<std::pair<std::string, std::string>> attach_options;
     // Most rows per Arrow batch in statement results; 0: DuckDB's default (131072).
     std::size_t result_batch_rows = 0;
+    // The SQL the health check runs (spec §3.2).
+    std::string health_query = "SELECT 1";
   };
 
   explicit DuckDBBackend(Options options);
@@ -33,6 +35,7 @@ class DuckDBBackend : public warpsql::Backend {
   std::unique_ptr<warpsql::EngineSession> OpenSession(const warpsql::Principal& principal, const std::string& session_id,
                                                       const boost::json::object& options) override;
   void CheckHealth() override;
+  warpsql::BackendCapabilities Capabilities() override;
   boost::json::object ServerInfo() override;
 
   duckdb_v2_instance_handle instance() const { return instance_.get(); }
@@ -50,6 +53,8 @@ class DuckDBBackend : public warpsql::Backend {
   Instance instance_;
   std::string version_;
   std::size_t result_batch_rows_ = 0;
+  bool read_only_ = false;
+  std::string health_query_;
   std::mutex health_mutex_;
   Connection health_connection_;
 };

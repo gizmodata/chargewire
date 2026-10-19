@@ -262,7 +262,7 @@ DuckDBSession::DuckDBSession(duckdb_v2_instance_handle instance, std::size_t bat
   // DuckDB's default Arrow mapping, as GizmoSQL 1.x uses: HUGEINT (every integer SUM)
   // arrives as decimal128(38, 0), which clients can compute with. The lossless mode
   // keeps UUID, JSON and TIMETZ exact but turns HUGEINT into opaque bytes; a session can
-  // opt in with the arrow_lossless_conversion option.
+  // opt in with the duckdb_arrow_lossless_conversion option.
 }
 
 DuckDBSession::~DuckDBSession() {
@@ -808,10 +808,17 @@ warpsql::OptionErrors DuckDBSession::SetOptions(const json::object& options) {
     autocommit_ = on;
     transaction_ = on ? warpsql::TransactionState::kNone : warpsql::TransactionState::kOpen;
   });
-  apply("session_tag", [&](const json::value& value) { session_tag_ = value; });
-  apply("arrow_lossless_conversion", [&](const json::value& value) {
+  apply("session_tag", [&](const json::value& value) {
+    if (!value.is_object() && !value.is_null()) {
+      throw Error(ErrorCode::kInvalidOptionValue, "session_tag must be a JSON object");
+    }
+    session_tag_ = value;
+  });
+  // DuckDB's arrow_lossless_conversion setting, as a session option of this engine's own
+  // (spec §2.7).
+  apply("duckdb_arrow_lossless_conversion", [&](const json::value& value) {
     if (!value.is_bool()) {
-      throw Error(ErrorCode::kInvalidOptionValue, "arrow_lossless_conversion must be true or false");
+      throw Error(ErrorCode::kInvalidOptionValue, "duckdb_arrow_lossless_conversion must be true or false");
     }
     RunSql(connection_.get(), value.as_bool() ? "SET SESSION arrow_lossless_conversion = true"
                                               : "SET SESSION arrow_lossless_conversion = false");
@@ -819,7 +826,7 @@ warpsql::OptionErrors DuckDBSession::SetOptions(const json::object& options) {
   for (const auto& option : options) {
     const std::string_view key = option.key();
     if (key != "catalog" && key != "schema" && key != "autocommit" && key != "session_tag" &&
-        key != "arrow_lossless_conversion") {
+        key != "duckdb_arrow_lossless_conversion") {
       errors.emplace(std::string(key), Error(ErrorCode::kUnknownOption, "unknown session option"));
     }
   }
@@ -831,7 +838,7 @@ json::object DuckDBSession::Options() {
       {"catalog", QueryText(connection_.get(), "SELECT current_database()")},
       {"schema", QueryText(connection_.get(), "SELECT current_schema()")},
       {"autocommit", autocommit_},
-      {"arrow_lossless_conversion", Lossless()},
+      {"duckdb_arrow_lossless_conversion", Lossless()},
   };
   if (!session_tag_.is_null()) {
     options["session_tag"] = session_tag_;

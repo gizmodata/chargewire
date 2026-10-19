@@ -7,7 +7,11 @@
 #include <openssl/evp.h>
 
 #include <array>
+#include <chrono>
+#include <condition_variable>
 #include <filesystem>
+#include <mutex>
+#include <thread>
 
 #include "duckdb_describe.hpp"
 #include "duckdb_session.hpp"
@@ -17,10 +21,15 @@
 namespace warpduckdb {
 
 namespace json = boost::json;
+
+// How long a health check may run before it is interrupted.
+constexpr auto kHealthCheckLimit = std::chrono::seconds(10);
 using warpsql::Error;
 using warpsql::ErrorCode;
 
-DuckDBBackend::DuckDBBackend(Options options) : result_batch_rows_(options.result_batch_rows) {
+DuckDBBackend::DuckDBBackend(Options options)
+    : result_batch_rows_(options.result_batch_rows), read_only_(options.read_only),
+      health_query_(options.health_query) {
   Call([&](auto* err) { return duckdb_v2_environment_create(environment_.out(), err); });
   std::vector<std::pair<std::string, std::string>> settings = options.instance_options;
   if (options.read_only) {
@@ -76,7 +85,7 @@ DuckDBBackend::~DuckDBBackend() {
 }
 
 warpsql::ServerIdentity DuckDBBackend::Identity() {
-  return {"warp-duckdb", "0.1.0 (DuckDB " + version_ + ")"};
+  return {"warp-duckdb", "1.0.0 (DuckDB " + version_ + ")"};
 }
 
 std::unique_ptr<warpsql::EngineSession> DuckDBBackend::NewSession(const warpsql::Principal&, const std::string&) {
@@ -98,12 +107,48 @@ std::unique_ptr<warpsql::EngineSession> DuckDBBackend::OpenSession(
 }
 
 void DuckDBBackend::CheckHealth() {
-  std::lock_guard lock(health_mutex_);
-  QueryText(health_connection_.get(), "SELECT 1");
+  // One check at a time; a probe that comes while one hangs fails at once rather than
+  // queue an engine thread behind it.
+  std::unique_lock lock(health_mutex_, std::try_to_lock);
+  if (!lock.owns_lock()) {
+    throw Error(ErrorCode::kInternalError, "the previous health check has not finished");
+  }
+  // A check that hangs is interrupted, so it never holds its engine thread for long (the
+  // SDK has answered "check_failed" by then, spec §3.2).
+  std::mutex mutex;
+  std::condition_variable finished;
+  bool done = false;
+  std::thread watchdog([&] {
+    std::unique_lock wait(mutex);
+    if (!finished.wait_for(wait, kHealthCheckLimit, [&] { return done; })) {
+      duckdb_v2_connection_interrupt(health_connection_.get(), nullptr);
+    }
+  });
+  struct Join {
+    std::mutex& mutex;
+    std::condition_variable& finished;
+    bool& done;
+    std::thread& watchdog;
+    ~Join() {
+      {
+        std::lock_guard guard(mutex);
+        done = true;
+      }
+      finished.notify_all();
+      watchdog.join();
+    }
+  } join{mutex, finished, done, watchdog};
+  RunSql(health_connection_.get(), health_query_);
+}
+
+warpsql::BackendCapabilities DuckDBBackend::Capabilities() {
+  return {.prepared_statements = true, .transactions = true, .ingest = true};
 }
 
 json::object DuckDBBackend::ServerInfo() {
-  return {{"engine", "duckdb"}, {"engine_version", version_}};
+  // server_read_only: the database file is opened read-only (spec §10); duckdb_version: the
+  // engine's own key (spec §2.7).
+  return {{"server_read_only", read_only_}, {"duckdb_version", version_}};
 }
 
 warpsql::Principal StaticPasswordAuthenticator::AuthenticatePassword(std::string_view username,

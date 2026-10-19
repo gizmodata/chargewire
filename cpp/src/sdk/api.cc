@@ -147,6 +147,38 @@ Response NoContent() {
   return response;
 }
 
+// The longest Warp-Query-Tag a server takes (spec §2.5).
+constexpr std::size_t kMaxQueryTagBytes = 4096;
+
+// The request's Warp-Query-Tag (spec §2.5): a JSON object in ASCII, at most 4,096 bytes.
+std::optional<json::object> QueryTag(const Request& request) {
+  const std::string_view header = request.Header("Warp-Query-Tag");
+  if (header.empty()) return std::nullopt;
+  if (header.size() > kMaxQueryTagBytes) {
+    throw Error(ErrorCode::kBadRequest, std::format("Warp-Query-Tag is longer than {} bytes", kMaxQueryTagBytes));
+  }
+  if (std::ranges::any_of(header, [](char c) { return static_cast<unsigned char>(c) >= 0x80; })) {
+    throw Error(ErrorCode::kBadRequest, "Warp-Query-Tag must be ASCII (write other characters as \\u escapes)");
+  }
+  boost::system::error_code ec;
+  json::value tag = json::parse(header, ec);
+  if (ec || !tag.is_object()) {
+    throw Error(ErrorCode::kBadRequest, "Warp-Query-Tag must be a JSON object");
+  }
+  return std::move(tag.as_object());
+}
+
+// Runs `run` with the engine told the request's query tag, and untold after.
+template <typename Fn>
+auto WithQueryTag(EngineSession& engine, const std::optional<json::object>& tag, Fn run) {
+  struct Told {
+    EngineSession& engine;
+    ~Told() { engine.SetQueryTag(nullptr); }
+  } told{engine};
+  engine.SetQueryTag(tag ? &*tag : nullptr);
+  return run();
+}
+
 json::object OptionErrorsDocument(const OptionErrors& errors) {
   json::object out;
   for (const auto& [name, error] : errors) {
@@ -229,7 +261,7 @@ Task<Response> Api::Handle(Request& request) {
       case ErrorCode::kCertificateMismatch:
       case ErrorCode::kCertificateIdentityMismatch:
       case ErrorCode::kUnknownCertificateIdentity:
-      case ErrorCode::kClientCertificateRequired:
+      case ErrorCode::kCertificateRequired:
         if (request.connection_auth_failures != nullptr &&
             ++*request.connection_auth_failures >= kMaxAuthFailuresPerConnection) {
           close = true;
@@ -241,8 +273,7 @@ Task<Response> Api::Handle(Request& request) {
     response = ProblemResponse(error, request.request_id);
     response.close = close;
   } catch (const std::exception&) {
-    response = ProblemResponse(Error(ErrorCode::kExecutionError, "internal server error"),
-                               request.request_id);
+    response = ProblemResponse(Error(ErrorCode::kInternalError, "internal server error"), request.request_id);
   }
   response.headers.emplace_back("Warp-Request-Id", request.request_id);
 
@@ -451,9 +482,18 @@ bool Api::OffersCertificateSignIn() const {
 
 Task<Response> Api::Discovery(Request&) {
   const ServerIdentity identity = state_.backend->Identity();
-  json::array capabilities{"prepared_statements", "transactions", "ingest", "result_retention",
-                           "long_poll", "ipc_compression_zstd", "ipc_compression_lz4_frame",
-                           "result_partitions", "partitioned_ingest"};
+  const BackendCapabilities engine = state_.backend->Capabilities();
+  // The capabilities of spec §3.1: the SDK's own, and the engine's.
+  json::array capabilities;
+  if (engine.prepared_statements) capabilities.emplace_back("prepared_statements");
+  if (engine.transactions) capabilities.emplace_back("transactions");
+  if (engine.ingest) {
+    capabilities.emplace_back("ingest");
+    capabilities.emplace_back("partitioned_ingest");
+  }
+  for (const char* sdk : {"long_poll", "ipc_compression_zstd", "ipc_compression_lz4_frame", "result_partitions"}) {
+    capabilities.emplace_back(sdk);
+  }
   // client_certificate only where the server verifies client certificates and its tokens
   // can be bound to them (spec §4.4).
   json::array grants;
@@ -475,7 +515,6 @@ Task<Response> Api::Discovery(Request&) {
   json::object doc{
       {"protocol", "warp-sql"},
       {"protocol_versions", json::array{"1"}},
-      {"draft", "0.1.0"},
       {"server", {{"name", identity.name}, {"version", identity.version}}},
       {"capabilities", std::move(capabilities)},
       {"auth", std::move(auth)},
@@ -570,7 +609,7 @@ Task<Response> Api::IssueToken(Request& request) {
         net::use_awaitable);
   } else if (grant_type == "client_certificate" && OffersCertificateSignIn()) {
     if (!certificate) {
-      throw Error(ErrorCode::kClientCertificateRequired,
+      throw Error(ErrorCode::kCertificateRequired,
                   "the client_certificate grant needs a TLS client certificate on this connection");
     }
     const std::string identity = CertificateIdentity(*certificate, tls->client_identity_source);
@@ -839,7 +878,7 @@ void Api::ReportSecurityEvent(const Request& request, const Error& error) const 
     case ErrorCode::kCertificateIdentityMismatch:
     case ErrorCode::kCertificateRevoked:
     case ErrorCode::kUnknownCertificateIdentity:
-    case ErrorCode::kClientCertificateRequired:
+    case ErrorCode::kCertificateRequired:
       break;
     default:
       return;
@@ -929,6 +968,12 @@ Session::Client Api::ClientOf(const Request& request) {
 void Api::RejectIfDraining() const {
   if (state_.draining) {
     throw Error(ErrorCode::kServerDraining, "the server is shutting down");
+  }
+}
+
+void Api::RequireCapability(bool BackendCapabilities::*feature, std::string_view name) const {
+  if (!(state_.backend->Capabilities().*feature)) {
+    throw Error(ErrorCode::kNotImplemented, std::format("this server does not offer {} (spec §3.1)", name));
   }
 }
 
@@ -1026,6 +1071,7 @@ Task<Response> Api::DeleteSession(Request& request, const std::string& session_i
 Task<Response> Api::EndTransaction(Request& request, const std::string& session_id,
                                    bool commit) {
   auto session = OwnSession(request, session_id);
+  RequireCapability(&BackendCapabilities::transactions, "transactions");
   co_await OnEngine(*session, [session, commit] {
     if (commit) {
       session->engine().Commit();
@@ -1149,8 +1195,9 @@ void Api::Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> state
       session->RefreshTransaction();
       statement->Fail(error);
     } catch (const std::exception& error) {
+      // Not an Error: the engine's code failed, not the statement (spec §11).
       session->RefreshTransaction();
-      statement->Fail(Error(ErrorCode::kExecutionError, error.what()));
+      statement->Fail(Error(ErrorCode::kInternalError, error.what()));
     }
   });
 }
@@ -1216,6 +1263,12 @@ Task<Response> Api::Launch(Request& request, std::shared_ptr<Session> session, S
     timeout = std::chrono::milliseconds(ms);
   }
 
+  if (auto tag = QueryTag(request)) {
+    work = [tag = std::move(tag), inner = std::move(work)](EngineSession& engine) {
+      return WithQueryTag(engine, tag, [&] { return inner(engine); });
+    };
+  }
+
   const std::string statement_id = NewId("q");
   // Idempotent submission (spec §6.7): a retry gets the original statement.
   if (auto existing =
@@ -1275,16 +1328,17 @@ Task<Response> Api::Launch(Request& request, std::shared_ptr<Session> session, S
     seen = co_await statement->changed().WaitChange(seen, std::min(deadline, look_again));
   }
 
-  // A statement that failed before its answer started is an error response (§6.1), even
-  // with rows already buffered: those rows were never sent, and a 200 with a statement
-  // document is what a statement without rows answers, so a client that took it at its
-  // status would report a failed query as an empty success. (The streamed path waits for
-  // a split's decision, so a failure there was the common case.)
-  if (statement->state() == StatementState::kFailed) {
-    throw *statement->error();
+  // A statement that failed or was cancelled before its answer started is an error
+  // response (§6.1), even with rows already buffered: those rows were never sent, and a
+  // 200 with a statement document is what a statement without rows answers, so a client
+  // that took it at its status would report a failed query as an empty success. (The
+  // streamed path waits for a split's decision, so a failure there was the common case.)
+  if (const auto state = statement->state(); state == StatementState::kFailed || state == StatementState::kCancelled) {
+    Response response = ProblemResponse(*statement->error(), request.request_id);
+    response.headers.emplace_back("Warp-Statement-Id", statement_id);
+    co_return response;
   }
-  if (streamed && statement->HasRows() && statement->PartitionCount() &&
-      statement->state() != StatementState::kCancelled) {
+  if (streamed && statement->HasRows() && statement->PartitionCount()) {
     statement->ClaimRead(0, 0);
     co_return ResultStream(session, statement, 0, 0, request.Header("Warp-IPC-Compression"));
   }
@@ -1327,6 +1381,7 @@ Task<Response> Api::SubmitStatement(Request& request, const std::string& session
 
 Task<Response> Api::PrepareStatement(Request& request, const std::string& session_id) {
   auto session = OwnSession(request, session_id);
+  RequireCapability(&BackendCapabilities::prepared_statements, "prepared statements");
   RejectIfDraining();
   const json::object body = ParseObject(request.body);
   std::string sql = RequiredString(body, "sql");
@@ -1362,6 +1417,7 @@ Task<Response> Api::PrepareStatement(Request& request, const std::string& sessio
 Task<Response> Api::ExecutePrepared(Request& request, const std::string& session_id,
                                     const std::string& prepared_id) {
   auto session = OwnSession(request, session_id);
+  RequireCapability(&BackendCapabilities::prepared_statements, "prepared statements");
   auto prepared = session->FindPrepared(prepared_id);
   Parameters parameters;
   std::shared_ptr<ValidatedReader> rows;
@@ -1435,6 +1491,7 @@ Task<std::invoke_result_t<Fn>> AwaitIngest(Signal& signal, Fn done) {
 
 Task<Response> Api::OpenIngest(Request& request, const std::string& session_id) {
   auto session = OwnSession(request, session_id);
+  RequireCapability(&BackendCapabilities::ingest, "ingest");
   RejectIfDraining();
   const json::object body = ParseObject(request.body);
   IngestTarget target = ParseIngestTarget([&](const char* name) -> std::optional<std::string> {
@@ -1444,12 +1501,13 @@ Task<Response> Api::OpenIngest(Request& request, const std::string& session_id) 
     if (value->is_bool()) return std::string(value->as_bool() ? "true" : "false");
     throw Error(ErrorCode::kBadRequest, std::format("'{}' must be a string", name));
   });
+  auto tag = QueryTag(request);
   const std::string id = NewId("i");
   if (auto existing = ReserveIdempotencyKey(request, *session, id, request.path + "\n" + request.body)) {
     auto ingest = session->FindIngest(existing->statement_id);
     co_return JsonResponse(http::status::ok, ingest->Document());
   }
-  auto ingest = std::make_shared<IngestOperation>(id, std::move(target));
+  auto ingest = std::make_shared<IngestOperation>(id, std::move(target), std::move(tag));
   session->AddIngest(ingest);
   Response response = JsonResponse(http::status::created, ingest->Document());
   response.headers.emplace_back("Location", std::format("/warp/v1/sessions/{}/ingests/{}", session_id, id));
@@ -1474,9 +1532,9 @@ Task<Response> Api::CommitIngest(Request& request, const std::string& session_id
   auto session = OwnSession(request, session_id);
   auto ingest = session->FindIngest(ingest_id);
   const json::object body = ParseObject(request.body);
-  const json::value* parts = body.if_contains("parts");
+  const json::value* parts = body.if_contains("part_count");
   if (parts == nullptr || !parts->is_int64()) {
-    throw Error(ErrorCode::kBadRequest, "'parts' must be the number of parts");
+    throw Error(ErrorCode::kBadRequest, "'part_count' must be the number of parts");
   }
   ingest->Seal(static_cast<int>(parts->as_int64()));
   const int64_t rows = *co_await AwaitIngest(ingest->changed(), [&] { return ingest->Committed(); });
@@ -1519,7 +1577,8 @@ Task<Response> Api::IngestPart(Request& request, const std::string& session_id, 
       std::exception_ptr error;
       try {
         auto reader = OpenValidatedIpc(QueueInput(queue));
-        rows = session->engine().Ingest(ingest->target(), ingest->Batches(number, reader));
+        rows = WithQueryTag(session->engine(), ingest->query_tag(),
+                            [&] { return session->engine().Ingest(ingest->target(), ingest->Batches(number, reader)); });
       } catch (...) {
         error = std::current_exception();
       }
@@ -1555,6 +1614,7 @@ Task<Response> Api::IngestPart(Request& request, const std::string& session_id, 
 
 Task<Response> Api::Ingest(Request& request, const std::string& session_id) {
   auto session = OwnSession(request, session_id);
+  RequireCapability(&BackendCapabilities::ingest, "ingest");
   RejectIfDraining();
   if (!request.body_source) {
     throw Error(ErrorCode::kBadRequest, "ingest needs an Arrow IPC stream body");
@@ -1599,6 +1659,7 @@ Task<Response> Api::Ingest(Request& request, const std::string& session_id) {
   }
   const std::string key(request.Header("Idempotency-Key"));
 
+  auto tag = QueryTag(request);
   auto queue = std::make_shared<ByteQueue>(8);
   // Closing the session (a server stop closes every one) aborts the upload, so the engine
   // thread below never waits for bytes this coroutine will no longer push.
@@ -1609,13 +1670,13 @@ Task<Response> Api::Ingest(Request& request, const std::string& session_id) {
     ~ForgetUpload() { session.RemoveUpload(upload); }
   } forget_upload{*session, queue.get()};
   auto completion = std::make_shared<Completion<int64_t>>();
-  net::post(session->strand(), [session, queue, completion, target] {
+  net::post(session->strand(), [session, queue, completion, target, tag] {
     std::shared_ptr<ValidatedReader> rows;
     std::optional<int64_t> written;
     std::exception_ptr failure;
     try {
       rows = OpenValidatedIpc(QueueInput(queue));
-      written = session->engine().Ingest(target, rows);
+      written = WithQueryTag(session->engine(), tag, [&] { return session->engine().Ingest(target, rows); });
     } catch (const Error&) {
       failure = rows && rows->failure() ? std::make_exception_ptr(Error(
                                               ErrorCode::kUnsupportedArrowType, *rows->failure()))
@@ -1662,14 +1723,13 @@ Task<Response> Api::Metadata(Request& request, const std::string& session_id,
   auto session = OwnSession(request, session_id);
   if (kind_name == "server-info") {
     const ServerIdentity identity = state_.backend->Identity();
+    // Spec §10's keys; the backend adds what it knows (server_read_only, its own).
     json::object info{
         {"server_name", identity.name},
         {"server_version", identity.version},
-        {"protocol", "warp-sql"},
-        {"protocol_version", "1"},
-        {"sql_identifier_quote_char", "\""},
-        {"sql_transactions_supported", true},
         {"server_arrow_version", ARROW_VERSION_STRING},
+        {"sql_identifier_quote_char", "\""},
+        {"sql_transactions_supported", state_.backend->Capabilities().transactions},
     };
     for (const auto& item : state_.backend->ServerInfo()) {
       info[item.key()] = item.value();

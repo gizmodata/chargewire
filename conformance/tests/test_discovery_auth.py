@@ -10,6 +10,10 @@ def test_discovery_describes_the_server(server):
     assert doc["protocol"] == "warp-sql"
     assert "1" in doc["protocol_versions"]
     assert isinstance(doc["capabilities"], list)
+    assert all(isinstance(name, str) for name in doc["capabilities"])
+    # Gone before 1.0: retention is core, and split results are result_partitions (§3.1).
+    assert not {"result_retention", "partitioned_results"} & set(doc["capabilities"]), doc
+    assert "draft" not in doc, doc
     assert doc["server"]["name"]
     assert "password" in doc["auth"]["grant_types"] or doc["auth"]["grant_types"]
 
@@ -38,6 +42,8 @@ def assert_problem(response: httpx.Response, status: int, code: str) -> dict:
     assert problem["code"] == code, problem
     assert problem["status"] == status
     assert problem["type"] == f"urn:warp-sql:error:{code}"
+    # §11: the title is for people, not the code again.
+    assert isinstance(problem["title"], str) and problem["title"] and problem["title"] != code, problem
     return problem
 
 

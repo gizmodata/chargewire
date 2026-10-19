@@ -83,6 +83,12 @@ def test_foreign_keys(warp, keyed, kind, params):
                      {"pk_column_name": "b", "fk_column_name": "y", "key_sequence": 2}]
 
 
+# §10: the version 1 keys and their JSON types.
+SERVER_INFO_TYPES = {"server_name": str, "server_version": str, "server_arrow_version": str,
+                     "server_read_only": bool, "sql_identifier_quote_char": str,
+                     "sql_transactions_supported": bool}
+
+
 def test_server_info_is_json(warp, session_id):
     response = warp.http.get(url=f"{warp.session_url(session_id)}/metadata/server-info", headers=warp.headers())
     assert response.status_code == 200
@@ -90,6 +96,17 @@ def test_server_info_is_json(warp, session_id):
     assert info["server_name"]
     assert info["sql_identifier_quote_char"] == '"'
     assert isinstance(info["sql_transactions_supported"], bool)
+    for key, kind in SERVER_INFO_TYPES.items():
+        if key in info:
+            assert isinstance(info[key], kind), (key, info[key])
+    # Discovery's facts, not repeated here under other names; an engine's own keys are
+    # prefixed (§2.7), so none of these unprefixed names.
+    assert not {"protocol", "protocol_version", "engine", "engine_version", "read_only",
+                "transactions_supported", "instance_id"} & set(info), info
+    discovery = warp.http.get(url="/warp").json()
+    assert info["server_name"] == discovery["server"]["name"]
+    assert info["server_version"] == discovery["server"]["version"]
+    assert info["sql_transactions_supported"] == ("transactions" in discovery["capabilities"]), (info, discovery)
 
 
 def test_unknown_metadata_kind(warp, session_id):

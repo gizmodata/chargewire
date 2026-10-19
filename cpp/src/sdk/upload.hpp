@@ -94,7 +94,7 @@ inline Error OwnedError(const std::exception_ptr& error) {
   } catch (const Error& e) {
     return e;
   } catch (...) {
-    return Error(ErrorCode::kExecutionError, "internal server error");
+    return Error(ErrorCode::kInternalError, "internal server error");
   }
 }
 

@@ -7,6 +7,7 @@
 //       [--mtls-crl-allow-missing-ca-crls]
 //       [--cors-origin ORIGIN]... [--drain-seconds N] [--token-lifetime-seconds N]
 //       [--session-idle-timeout-seconds N] [--finished-statement-ttl-seconds N]
+//       [--health-check-query SQL]
 //       [--oauth-issuer URL --oauth-client-id ID --oauth-identities A,B [--oauth-scopes S]
 //        [--oauth-base-url URL] [--oauth-redirect-uri URL] [--oauth-provider-name NAME] [--oauth-max-flows N]]
 //
@@ -56,7 +57,9 @@ struct Flags {
             << "       [--cors-origin ORIGIN]... [--drain-seconds N] [--token-lifetime-seconds N]\n"
             << "       [--session-idle-timeout-seconds N] [--finished-statement-ttl-seconds N]\n"
             << "       [--oauth-issuer URL --oauth-client-id ID --oauth-identities A,B [--oauth-scopes S]\n"
-            << "        [--oauth-base-url URL] [--oauth-redirect-uri URL] [--oauth-provider-name NAME] [--oauth-max-flows N]]\n";
+            << "        [--oauth-base-url URL] [--oauth-redirect-uri URL] [--oauth-provider-name NAME] [--oauth-max-flows N]]\n"
+
+            << "       [--health-check-query SQL]\n";
   std::exit(2);
 }
 
@@ -110,6 +113,7 @@ Flags ParseFlags(int argc, char** argv) {
     } else if (flag == "--mtls-require-identity-match") tls.require_identity_match = boolean();
     else if (flag == "--cors-origin") flags.server.cors_allowed_origins.push_back(value());
     else if (flag == "--drain-seconds") flags.drain_seconds = std::stoi(value());
+    else if (flag == "--health-check-query") flags.backend.health_query = value();
     // Short lifetimes let clients test token renewal, session eviction and statement expiry.
     else if (flag == "--token-lifetime-seconds")
       flags.server.token_lifetime = std::chrono::seconds(std::stoi(value()));

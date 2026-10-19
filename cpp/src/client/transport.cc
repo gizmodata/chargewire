@@ -73,7 +73,7 @@ bool AddWindowsRoots(ssl::context& context) {
 
 // A TLS failure as the error the client reports. An alert the server sent about the
 // client's certificate is the refusal it stands for (spec §4.4): certificate_revoked, or
-// client_certificate_required when the client sent none. With TLS 1.3 the client's side
+// certificate_required when the client sent none. With TLS 1.3 the client's side
 // of the handshake is over before the server checks the certificate, so such an alert
 // arrives with the first read, not in the handshake; it is still not a failure to connect.
 // Anything else at the TLS layer is tls_failed.
@@ -84,7 +84,7 @@ Error TlsFailure(const boost::system::error_code& ec, const std::string& origin,
       case SSL_R_SSLV3_ALERT_CERTIFICATE_REVOKED:
         return Error(0, "certificate_revoked", "the server at " + origin + " refused the client certificate: certificate revoked");
       case SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED:
-        return Error(0, "client_certificate_required",
+        return Error(0, "certificate_required",
                      "the server at " + origin + " requires a client certificate, and none was sent");
       case SSL_R_SSLV3_ALERT_CERTIFICATE_EXPIRED: refused = "certificate expired"; break;
       case SSL_R_TLSV1_ALERT_UNKNOWN_CA: refused = "its issuer is not a certificate authority the server trusts"; break;
@@ -94,10 +94,10 @@ Error TlsFailure(const boost::system::error_code& ec, const std::string& origin,
       default: break;
     }
     if (refused != nullptr) {
-      return Error(0, "tls_failed", "the server at " + origin + " refused the client certificate: " + refused);
+      return Error(0, "client_tls_failed", "the server at " + origin + " refused the client certificate: " + refused);
     }
   }
-  return Error(0, "tls_failed", std::string(during) + " " + origin + " failed: " + ec.message());
+  return Error(0, "client_tls_failed", std::string(during) + " " + origin + " failed: " + ec.message());
 }
 
 bool IsTlsError(const boost::system::error_code& ec) {
@@ -129,10 +129,10 @@ std::shared_ptr<ssl::context> MakeTlsContext(const TlsOptions& options) {
   auto context = std::make_shared<ssl::context>(ssl::context::tls_client);
   SSL_CTX_set_min_proto_version(context->native_handle(), TLS1_2_VERSION);
   auto load = [&](const char* what, const std::string& path, auto&& action) {
-    if (!Readable(path.c_str())) throw Error(0, "tls_failed", std::string("cannot read the ") + what + " " + path);
+    if (!Readable(path.c_str())) throw Error(0, "client_tls_failed", std::string("cannot read the ") + what + " " + path);
     boost::system::error_code ec;
     action(ec);
-    if (ec) throw Error(0, "tls_failed", std::string("cannot load the ") + what + " " + path + ": " + ec.message());
+    if (ec) throw Error(0, "client_tls_failed", std::string("cannot load the ") + what + " " + path + ": " + ec.message());
   };
   if (options.skip_verify) {
     context->set_verify_mode(ssl::verify_none);
@@ -154,7 +154,7 @@ std::shared_ptr<ssl::context> MakeTlsContext(const TlsOptions& options) {
   }
   if (!options.cert_file.empty() || !options.key_file.empty()) {
     if (options.cert_file.empty() || options.key_file.empty()) {
-      throw Error(0, "tls_failed", "a client certificate needs both its certificate and its private key");
+      throw Error(0, "client_tls_failed", "a client certificate needs both its certificate and its private key");
     }
     load("client certificate", options.cert_file,
          [&](auto& ec) { context->use_certificate_chain_file(options.cert_file, ec); });
@@ -215,7 +215,7 @@ std::string BodyReader::ContentType() const { return MediaType(Header("Content-T
 std::size_t BodyReader::Read(char* out, std::size_t size) {
   if (done_ || size == 0) return 0;
   if (transport_.generation_ != generation_ || transport_.active_ != this) {
-    throw Error(0, "connection_failed", "the response was abandoned before its end");
+    throw Error(0, "client_connection_failed", "the response was abandoned before its end");
   }
   while (true) {
     if (parser_->is_done()) {
@@ -239,7 +239,7 @@ std::size_t BodyReader::Read(char* out, std::size_t size) {
       transport_.Drop();
       done_ = true;
       if (IsTlsError(ec)) throw TlsFailure(ec, transport_.Origin(), "the TLS connection to");
-      throw Error(0, "connection_failed",
+      throw Error(0, "client_connection_failed",
                   "the connection to " + transport_.Origin() + " ended in the middle of a response: " + ec.message());
     }
     if (got > 0) {
@@ -313,9 +313,9 @@ void Transport::Fail(std::string_view what, const boost::system::error_code& ec)
   Drop();
   if (IsTlsError(ec)) throw TlsFailure(ec, Origin(), "the TLS connection to");
   if (ec == beast::error::timeout) {
-    throw Error(0, "connection_failed", std::string(what) + " " + Origin() + " timed out");
+    throw Error(0, "client_connection_failed", std::string(what) + " " + Origin() + " timed out");
   }
-  throw Error(0, "connection_failed", std::string(what) + " " + Origin() + " failed: " + ec.message());
+  throw Error(0, "client_connection_failed", std::string(what) + " " + Origin() + " failed: " + ec.message());
 }
 
 void Transport::Connect() {
@@ -330,7 +330,7 @@ void Transport::Connect() {
                              handler(e);
                            });
   });
-  if (ec) throw Error(0, "connection_failed", "could not resolve host '" + host_ + "': " + ec.message());
+  if (ec) throw Error(0, "client_connection_failed", "could not resolve host '" + host_ + "': " + ec.message());
 
   if (tls_) {
     secure_ = std::make_unique<beast::ssl_stream<beast::tcp_stream>>(io_, *tls_);
@@ -355,14 +355,14 @@ void Transport::Connect() {
   });
   if (ec) {
     Drop();
-    if (ec == beast::error::timeout) throw Error(0, "connection_failed", "connecting to " + Origin() + " timed out");
-    throw Error(0, "connection_failed", "could not connect to " + Origin() + ": " + ec.message());
+    if (ec == beast::error::timeout) throw Error(0, "client_connection_failed", "connecting to " + Origin() + " timed out");
+    throw Error(0, "client_connection_failed", "could not connect to " + Origin() + ": " + ec.message());
   }
   lowest.socket().set_option(tcp::no_delay(true), ec);
   if (secure_) {
     if (!IsIpLiteral(host_) && !SSL_set_tlsext_host_name(secure_->native_handle(), host_.c_str())) {
       Drop();
-      throw Error(0, "tls_failed", "cannot set the TLS server name for " + host_);
+      throw Error(0, "client_tls_failed", "cannot set the TLS server name for " + host_);
     }
     if (SSL_CTX_get_verify_mode(tls_->native_handle()) != SSL_VERIFY_NONE) {
       secure_->set_verify_callback(ssl::host_name_verification(host_));
@@ -371,7 +371,7 @@ void Transport::Connect() {
     ec = Run([&](auto handler) { secure_->async_handshake(ssl::stream_base::client, std::move(handler)); });
     if (ec) {
       Drop();
-      if (ec == beast::error::timeout) throw Error(0, "tls_failed", "the TLS handshake with " + Origin() + " timed out");
+      if (ec == beast::error::timeout) throw Error(0, "client_tls_failed", "the TLS handshake with " + Origin() + " timed out");
       throw TlsFailure(ec, Origin(), "the TLS handshake with");
     }
   }
