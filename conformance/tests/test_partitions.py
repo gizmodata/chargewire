@@ -124,6 +124,31 @@ def test_any_order_partitions_hold_every_row_once(warp, session_id):
     assert values == list(range(ROWS))
 
 
+def test_each_partition_uses_the_compression_its_request_accepts(warp, session_id):
+    response = streamed(warp, session_id, BIG + " ORDER BY i",
+                        **partition_headers(n=4), **{"Warp-IPC-Compression": "lz4_frame"})
+    statement_id = response.headers["warp-statement-id"]
+    k = int(response.headers.get("warp-result-partitions", "1"))
+    assert k > 1
+    assert response.headers["warp-ipc-compression"] == "lz4_frame"
+    reader = Partitions(warp=warp, session_id=session_id, statement_id=statement_id)
+    # Partition 1 asks for zstd, the others for nothing: each gets what it asked for.
+    accepts = {1: "zstd"}
+    others = [reader.pool.submit(reader.get, i, None, **({"Warp-IPC-Compression": accepts[i]} if i in accepts else {}))
+              for i in range(1, k)]
+    try:
+        first = response.read()
+    finally:
+        response.close()
+    rest = [f.result(timeout=120) for f in others]
+    for i, r in enumerate(rest, start=1):
+        assert r.status_code == 200, r.text
+        assert r.headers["warp-ipc-compression"] == accepts.get(i, "none")
+    parts = [read_complete(first)] + [read_complete(r.content) for r in rest]
+    rebuilt = pa.Table.from_batches(batches=interleave(parts))
+    assert rebuilt.column("i").to_pylist() == list(range(ROWS))
+
+
 def test_every_type_and_null_survive_the_split(warp, session_id):
     sql = ("SELECT i, CASE WHEN i % 7 = 0 THEN NULL ELSE i::INTEGER END AS n, "
            "CASE WHEN i % 5 = 0 THEN NULL ELSE 'row ' || i END AS s, i / 3.0 AS d, "

@@ -143,7 +143,9 @@ struct StatementOptions {
   std::optional<bool> retain_result;   // Warp-Retain-Result
   std::string query_tag;               // Warp-Query-Tag: a JSON object's text
   std::string idempotency_key;         // empty: a random one per request
-  bool accept_zstd = false;            // Warp-IPC-Compression: zstd
+  // Warp-IPC-Compression (spec §8.2): the Arrow buffer compression accepted, in order of
+  // preference ("lz4_frame, zstd"); empty: none.
+  std::string ipc_compression;
   // Split results (spec §6.10): up to this many partitions, read at once over separate
   // connections (sent only to a server with the result_partitions capability). With
   // any_order the batches come as they arrive; without, in the result's order.
@@ -257,9 +259,10 @@ class Session {
   StatementDocument Status(const std::string& statement_id, int wait_s = 0);
   // Polls until the statement finishes; returns its final document.
   StatementDocument Wait(const std::string& statement_id);
-  // A partition of a statement's result (§6.4), from batch `from_batch`.
+  // A partition of a statement's result (§6.4), from batch `from_batch`, accepting the
+  // Arrow buffer compression in `ipc_compression` (as StatementOptions::ipc_compression).
   std::shared_ptr<ResultReader> FetchResult(const std::string& statement_id, int64_t partition = 0,
-                                            int64_t from_batch = 0);
+                                            int64_t from_batch = 0, const std::string& ipc_compression = "");
   void CancelStatement(const std::string& statement_id);
   void DeleteStatement(const std::string& statement_id);
   // Cancels what this session runs now (§6.8): the statement being executed, when its

@@ -15,9 +15,10 @@ from test_discovery_auth import assert_problem
 from warp import ARROW_STREAM
 
 
-def ipc_bytes(table: pa.Table, batch_rows: int | None = None) -> bytes:
+def ipc_bytes(table: pa.Table, batch_rows: int | None = None, compression: str | None = None) -> bytes:
     sink = io.BytesIO()
-    with ipc.new_stream(sink=sink, schema=table.schema) as writer:
+    with ipc.new_stream(sink=sink, schema=table.schema,
+                        options=ipc.IpcWriteOptions(compression=compression)) as writer:
         for batch in table.to_batches(max_chunksize=batch_rows):
             writer.write_batch(batch=batch)
     return sink.getvalue()
@@ -113,6 +114,22 @@ def test_parts_uploaded_at_once_are_committed_together(warp, session_id):
     doc = ingests.get(ingest_id).json()
     assert doc["state"] == "committed" and doc["rows_ingested"] == 2_000_000
     assert sorted(p["part"] for p in doc["parts"]) == list(range(8))
+
+
+def test_parts_may_each_use_any_offered_codec(warp, session_id):
+    # Spec §8.2: an upload may use any codec the server lists; each part says its own.
+    ingests = Ingests(warp=warp, session_id=session_id)
+    ingest_id = ingests.open(table="pi_codecs", mode="create").json()["ingest_id"]
+    parts = [rows(start=i * 100_000, count=100_000) for i in range(3)]
+    bodies = [ipc_bytes(table=t, batch_rows=20_000, compression=c) for t, c in zip(parts, ("lz4", "zstd", None))]
+    answers = ingests.upload_all(ingest_id, bodies)
+    assert all(a.status_code == 200 for a in answers), [a.text for a in answers]
+    committed = ingests.commit(ingest_id, parts=3)
+    assert committed.status_code == 200, committed.text
+    got = checksum(warp, session_id, "pi_codecs")
+    want = expected(parts)
+    assert got.pop("sd") == pytest.approx(want.pop("sd"))
+    assert got == want
 
 
 def test_append_and_replace_modes(warp, session_id):

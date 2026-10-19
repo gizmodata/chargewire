@@ -76,7 +76,8 @@ Every server describes itself at `GET /warp`, so a client knows what it may use:
   "draft": "0.1.0",
   "server": {"name": "warp-duckdb", "version": "0.1.0 (DuckDB v2.0.0-dev88520)"},
   "capabilities": ["prepared_statements", "transactions", "ingest", "result_retention",
-                   "long_poll", "ipc_compression_zstd"],
+                   "long_poll", "ipc_compression_zstd", "ipc_compression_lz4_frame",
+                   "result_partitions", "partitioned_ingest"],
   "auth": {"grant_types": ["password"]}
 }
 ```
@@ -118,7 +119,8 @@ sequenceDiagram
 | 🛑 Cancellation (statement and session) and timeouts | [§6.8–6.9](spec/warp-sql.md#68-cancel-and-close) |
 | 🔀 Partitioned results, read concurrently over several connections, in order or not | [§6.10](spec/warp-sql.md#610-partitioned-results) |
 | 🧪 Prepared statements with JSON or Arrow parameter batches | [§7](spec/warp-sql.md#7-prepared-statements) |
-| 📥 Streaming bulk ingest, with zstd | [§8](spec/warp-sql.md#8-bulk-ingest) |
+| 📥 Streaming bulk ingest | [§8](spec/warp-sql.md#8-bulk-ingest) |
+| 🗜️ Arrow buffer compression, `lz4_frame` or `zstd`, negotiated by preference | [§8.2](spec/warp-sql.md#82-compression) |
 | 📤 Partitioned ingest: one upload over several connections, committed atomically | [§8.3](spec/warp-sql.md#83-partitioned-ingest) |
 | 🔐 Security model: principals, bound handles, governed results | [§9](spec/warp-sql.md#9-security) |
 | 📚 Metadata with Flight SQL's result schemas, so driver code carries over | [§10](spec/warp-sql.md#10-metadata) |

@@ -164,6 +164,69 @@ def test_zstd_compressed_results(warp, session_id):
     assert read_table(content=packed.content).equals(read_table(content=plain.content))
 
 
+# The first bytes of each codec's compressed buffers (spec §8.2): an LZ4 frame and a
+# zstd frame, so a test can tell which codec a server really used.
+LZ4_FRAME_MAGIC = b"\x04\x22\x4d\x18"
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
+
+
+def compressed_result(warp, session_id, statement_id, accept: str):
+    response = warp.result(session_id=session_id, statement_id=statement_id,
+                           headers={"Warp-IPC-Compression": accept})
+    assert response.status_code == 200, response.text
+    return response
+
+
+def test_discovery_lists_both_codecs(warp):
+    capabilities = warp.http.get(url="/warp").json()["capabilities"]
+    assert "ipc_compression_zstd" in capabilities
+    assert "ipc_compression_lz4_frame" in capabilities
+
+
+def test_lz4_frame_compressed_results(warp, session_id):
+    doc = submit_async(warp=warp, session_id=session_id, sql=BIG)
+    warp.wait_done(session_id=session_id, statement_id=doc["statement_id"])
+    plain = warp.result(session_id=session_id, statement_id=doc["statement_id"])
+    packed = compressed_result(warp=warp, session_id=session_id, statement_id=doc["statement_id"],
+                               accept="lz4_frame")
+    assert packed.headers["warp-ipc-compression"] == "lz4_frame"
+    assert LZ4_FRAME_MAGIC in packed.content and ZSTD_MAGIC not in packed.content
+    assert len(packed.content) < len(plain.content)
+    assert read_table(content=packed.content).equals(read_table(content=plain.content))
+
+
+def test_compression_follows_the_clients_preference(warp, session_id):
+    doc = submit_async(warp=warp, session_id=session_id, sql=BIG)
+    warp.wait_done(session_id=session_id, statement_id=doc["statement_id"])
+    plain = read_table(content=warp.result(session_id=session_id, statement_id=doc["statement_id"]).content)
+    # The first codec the server supports wins; names it doesn't know are skipped, and
+    # `none` (or no codec it knows) means uncompressed.
+    for accept, used in (("lz4_frame, zstd", "lz4_frame"), ("zstd,lz4_frame", "zstd"),
+                         ("brotli, lz4_frame", "lz4_frame"), ("snappy , zstd", "zstd"),
+                         ("none, lz4_frame", "none"), ("brotli", "none")):
+        response = compressed_result(warp=warp, session_id=session_id, statement_id=doc["statement_id"],
+                                     accept=accept)
+        assert response.headers["warp-ipc-compression"] == used, accept
+        assert (LZ4_FRAME_MAGIC in response.content) == (used == "lz4_frame"), accept
+        assert (ZSTD_MAGIC in response.content) == (used == "zstd"), accept
+        assert read_table(content=response.content).equals(plain), accept
+
+
+def test_compressed_results_keep_incompressible_and_null_columns(warp, session_id):
+    # Buffers that barely compress (hashes as doubles) may go uncompressed inside a
+    # compressed stream (spec §8.2); every value and null must still come back.
+    sql = ("SELECT i, hash(i)::DOUBLE AS h, CASE WHEN i % 3 = 0 THEN NULL ELSE 'v' || i END AS s, "
+           "[i, NULL] AS l FROM range(300000) t(i)")
+    doc = submit_async(warp=warp, session_id=session_id, sql=sql)
+    warp.wait_done(session_id=session_id, statement_id=doc["statement_id"])
+    plain = read_table(content=warp.result(session_id=session_id, statement_id=doc["statement_id"]).content)
+    for codec in ("lz4_frame", "zstd"):
+        response = compressed_result(warp=warp, session_id=session_id, statement_id=doc["statement_id"],
+                                     accept=codec)
+        assert response.headers["warp-ipc-compression"] == codec
+        assert read_table(content=response.content).equals(plain), codec
+
+
 def test_result_of_a_statement_without_rows(warp, session_id):
     warp.execute(session_id=session_id, sql="CREATE TABLE no_rows (v INTEGER)")
     doc = warp.execute(session_id=session_id, sql="INSERT INTO no_rows VALUES (1)")

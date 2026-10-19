@@ -113,6 +113,21 @@ class GatherStream : public arrow::io::OutputStream {
   bool closed_ = false;
 };
 
+// A buffer that compression would shrink by less than this is sent as it is, so the
+// reader doesn't spend time decompressing it (random doubles, already-compact data).
+constexpr double kMinSpaceSavings = 0.1;
+
+arrow::ipc::IpcWriteOptions WriteOptions(IpcCompression compression) {
+  auto options = arrow::ipc::IpcWriteOptions::Defaults();
+  if (compression == IpcCompression::kNone) return options;
+  auto codec = arrow::util::Codec::Create(compression == IpcCompression::kZstd ? arrow::Compression::ZSTD
+                                                                               : arrow::Compression::LZ4_FRAME);
+  Check(codec.status());
+  options.codec = std::move(codec).ValueUnsafe();
+  options.min_space_savings = kMinSpaceSavings;
+  return options;
+}
+
 bool HasDictionary(const arrow::DataType& type) {
   if (type.id() == arrow::Type::DICTIONARY) return true;
   for (const auto& child : type.fields()) {
@@ -131,13 +146,8 @@ bool CanEncodeIndependently(const arrow::Schema& schema) {
 }
 
 EncodedBatch EncodeBatch(const arrow::RecordBatch& batch, IpcCompression compression) {
-  auto options = arrow::ipc::IpcWriteOptions::Defaults();
+  auto options = WriteOptions(compression);
   options.use_threads = false;  // batches are encoded in parallel instead
-  if (compression == IpcCompression::kZstd) {
-    auto codec = arrow::util::Codec::Create(arrow::Compression::ZSTD);
-    Check(codec.status());
-    options.codec = std::move(codec).ValueUnsafe();
-  }
   arrow::ipc::IpcPayload payload;
   Check(arrow::ipc::GetRecordBatchPayload(batch, options, &payload));
   EncodedBatch out;
@@ -154,23 +164,34 @@ std::string_view EndOfStreamMarker() {
 }
 
 IpcCompression ParseIpcCompression(std::string_view header) {
-  return header == "zstd" ? IpcCompression::kZstd : IpcCompression::kNone;
+  while (!header.empty()) {
+    const auto comma = header.find(',');
+    std::string_view name = header.substr(0, comma);
+    header = comma == std::string_view::npos ? std::string_view() : header.substr(comma + 1);
+    while (!name.empty() && (name.front() == ' ' || name.front() == '\t')) name.remove_prefix(1);
+    while (!name.empty() && (name.back() == ' ' || name.back() == '\t')) name.remove_suffix(1);
+    if (name == "lz4_frame") return IpcCompression::kLz4Frame;
+    if (name == "zstd") return IpcCompression::kZstd;
+    if (name == "none") return IpcCompression::kNone;
+    // A codec this server doesn't know: try the client's next choice.
+  }
+  return IpcCompression::kNone;
 }
 
 std::string_view IpcCompressionName(IpcCompression compression) {
-  return compression == IpcCompression::kZstd ? "zstd" : "none";
+  switch (compression) {
+    case IpcCompression::kZstd: return "zstd";
+    case IpcCompression::kLz4Frame: return "lz4_frame";
+    case IpcCompression::kNone: break;
+  }
+  return "none";
 }
 
 class IpcStreamEncoder::Impl {
  public:
   Impl(std::shared_ptr<arrow::Schema> schema, IpcCompression compression)
       : schema_(std::move(schema)), sink_(std::make_shared<CaptureStream>()) {
-    auto options = arrow::ipc::IpcWriteOptions::Defaults();
-    if (compression == IpcCompression::kZstd) {
-      auto codec = arrow::util::Codec::Create(arrow::Compression::ZSTD);
-      Check(codec.status());
-      options.codec = std::move(codec).ValueUnsafe();
-    }
+    auto options = WriteOptions(compression);
     auto schema_message = arrow::ipc::SerializeSchema(*schema_);
     Check(schema_message.status());
     schema_message_ = (*schema_message)->ToString();
