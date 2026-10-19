@@ -225,4 +225,4 @@ def pytest_terminal_summary(terminalreporter):
     missing = [f"{method} {path}" for method, path in every if (method, path) not in OPENAPI.seen]
     terminalreporter.write_line(
         f"OpenAPI: responses of {len(every) - len(missing)} of {len(every)} operations checked"
-        + (f"; not exercised in this run: {', '.join(missing)}" if missing else ""))
+        + (f"; not exercised in this run: {', '.join(missing)}" if 0 < len(missing) <= 8 else ""))

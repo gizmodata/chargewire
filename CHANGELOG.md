@@ -479,6 +479,10 @@ the drafts; nobody depended on the drafts, so none has a fallback.
 
 ### Fixed
 
+- A retained result is expired from its `expires_at` on (spec §6.5): the SDK refused new reads
+  only after its next sweep, up to 5 seconds later, and served them in the meantime. Found
+  by the site's examples; `test_a_result_is_expired_from_its_expires_at_on` reads two results
+  0.2 s after they expire.
 - An idempotent replay of a submit or execute (spec §6.7) carries `Warp-Statement-Id`, as
   every statement response does (§2.6); the SDK left it out. Found by the OpenAPI check.
 - Spec §6.10 names the partition read in full (`GET …/statements/{statement_id}/result`),
