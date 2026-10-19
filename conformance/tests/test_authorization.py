@@ -8,15 +8,16 @@ and are told how through:
     WARP_SQL_TEST_AUTHZ_SERVER_ENV   NAME=VALUE pairs (space-separated) for that server;
                                      {tmp} is a fresh directory
     WARP_SQL_TEST_AUTHZ_CREATE_USER  SQL creating {user} with password {password}
-    WARP_SQL_TEST_AUTHZ_GRANT        SQL granting SELECT on table {table} to {user}
-    WARP_SQL_TEST_AUTHZ_REVOKE       SQL revoking it
+    WARP_SQL_TEST_AUTHZ_GRANT        SQL letting {user} SELECT from table {table}
+    WARP_SQL_TEST_AUTHZ_REVOKE       SQL taking that back
 
-Hardcharger, for example:
+Each may be several statements separated by `;`, run one by one. Hardcharger, for example
+(privileges go to roles):
 
     WARP_SQL_TEST_AUTHZ_SERVER_ENV='HARDCHARGER_RBAC_STORE_URI=duckdb:{tmp}/rbac.duckdb HARDCHARGER_SECRET_KEY=...'
-    WARP_SQL_TEST_AUTHZ_CREATE_USER="CREATE USER {user} WITH PASSWORD '{password}'"
-    WARP_SQL_TEST_AUTHZ_GRANT='GRANT SELECT ON {table} TO {user}'
-    WARP_SQL_TEST_AUTHZ_REVOKE='REVOKE SELECT ON {table} FROM {user}'
+    WARP_SQL_TEST_AUTHZ_CREATE_USER="CREATE ROLE {user}_role; CREATE USER {user} WITH PASSWORD '{password}'; GRANT {user}_role TO {user}"
+    WARP_SQL_TEST_AUTHZ_GRANT='GRANT SELECT ON {table} TO {user}_role'
+    WARP_SQL_TEST_AUTHZ_REVOKE='REVOKE SELECT ON {table} FROM {user}_role'
 
 A server without privileges (warp-duckdb: whoever signs in may do everything) has nothing
 to hide, so these MUSTs hold for it trivially: without the variables the tests skip,
@@ -65,7 +66,7 @@ def authz():
     admin = Warp(base_url=server.base_url, username=server.username, password=server.password)
     session_id = admin.new_session()
     user, password = "conformance_reader", "Pw-" + secrets.token_urlsafe(nbytes=12)
-    sql = [
+    run_all(admin=admin, session_id=session_id, sql=";".join([
         "CREATE SCHEMA authz_s",
         "CREATE TABLE authz_s.visible (id INTEGER, note VARCHAR)",
         "CREATE TABLE authz_s.hidden (id INTEGER, secret VARCHAR)",
@@ -73,14 +74,18 @@ def authz():
         "INSERT INTO authz_s.hidden VALUES (1, 'top secret')",
         given["WARP_SQL_TEST_AUTHZ_CREATE_USER"].format(user=user, password=password),
         given["WARP_SQL_TEST_AUTHZ_GRANT"].format(table="authz_s.visible", user=user),
-    ]
-    for statement in sql:
-        doc = admin.execute(session_id=session_id, sql=statement)
-        assert doc["state"] == "succeeded", (statement, doc)
+    ]))
     yield {"server": server, "admin": admin, "admin_session": session_id, "user": user, "password": password,
            "revoke": given["WARP_SQL_TEST_AUTHZ_REVOKE"], "grant": given["WARP_SQL_TEST_AUTHZ_GRANT"]}
     admin.close()
     assert stop_server(server=server) == 0, server.log_tail()
+
+
+def run_all(admin: Warp, session_id: str, sql: str) -> None:
+    for statement in (part.strip() for part in sql.split(";")):
+        if statement:
+            doc = admin.execute(session_id=session_id, sql=statement)
+            assert doc["state"] == "succeeded", (statement, doc)
 
 
 def reader(authz) -> Warp:
@@ -123,14 +128,14 @@ def test_a_prepared_statement_is_authorized_at_every_execution(authz):
     assert allowed.status_code == 200, allowed.text
     assert read_table(content=allowed.content).to_pylist() == [{"note": "shown"}]
     admin = authz["admin"]
-    revoke = authz["revoke"].format(table="authz_s.visible", user=authz["user"])
-    assert admin.execute(session_id=authz["admin_session"], sql=revoke)["state"] == "succeeded"
+    run_all(admin=admin, session_id=authz["admin_session"],
+            sql=authz["revoke"].format(table="authz_s.visible", user=authz["user"]))
     try:
         refused = user.http.post(url=execute, headers=user.headers(Accept=ARROW_STREAM), json={})
         assert_problem(response=refused, status=403, code="permission_denied")
     finally:
-        grant = authz["grant"].format(table="authz_s.visible", user=authz["user"])
-        assert admin.execute(session_id=authz["admin_session"], sql=grant)["state"] == "succeeded"
+        run_all(admin=admin, session_id=authz["admin_session"],
+                sql=authz["grant"].format(table="authz_s.visible", user=authz["user"]))
     # Granted again, the same prepared statement runs again.
     again = user.http.post(url=execute, headers=user.headers(Accept=ARROW_STREAM), json={})
     assert again.status_code == 200, again.text

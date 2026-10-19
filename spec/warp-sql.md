@@ -820,7 +820,9 @@ URL of another server that holds it: an absolute URL of the same form as a serve
 (`https://worker-3.example:31337/warp`). The client reads the partition at
 `{location}/v1/sessions/{session_id}/statements/{statement_id}/result?partition={index}`,
 with the coordinator's session and statement ids and the same access token, concurrently
-with the others (§6.10).
+with the others (§6.10). The partitions' locations are in the statement document: on the
+streamed path (§6.1), whose response is partition 0 from this server, a client that sent
+the header reads the document (§6.3) for the locations of partitions 1 to `k - 1`.
 
 ### 6.3 Status: `GET /warp/v1/sessions/{session_id}/statements/{statement_id}`
 
