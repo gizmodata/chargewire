@@ -314,6 +314,21 @@ spec's version is the repository's version.
 
 ### Fixed
 
+- SDK: a retained result that expires while it is being read no longer cuts that read.
+  The sweep (every 5 s) dropped the result's batches at once, so a read in progress found
+  them gone at its next batch and the server ended the body without the end-of-stream
+  marker (spec §6.6's signal for a failed statement) for a statement that had succeeded;
+  the client saw "incomplete chunked read", and the statement document then said
+  `succeeded`. Hardcharger's Windows CI hit it with a 2 s retention polled every 0.5 s.
+  Expiry now applies to reads that start afterwards (`410 result_expired`, §6.5); a read
+  that has started runs to the end, and the batches (and their quota) are freed when the
+  last such read ends. A partition's reads are counted, not flagged, so one of two reads
+  of a retained partition ending no longer frees the batches under the other (which would
+  then have waited forever), and a response whose stream never starts (the client went
+  before the headers were written) still ends its read. Deleting the statement or ending
+  its session still ends a read in progress incomplete (§6.6, §6.8). SDK tests:
+  `RetainedResult.*` drive the expiry between a read's batches.
+
 - Bulk ingest (spec §8.1): an Arrow type the reference engine can't keep is refused with
   `415 unsupported_arrow_type` before any table is touched; `decimal256` (any precision:
   DuckDB decimals are 128-bit, at most 38 digits) and dense unions, at the top level or

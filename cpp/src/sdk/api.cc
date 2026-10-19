@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <deque>
 #include <format>
+#include <utility>
 
 #include <arrow/array.h>
 #include <arrow/table.h>
@@ -1588,23 +1589,42 @@ Response Api::ResultStream(std::shared_ptr<Session> session, std::shared_ptr<Sta
   response.headers.emplace_back("X-Content-Type-Options", "nosniff");
   response.headers.emplace_back("Cache-Control", "no-store");
 
-  response.stream = [this, session, statement, partition, from_batch,
-                     compression](BodyWriter& out) -> Task<bool> {
-    // However the read ends, release it; an unretained result that wasn't read to the
-    // end can never be read again, so its statement is cancelled (spec §6.5).
-    struct ReadGuard {
-      Api* api;
-      std::shared_ptr<Session> session;
-      std::shared_ptr<Statement> statement;
-      std::size_t partition;
-      bool complete = false;
-      ~ReadGuard() {
-        statement->EndRead(partition);
-        if (!complete && !statement->retained() && !statement->AbandonRead()) {
-          api->Cancel(session, statement, CancelReason::kClient);
-        }
+  // However the read ends, release it; an unretained result that wasn't read to the end
+  // can never be read again, so its statement is cancelled (spec §6.5). The read was
+  // claimed before this response was made, so the response owns the guard: a stream that
+  // never starts (the client went before the headers were written) ends the read too, or
+  // a retained result would be held past its expiry for a reader that isn't there.
+  struct ReadGuard {
+    ReadGuard(Api* api, std::shared_ptr<Session> session, std::shared_ptr<Statement> statement,
+              std::size_t partition)
+        : api(api), session(std::move(session)), statement(std::move(statement)), partition(partition) {}
+    ReadGuard(const ReadGuard&) = delete;
+    ReadGuard& operator=(const ReadGuard&) = delete;
+    Api* api;
+    std::shared_ptr<Session> session;
+    std::shared_ptr<Statement> statement;
+    std::size_t partition;
+    bool complete = false;
+    bool ended = false;
+    void End() {
+      if (std::exchange(ended, true)) return;
+      statement->EndRead(partition);
+      if (!complete && !statement->retained() && !statement->AbandonRead()) {
+        api->Cancel(session, statement, CancelReason::kClient);
       }
-    } guard{this, session, statement, partition};
+    }
+    ~ReadGuard() { End(); }
+  };
+  auto read = std::make_shared<ReadGuard>(this, session, statement, partition);
+
+  response.stream = [this, read, statement, partition, from_batch,
+                     compression](BodyWriter& out) -> Task<bool> {
+    // The read ends as soon as the stream does, before the response's last chunk is sent.
+    struct EndAtExit {
+      ReadGuard& read;
+      ~EndAtExit() { read.End(); }
+    } end_at_exit{*read};
+    ReadGuard& guard = *read;
 
     IpcStreamEncoder encoder(statement->schema(), compression);
     co_await out.Write(encoder.Begin());

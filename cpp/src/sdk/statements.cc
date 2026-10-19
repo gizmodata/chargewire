@@ -460,7 +460,7 @@ void Statement::ClaimRead(std::size_t partition, int64_t from_batch) {
   }
   Partition& part = partitions_[partition];
   if (config_.retain) {
-    part.reader_active = true;
+    part.readers += 1;  // a retained partition may have several reads at once
     return;
   }
   if (part.read_claimed || from_batch > 0) {
@@ -468,7 +468,7 @@ void Statement::ClaimRead(std::size_t partition, int64_t from_batch) {
                 "this result is not retained: each partition can be read once, from batch 0");
   }
   part.read_claimed = true;
-  part.reader_active = true;
+  part.readers += 1;
 }
 
 std::pair<ReadStep, std::shared_ptr<arrow::RecordBatch>> Statement::Read(std::size_t partition,
@@ -476,7 +476,9 @@ std::pair<ReadStep, std::shared_ptr<arrow::RecordBatch>> Statement::Read(std::si
   std::shared_ptr<arrow::RecordBatch> batch;
   {
     std::lock_guard lock(mutex_);
-    if (state_ == StatementState::kFailed || state_ == StatementState::kCancelled || expired_ ||
+    // An expired result's batches stay for the reads that had started (ExpireIfDue); only a
+    // released one is gone mid-read.
+    if (state_ == StatementState::kFailed || state_ == StatementState::kCancelled || released_ ||
         partition >= partitions_.size()) {
       return {ReadStep::kFailed, nullptr};
     }
@@ -502,12 +504,18 @@ std::pair<ReadStep, std::shared_ptr<arrow::RecordBatch>> Statement::Read(std::si
 
 void Statement::EndRead(std::size_t partition) {
   std::lock_guard lock(mutex_);
-  if (partition < partitions_.size()) partitions_[partition].reader_active = false;
+  if (partition < partitions_.size() && partitions_[partition].readers > 0) {
+    partitions_[partition].readers -= 1;
+  }
+  if (expired_ && !released_ && !AnyReaderActive()) {
+    DropBatches();  // the last read that started before the result expired is done
+    released_ = true;
+  }
 }
 
 bool Statement::AnyReaderActive() const {
   for (const auto& partition : partitions_) {
-    if (partition.reader_active) return true;
+    if (partition.readers > 0) return true;
   }
   return false;
 }
@@ -518,8 +526,13 @@ bool Statement::ExpireIfDue(WallClock::time_point now) {
     if (!expires_at_ || expired_ || now < *expires_at_) {
       return false;
     }
+    // New reads get result_expired from now on. A read that has started runs to the end
+    // (spec §6.5): the batches go when the last such read ends (EndRead).
     expired_ = true;
-    DropBatches();
+    if (!AnyReaderActive()) {
+      DropBatches();
+      released_ = true;
+    }
   }
   changed_.Notify();
   return true;
@@ -529,6 +542,7 @@ void Statement::Release() {
   std::lock_guard lock(mutex_);
   DropBatches();
   expired_ = true;
+  released_ = true;  // a read in progress ends incomplete (spec §6.6)
 }
 
 bool Statement::WaitingForReader() const {
@@ -559,9 +573,9 @@ Statement::Snapshot Statement::Describe() const {
   out.started_at = started_at_;
   if (kind_ == Kind::kRows && split_decided_) out.partitions = partitions_.size();
   for (const auto& partition : partitions_) {
-    if (partition.reader_active) out.active_readers++;
+    out.active_readers += partition.readers;
   }
-  if (config_.retain && !expired_) {
+  if (config_.retain) {  // an expired result's batches are dropped unless a read holds them
     for (const auto& partition : partitions_) {
       if (!partition.batches.empty()) out.holds_retained_result = true;
     }
@@ -578,7 +592,7 @@ CancelReason Statement::cancel_reason() const {
 
 bool Statement::HoldsRetainedResult() const {
   std::lock_guard lock(mutex_);
-  if (!config_.retain || expired_) return false;
+  if (!config_.retain) return false;  // an expired result's batches are dropped unless a read holds them
   for (const auto& partition : partitions_) {
     if (!partition.batches.empty()) return true;
   }

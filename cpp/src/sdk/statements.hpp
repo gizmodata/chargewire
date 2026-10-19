@@ -113,11 +113,14 @@ class Statement {
   // cancels the statement (spec §6.5).
   void EndRead(std::size_t partition);
 
-  // Drops a retained result whose time is up. Returns true if it did.
+  // Expires a retained result whose time is up: reads that start afterwards get
+  // result_expired, while a read already in progress runs to the end (spec §6.5) and the
+  // batches are freed when the last such read ends. Returns true if it expired the result.
   bool ExpireIfDue(WallClock::time_point now);
   // Frees the result now (statement deleted or session closed).
   void Release();
-  // True while a retained result is being kept.
+  // True while a retained result's batches are held (until it expires, and after that
+  // while a read that started before holds them).
   bool HoldsRetainedResult() const;
   // An unretained result nobody is reading, with its producer waiting for a reader.
   bool WaitingForReader() const;
@@ -165,7 +168,7 @@ class Statement {
     int64_t batch_count = 0;
     int64_t row_count = 0;
     bool read_claimed = false;  // unretained: the one read has started
-    bool reader_active = false;
+    int readers = 0;  // reads in progress (a retained partition may have several)
   };
 
   const std::string id_;
@@ -201,7 +204,12 @@ class Statement {
   bool abandoned_ = false;  // unretained, reader gone: batches are counted, not kept
   bool abandon_pending_ = false;  // abandoned before the outcome was known
   bool waiting_for_reader_ = false;
+  // Expired (or released): no new read may start. The batches stay for the reads that had
+  // started until the last one ends, unless the result was released.
   bool expired_ = false;
+  // The result's batches are gone (Release(), or an expiry once no read held them): a read
+  // still in progress ends incomplete instead of waiting for batches that won't come.
+  bool released_ = false;
   std::optional<WallClock::time_point> expires_at_;
 };
 
