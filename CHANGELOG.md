@@ -44,6 +44,18 @@ spec's version is the repository's version.
   multi-statement request, an abort until `ROLLBACK`, what the engine reports after a
   syntax, catalog and conversion error and after a cancel, failures outside a
   transaction, and `autocommit` off across commits).
+- LZ4_FRAME Arrow buffer compression (spec §8.2), capability `ipc_compression_lz4_frame`.
+  `Warp-IPC-Compression` is now a list of codecs in the client's order of preference
+  (`lz4_frame, zstd`): the server uses the first it supports, skipping names it doesn't
+  know; `none`, or no codec it knows, means uncompressed. Each partition's request carries
+  its own header. Inside a compressed stream a server may leave a buffer uncompressed
+  (Arrow's length -1), and clients must read it. Conformance: both codecs listed;
+  lz4_frame results (LZ4 frames present, zstd's absent, equal rows); the preference rules;
+  incompressible and null columns under both codecs; each partition gets the codec its
+  own request asked for; lz4 uploads, and a partitioned ingest whose parts use lz4, zstd
+  and none. The five about results fail on a server without the change.
+- Spec §6.10: a server SHOULD size a split result by the result's size, and may hold the
+  first batches back, for a bounded time, to see it.
 
 - Why a token stopped working (spec §4.2): when a server refuses a token it issued and
   verified (an expired one, or one it ended because the principal's credentials changed,
@@ -219,6 +231,22 @@ spec's version is the repository's version.
 
 ### Changed
 
+- SDK: compressed results compress only the buffers worth it. A buffer of 256 KiB or more
+  is judged by compressing 48 KiB of it (start, middle, end); lz4_frame wants that sample
+  to lose 55% (fast links, where CPU limits), zstd 10%. Buffers not compressed are sent by
+  reference behind their -1 length instead of being copied by Arrow's writer, and LZ4
+  frames use independent 4 MiB blocks (LZ4F from Arrow's bundled LZ4; `lz4frame.h` is
+  vendored). On two c8gn.8xlarge over a 100 Gbit/s LAN, SF10 lineitem in 32 partitions:
+  1.00 s uncompressed, 0.99 s with plain lz4_frame, 0.85 s now.
+- SDK: a split result holds its first batches back until its size shows: when as many
+  batches wait as the client reads partitions at once, it gets that many partitions; when
+  it ends first, one per two batches; when a batch has waited 100 ms, one per batch
+  waiting. Before, every result of two batches or more got all the partitions asked for.
+  Conformance: the empty-partitions test no longer assumes a server makes more
+  partitions than batches.
+- C++ client: `StatementOptions::ipc_compression` (the header's value) replaces
+  `accept_zstd`, and every partition's request sends it (partitions 1 and up of a split
+  result came back uncompressed before).
 - SDK: `Backend::OpenSession(principal, session_id, options)` is given the session's id
   (spec §2.3), the one its client holds, and the DuckDB backend passes it on to
   `NewSession(principal, session_id)`. An engine that shows or takes session ids (a
