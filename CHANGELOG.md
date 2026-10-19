@@ -68,6 +68,12 @@ the drafts; nobody depended on the drafts, so none has a fallback.
 
 ### Added
 
+- **An OpenAPI 3.1 description of the protocol** (`spec/openapi.yaml`): every endpoint of
+  version 1 with its parameters, headers, request and response schemas, the problem
+  document, and Arrow bodies as `application/vnd.apache.arrow.stream` binary; HTTP bearer
+  authentication (`bearerAuth`) everywhere except discovery, health, sign-in and the document
+  itself. The specification stays the definition. `spec/scripts/lint-openapi.sh` lints it
+  (Redocly CLI 2.57.0's recommended rules, with no warnings, and openapi-spec-validator).
 - Browser sign-in in the protocol (spec §4.3, capability `oauth_browser`), complete: a
   client creates a flow (`POST /warp/v1/auth/oauth/flows`, optional `return_to`) and gets
   `flow_id`, `poll_secret`, `authorize_url`, `poll_interval_s` and `expires_at`; the identity
