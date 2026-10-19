@@ -1,0 +1,13 @@
+---
+// The README's banner at the top of the landing page.
+import { Image } from 'astro:assets';
+interface Props {
+	src: ImageMetadata;
+	alt: string;
+}
+const { src, alt } = Astro.props;
+---
+
+<div class="not-content">
+	<Image src={src} alt={alt} class="ws-banner" loading="eager" />
+</div>

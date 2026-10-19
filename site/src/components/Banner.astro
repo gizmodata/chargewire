@@ -1,0 +1,25 @@
+---
+// Every page says it is a private preview until the public launch (DOCS_INDEXABLE=true drops it).
+import Default from '@astrojs/starlight/components/Banner.astro';
+const preview = import.meta.env.DOCS_INDEXABLE !== 'true' && process.env.DOCS_INDEXABLE !== 'true';
+---
+
+{
+	preview ? (
+		<div class="sl-banner ws-preview">
+			<strong>Private preview.</strong> This site is internal to GizmoData until Warp SQL's public launch. Please don’t share links outside the company.
+		</div>
+	) : (
+		<Default />
+	)
+}
+
+<style>
+	.ws-preview {
+		background: linear-gradient(90deg, #f15a24, #31a8db);
+		color: #fff;
+		font-size: var(--sl-text-sm);
+		padding: 0.4rem 1rem;
+		text-align: center;
+	}
+</style>

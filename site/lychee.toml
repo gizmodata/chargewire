@@ -1,0 +1,19 @@
+# External link check of the built site (.github/workflows/site.yml, job "build").
+# Internal links and anchors are checked at build time by starlight-links-validator.
+
+max_retries = 3
+retry_wait_time = 5
+timeout = 30
+accept = ["200..=299", "403", "429"]   # some sites refuse bots (403) or rate-limit (429)
+
+exclude = [
+  # gizmodata's repositories are internal until the public launch: an anonymous check gets
+  # 404. Remove this line at launch (README: launch checklist).
+  '^https://github\.com/gizmodata/',
+  # The site's own future address.
+  '^https://warpsql\.gizmodata\.com',
+  # Example hosts in prose and examples.
+  '^https?://(localhost|127\.0\.0\.1)',
+  '\.example(\.(com|org))?([:/]|$)',
+]
+exclude_path = ["dist/pagefind", "dist/_astro"]

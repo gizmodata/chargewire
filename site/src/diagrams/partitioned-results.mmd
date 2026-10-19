@@ -1,0 +1,16 @@
+sequenceDiagram
+  participant C as Client
+  participant S as Warp SQL server
+  C->>S: POST …/statements, Prefer: wait=30<br/>Warp-Result-Partitions: 4, Warp-Result-Order: preserve
+  S-->>C: statement document: k partitions, partition_order "interleaved"
+  par one connection per partition
+    C->>S: GET …/result?partition=0
+    S-->>C: batches 0, k, 2k, …
+  and
+    C->>S: GET …/result?partition=1
+    S-->>C: batches 1, k+1, …
+  and
+    C->>S: GET …/result?partition=k-1
+    S-->>C: batches k-1, 2k-1, …
+  end
+  Note over C: every partition read to its end-of-stream marker,<br/>then batches taken round robin: the result in order

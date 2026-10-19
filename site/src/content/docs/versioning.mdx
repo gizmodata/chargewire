@@ -1,0 +1,64 @@
+---
+title: Versioning and compatibility
+description: "How Warp SQL changes: version 1 grows only by addition, optional features come with capabilities, clients ignore what they don't know, and a breaking change gets a new major version."
+---
+
+import Spec from '../../components/Spec.astro';
+
+**Specification 1.0.0 defines protocol version 1.** The major version is in every path
+(`/warp/v1`). Within it, the protocol changes only by addition, so a client written for 1.0.0
+keeps working with every later 1.x server. A later client works with an earlier server by using
+only the capabilities its discovery lists (<Spec s="12" />).
+
+## What a 1.x version may add
+
+New endpoints, new optional fields, new capabilities, new error codes, and new values of
+enumerated fields (a statement `state`, a `cancel_reason`, a token `reason`). Nothing that would
+break a version 1 client: that gets a new major version, at `/warp/v2`, and a server may serve
+several majors at once.
+
+## What clients do
+
+So that additions break nothing, a client:
+
+- ignores JSON fields, headers, capabilities and grant types it doesn't know;
+- treats an unknown error `code` by its HTTP status;
+- accepts an unknown value of an enumerated field rather than failing: an unknown statement,
+  ingest or browser sign-in `state` is not terminal (it keeps polling; later versions add only
+  states that are not terminal), an unknown `reason` or `cancel_reason` is a generic one, and an
+  unknown health `reason` is a generic `not_serving`.
+
+A client generated from the [OpenAPI document](/reference/openapi/) should be set up the same
+way: the document lists version 1's values of each enumeration, and a later 1.x server may send
+others.
+
+## What servers do
+
+- A server ignores request fields it doesn't recognise, and never refuses a request because of
+  one (<Spec s="2.4" />).
+- A value that changes how a client must read a response (a new `result.kind`, a new
+  `partition_order`, a new compression codec) reaches only a client that asked for it.
+- Any new request field, header or header value that asks for new behaviour comes with a
+  capability, listed in discovery. A client checks the capability before using the feature,
+  because a server older than the feature ignores what it doesn't know rather than refusing it
+  (<Spec s="3.1" />).
+
+## Extensions
+
+A server's own capabilities, session options, `server-info` keys, error codes and `reason`
+values begin with a prefix naming its implementation or engine, in lower case, followed by `_`
+(`duckdb_arrow_lossless_conversion`). Later versions of the protocol never define a name with a
+prefix an implementation uses, so an extension can't collide with a name the protocol adds.
+Headers whose names begin with `Warp-` are the protocol's (<Spec s="2.7" />).
+
+## The documents and the suite
+
+- The [specification](/specification/) is the definition. The OpenAPI document
+  (`spec/openapi.yaml`, served at `GET /warp/v1/openapi.json`) describes the same endpoints for
+  tools, and carries the specification's version as `info.version`; where the two differ, the
+  specification is right.
+- The [conformance suite](/conformance/) has the specification's version: suite 1.0.0 tests
+  specification 1.0.0. It checks every response against the OpenAPI document of the same
+  version.
+- The specification's <Spec s="A" label="Appendix A" /> lists
+  additions that may come, each behind a capability of its own.

@@ -1,0 +1,105 @@
+---
+title: Partitioned results
+description: "Reading a large Warp SQL result as several partitions over separate connections at once, in order (interleaved) or not: Warp-Result-Partitions and Warp-Result-Order."
+---
+
+import Diagram from '../../../components/Diagram.astro';
+import Spec from '../../../components/Spec.astro';
+
+One TCP connection carries what one network flow allows. A client that reads a large result over
+several connections at once can go faster, past what one stream can carry (capability
+`result_partitions`, <Spec s="6.10" />). Warp SQL's drivers ask for 8 partitions by default.
+
+<Diagram name="partitioned-results" alt="The client submits asking for up to 4 partitions; the statement document lists k partitions with partition_order interleaved; the client reads every partition at once on its own connection and deals the batches back into order round robin." />
+
+| Request header | Meaning |
+|---|---|
+| `Warp-Result-Partitions: <n>` | The client reads up to `n` partitions at once (1 to 256) |
+| `Warp-Result-Order: preserve` or `any` | `any`: the client doesn't need rows in result order (default `preserve`) |
+
+The server splits the result into `k` partitions, 1 ≤ `k` ≤ `n`, by its size: a result of a
+few batches stays in one. With `preserve` the batches are dealt round robin (`interleaved`):
+batch `j` of the result is batch `j div k` of partition `j mod k`. With `any` each batch is in
+exactly one partition and order means nothing.
+
+```bash test
+WARP=http://127.0.0.1:31337
+TOKEN=$(curl -s $WARP/warp/v1/auth/token -H 'Content-Type: application/json' \
+  -d '{"grant_type": "password", "username": "joe", "password": "s3:cret"}' | jq -r .access_token)
+AUTH="Authorization: Bearer $TOKEN"
+SESSION=$(curl -s $WARP/warp/v1/sessions -H "$AUTH" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
+```
+
+## Ask for partitions
+
+```bash test
+STATEMENT=$(curl -s $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
+  -H 'Prefer: wait=60' -H 'Warp-Result-Partitions: 4' -H 'Warp-Result-Order: preserve' \
+  -H 'Warp-Retain-Result: true' \
+  -d '{"sql": "SELECT i, i * 2 AS twice FROM range(10000000) t(i) ORDER BY i"}' \
+  | tee doc.json | jq -r .statement_id)
+jq -c '{state, partition_order: .result.partition_order, partitions: (.result.partitions | length)}' doc.json
+```
+
+```text output
+{"state":"succeeded","partition_order":"interleaved","partitions":4}
+```
+
+## Read every partition at once
+
+Each partition is an Arrow stream with the result's schema, read on its own connection with
+`?partition=<i>`. **A client must read all of them concurrently, and each to its
+end-of-stream marker**: the server produces an unretained result only as fast as its slowest
+partition is read, so reading one to its end before starting the next can stall the statement.
+
+```bash test
+for i in 0 1 2 3; do
+  curl -s "$WARP/warp/v1/sessions/$SESSION/statements/$STATEMENT/result?partition=$i" \
+    -H "$AUTH" -o part$i.arrows &
+done
+wait
+```
+
+Putting the result back in order means taking the next batch of partition 0, then of partition
+1, and so on round robin, until a partition has no next batch:
+
+```bash test
+python3 - <<'EOF'
+import itertools
+import pyarrow as pa
+import pyarrow.ipc as ipc
+
+partitions = [list(ipc.open_stream(f"part{i}.arrows")) for i in range(4)]
+print("batches per partition:", [len(p) for p in partitions])
+ordered = [b for round_ in itertools.zip_longest(*partitions) for b in round_ if b is not None]
+column = pa.Table.from_batches(ordered).column("i")
+print(column.length(), "rows, in order:", column.equals(pa.chunked_array([pa.array(range(10_000_000))])))
+EOF
+```
+
+```text output
+batches per partition: […]
+10000000 rows, in order: True
+```
+
+Every partition has as many batches as partition 0 or one fewer, and none has an empty batch.
+
+## On the streamed path
+
+A streamed submit (`Accept: application/vnd.apache.arrow.stream`) that asks for partitions gets
+partition 0 in the response body. When the result has more than one partition, the response
+carries `Warp-Result-Partitions: <k>` and `Warp-Result-Order: interleaved` or `any`, and the
+client opens `?partition=1` to `k - 1` at once, using the statement id from
+`Warp-Statement-Id`. With one partition it carries neither header; a client never guesses a
+missing `Warp-Result-Order`.
+
+A server without the capability ignores both request headers and returns one partition, so a
+client always checks how many partitions it got. Retention and resumption apply to each
+partition on its own, and cancel and `DELETE` act on the whole statement.
+
+## Partitions on other servers
+
+With capability `result_locations`, a client that sends `Warp-Result-Locations: remote` may get
+partitions whose `location` is another server's base URL: a distributed engine can hand out
+partitions held where they were computed, with no change to the protocol (<Spec s="6.2" />). A
+client that doesn't send the header never sees one.

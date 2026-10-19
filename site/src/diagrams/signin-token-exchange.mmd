@@ -1,0 +1,9 @@
+sequenceDiagram
+  participant C as Client
+  participant I as Identity provider
+  participant S as Warp SQL server
+  C->>I: sign in (the provider's own way)
+  I-->>C: an ID token
+  C->>S: POST /warp/v1/auth/token<br/>{"grant_type": "token_exchange", "subject_token": <ID token>}
+  Note over S: verifies issuer, audience, expiry, signature<br/>and maps the token to a principal
+  S-->>C: 200 the server's own access token

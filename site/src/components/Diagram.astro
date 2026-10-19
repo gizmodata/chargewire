@@ -1,0 +1,24 @@
+---
+// A sequence diagram from src/diagrams/<name>.mmd, rendered at build time to a light and a
+// dark SVG (scripts/render_diagrams.mjs, committed under src/assets/diagrams). Both are
+// plain images; CSS shows the one for the current theme, so no script runs in the browser.
+import { Image } from 'astro:assets';
+interface Props {
+	name: string;
+	alt: string;
+	caption?: string;
+}
+const { name, alt, caption } = Astro.props;
+const svgs = import.meta.glob<{ default: ImageMetadata }>('../assets/diagrams/*.svg', { eager: true });
+const light = svgs[`../assets/diagrams/${name}.light.svg`];
+const dark = svgs[`../assets/diagrams/${name}.dark.svg`];
+if (!light || !dark) {
+	throw new Error(`diagram ${name}: run npm run diagrams (src/diagrams/${name}.mmd)`);
+}
+---
+
+<figure class="ws-diagram not-content">
+	<a href={light.default.src} class="ws-light" title="Open the diagram at full size"><Image src={light.default} alt={alt} loading="lazy" /></a>
+	<a href={dark.default.src} class="ws-dark" title="Open the diagram at full size"><Image src={dark.default} alt={alt} loading="lazy" /></a>
+	{caption && <figcaption>{caption}</figcaption>}
+</figure>

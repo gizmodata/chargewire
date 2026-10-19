@@ -1,0 +1,129 @@
+---
+title: A query in one round trip
+description: "The streamed path: one POST runs a Warp SQL statement and streams its result as an Arrow IPC stream, with bind parameters and optional Arrow buffer compression."
+---
+
+import Diagram from '../../../components/Diagram.astro';
+import Spec from '../../../components/Spec.astro';
+
+Short queries stay short: one request runs the statement and streams its result
+(<Spec s="6.1" />). The client asks for it with `Accept: application/vnd.apache.arrow.stream`
+and no `Prefer: respond-async`.
+
+<Diagram name="streamed-query" alt="The client posts a statement asking for Arrow; a query answers 200 with an Arrow stream, a statement without rows answers 200 with a JSON statement document, and an error before the answer is a problem document." />
+
+```bash test
+WARP=http://127.0.0.1:31337
+TOKEN=$(curl -s $WARP/warp/v1/auth/token -H 'Content-Type: application/json' \
+  -d '{"grant_type": "password", "username": "joe", "password": "s3:cret"}' | jq -r .access_token)
+AUTH="Authorization: Bearer $TOKEN"
+SESSION=$(curl -s $WARP/warp/v1/sessions -H "$AUTH" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
+```
+
+## Run a query
+
+```bash test
+curl -s -D headers.txt $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" \
+  -H 'Content-Type: application/json' -H 'Accept: application/vnd.apache.arrow.stream' \
+  -d '{"sql": "SELECT i, i * i AS square FROM range(5) t(i)"}' -o result.arrows
+tr -d '\r' < headers.txt | grep -E '^(HTTP|Content-Type|Warp-Statement-Id|Warp-IPC-Compression|Cache-Control)'
+python3 -c "import pyarrow.ipc as ipc; print(ipc.open_stream('result.arrows').read_all().to_pylist())"
+```
+
+```text output
+HTTP/1.1 200 OK
+Warp-Statement-Id: q_…
+Warp-IPC-Compression: none
+Cache-Control: no-store
+Content-Type: application/vnd.apache.arrow.stream
+[{'i': 0, 'square': 0}, {'i': 1, 'square': 1}, {'i': 2, 'square': 4}, {'i': 3, 'square': 9}, {'i': 4, 'square': 16}]
+```
+
+The body is one complete Arrow IPC stream: the schema, the record batches and the
+end-of-stream marker (<Spec s="2.2" />). The server sends the schema as soon as it knows it, so
+a query whose first rows come late (an aggregate) doesn't sit silent until a proxy cuts it.
+
+## Bind parameters
+
+`parameters` holds values, never SQL text: an array binds positionally (`?`), an object by name
+(`$name`). The server binds them through the engine's parameter mechanism and never splices
+them into the statement. Values are JSON scalars; for exact types (decimals, timestamps, binary,
+nested values) use a [prepared statement with Arrow parameters](/flows/prepared-statements/):
+
+```bash test
+curl -s $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" \
+  -H 'Content-Type: application/json' -H 'Accept: application/vnd.apache.arrow.stream' \
+  -d '{"sql": "SELECT $city AS city, $year + 1 AS next_year", "parameters": {"city": "Oslo", "year": 2026}}' \
+  -o named.arrows
+python3 -c "import pyarrow.ipc as ipc; print(ipc.open_stream('named.arrows').read_all().to_pylist())"
+```
+
+```text output
+[{'city': 'Oslo', 'next_year': 2027}]
+```
+
+## Statements without rows
+
+DDL and DML answer `200` with a JSON statement document instead of an Arrow stream, so a
+client must check `Content-Type`:
+
+```bash test
+curl -s $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"sql": "CREATE TABLE cities (id INTEGER, name VARCHAR)"}' > /dev/null
+curl -s -D headers.txt $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" \
+  -H 'Content-Type: application/json' -H 'Accept: application/vnd.apache.arrow.stream' \
+  -d '{"sql": "INSERT INTO cities VALUES (1, ?), (2, ?)", "parameters": ["Oslo", "Lima"]}' -o body
+tr -d '\r' < headers.txt | grep -E '^(HTTP|Content-Type)'
+jq -c '{state, result}' body
+```
+
+```text output
+HTTP/1.1 200 OK
+Content-Type: application/json
+{"state":"succeeded","result":{"kind":"update","rows_affected":2}}
+```
+
+## Errors before the answer
+
+An error found before execution starts (a syntax error, a permission denial), or a statement
+that has already failed by the time the server answers, is an error response: a problem
+document with a stable `code`, and `Warp-Statement-Id` when the statement ran (<Spec s="11" />):
+
+```bash test
+curl -s $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" \
+  -H 'Content-Type: application/json' -H 'Accept: application/vnd.apache.arrow.stream' \
+  -d '{"sql": "SELEC 1"}' | jq '{type, status, code}'
+```
+
+```json output
+{
+  "type": "urn:warp-sql:error:sql_error",
+  "status": 400,
+  "code": "sql_error"
+}
+```
+
+A failure *after* the stream has started can't change the status any more: see
+[Errors mid-stream](/flows/errors-mid-stream/).
+
+## Compression
+
+`Warp-IPC-Compression` lists the Arrow buffer codecs the client accepts, in its order of
+preference (<Spec s="8.2" />). The server uses the first it supports and says which in the
+response's header of the same name. `lz4_frame` costs little CPU; `zstd` compresses more:
+
+```bash test
+curl -s -D zheaders.txt $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" \
+  -H 'Content-Type: application/json' -H 'Accept: application/vnd.apache.arrow.stream' \
+  -H 'Warp-IPC-Compression: zstd, lz4_frame' \
+  -d '{"sql": "SELECT i % 7 AS v FROM range(1000000) t(i)"}' -o packed.arrows
+tr -d '\r' < zheaders.txt | grep '^Warp-IPC-Compression'
+python3 -c "import pyarrow.ipc as ipc; print(ipc.open_stream('packed.arrows').read_all().num_rows)"
+```
+
+```text output
+Warp-IPC-Compression: zstd
+1000000
+```
+
+HTTP content coding (`Accept-Encoding`) is a separate, independent layer.

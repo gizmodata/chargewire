@@ -1,0 +1,117 @@
+---
+title: Prepared statements
+description: "Prepare a Warp SQL statement once, read its parameter and result schemas, and execute it with JSON parameters or an Arrow batch where each row is one execution."
+---
+
+import Diagram from '../../../components/Diagram.astro';
+import Spec from '../../../components/Spec.astro';
+
+With capability `prepared_statements`, a client prepares a statement once and executes it as
+often as it likes (<Spec s="7" />). Preparing never runs the statement. Each execution is
+authorized as the principal runs it, so a privilege revoked between prepare and execute
+applies.
+
+<Diagram name="prepared-statements" alt="The client prepares an INSERT and gets its parameter and result schemas, executes it with JSON parameters and then with an Arrow stream of rows, one execution per row, and deletes it." />
+
+```bash test
+WARP=http://127.0.0.1:31337
+TOKEN=$(curl -s $WARP/warp/v1/auth/token -H 'Content-Type: application/json' \
+  -d '{"grant_type": "password", "username": "joe", "password": "s3:cret"}' | jq -r .access_token)
+AUTH="Authorization: Bearer $TOKEN"
+SESSION=$(curl -s $WARP/warp/v1/sessions -H "$AUTH" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
+curl -s $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"sql": "CREATE TABLE events (id INTEGER, name VARCHAR)"}' | jq -c .result
+```
+
+```json output
+{"kind":"update"}
+```
+
+## Prepare
+
+The answer carries the statement's `parameter_schema` (an Arrow schema, base64), and what
+executing returns: `result_kind` `rows` (with `result_schema` when the server can tell it
+before running), `update`, or `null` when it can only tell at execution:
+
+```bash test
+curl -s $WARP/warp/v1/sessions/$SESSION/prepared -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"sql": "INSERT INTO events VALUES (?, ?)"}' > prepared.json
+PREPARED=$(jq -r .prepared_id prepared.json)
+jq -c '{prepared_id, result_kind, result_schema}' prepared.json
+python3 -c "
+import base64, json, pyarrow.ipc as ipc
+doc = json.load(open('prepared.json'))
+print(ipc.open_stream(base64.b64decode(doc['parameter_schema'])).schema)"
+```
+
+```text output
+{"prepared_id":"p_…","result_kind":"update","result_schema":null}
+1: int32
+2: string
+```
+
+## Execute with JSON parameters
+
+The body is `{"parameters": [...]}`, as for a submit, and the answer is exactly what a submit
+answers, with the same headers (`Accept`, `Prefer`, `Idempotency-Key`, …):
+
+```bash test
+curl -s $WARP/warp/v1/sessions/$SESSION/prepared/$PREPARED/execute -H "$AUTH" \
+  -H 'Content-Type: application/json' -d '{"parameters": [1, "signup"]}' | jq -c '{state, result}'
+```
+
+```text output
+{"state":"succeeded","result":{"kind":"update","rows_affected":1}}
+```
+
+## Execute with Arrow parameters
+
+For exact types, or many executions in one request, the body is an Arrow stream whose schema
+matches `parameter_schema`. **Each row is one execution**, so one request inserts a whole batch:
+
+```bash test
+python3 - <<'EOF'
+import base64, json
+import pyarrow as pa, pyarrow.ipc as ipc
+schema = ipc.open_stream(base64.b64decode(json.load(open("prepared.json"))["parameter_schema"])).schema
+rows = pa.table([pa.array([2, 3, 4], schema.field(0).type), pa.array(["login", "search", "logout"])], schema=schema)
+with ipc.new_stream("rows.arrows", schema) as writer:
+    writer.write_table(rows)
+EOF
+curl -s $WARP/warp/v1/sessions/$SESSION/prepared/$PREPARED/execute -H "$AUTH" \
+  -H 'Content-Type: application/vnd.apache.arrow.stream' --data-binary @rows.arrows | jq -c '{state, result}'
+```
+
+```text output
+{"state":"succeeded","result":{"kind":"update","rows_affected":3}}
+```
+
+A query executed for several parameter rows returns the concatenation of each execution's rows,
+in order. The same shape as a submit holds for a query too: here a prepared query streams its
+result:
+
+```bash test
+QUERY=$(curl -s $WARP/warp/v1/sessions/$SESSION/prepared -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"sql": "SELECT name FROM events WHERE id >= ? ORDER BY id"}' | jq -r .prepared_id)
+curl -s $WARP/warp/v1/sessions/$SESSION/prepared/$QUERY/execute -H "$AUTH" \
+  -H 'Content-Type: application/json' -H 'Accept: application/vnd.apache.arrow.stream' \
+  -d '{"parameters": [3]}' -o names.arrows
+python3 -c "import pyarrow.ipc as ipc; print(ipc.open_stream('names.arrows').read_all().column('name').to_pylist())"
+```
+
+```text output
+['search', 'logout']
+```
+
+## Close
+
+```bash test
+curl -s -o /dev/null -w '%{http_code}\n' -X DELETE $WARP/warp/v1/sessions/$SESSION/prepared/$PREPARED -H "$AUTH"
+curl -s $WARP/warp/v1/sessions/$SESSION/prepared/$PREPARED/execute -H "$AUTH" \
+  -H 'Content-Type: application/json' -d '{"parameters": [9, "x"]}' | jq -c '{status, code}'
+```
+
+```text output
+204
+{"status":404,"code":"prepared_not_found"}
+```

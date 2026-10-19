@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.astro/
+# Copied from ../spec at build time (scripts/generate.mjs --public-only)
+public/openapi.yaml
+public/openapi.json
+test-output/

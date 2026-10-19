@@ -1,0 +1,10 @@
+sequenceDiagram
+  participant C as Client
+  participant S as Warp SQL server
+  C->>S: POST /warp/v1/sessions/{id}/ingest?table=trips&mode=create<br/>Content-Type: application/vnd.apache.arrow.stream<br/>(any size, chunked)
+  Note over S: writes every batch, one transaction
+  alt every row written
+    S-->>C: 200 {"rows_ingested"}
+  else it fails
+    S-->>C: 4xx problem document, and no row remains
+  end

@@ -1,0 +1,96 @@
+---
+title: Cancel and close
+description: "Cancelling a Warp SQL statement or everything a session runs, closing a statement, and statement timeouts with Warp-Statement-Timeout."
+---
+
+import Diagram from '../../../components/Diagram.astro';
+import Spec from '../../../components/Spec.astro';
+
+A client stops work it no longer needs, and says when it is done with a statement so the
+server can free its result (<Spec s="6.8" />, <Spec s="6.9" />).
+
+<Diagram name="cancel-and-close" alt="The client cancels a running statement (202), reads it as cancelled with cancel_reason client, cancels everything the session runs, and deletes the statement (204)." />
+
+```bash test
+WARP=http://127.0.0.1:31337
+TOKEN=$(curl -s $WARP/warp/v1/auth/token -H 'Content-Type: application/json' \
+  -d '{"grant_type": "password", "username": "joe", "password": "s3:cret"}' | jq -r .access_token)
+AUTH="Authorization: Bearer $TOKEN"
+SESSION=$(curl -s $WARP/warp/v1/sessions -H "$AUTH" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
+LONG='{"sql": "SELECT count(*) FROM range(100000000000)"}'
+```
+
+## Cancel a statement
+
+`POST …/cancel` answers `202`. A queued statement never starts; cancelling a statement that has
+finished changes nothing and still answers `202`:
+
+```bash test
+STATEMENT=$(curl -s $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
+  -H 'Prefer: respond-async' -d "$LONG" | jq -r .statement_id)
+curl -s -o /dev/null -w '%{http_code}\n' -X POST $WARP/warp/v1/sessions/$SESSION/statements/$STATEMENT/cancel -H "$AUTH"
+curl -s $WARP/warp/v1/sessions/$SESSION/statements/$STATEMENT -H "$AUTH" -H 'Prefer: wait=10' \
+  | jq -c '{state, cancel_reason, error: .error.code}'
+```
+
+```text output
+202
+{"state":"cancelled","cancel_reason":"client","error":"statement_cancelled"}
+```
+
+`cancel_reason` says who stopped it: `client`, `timeout`, `session_closed`, `killed` (an
+administrator ended the session), `cancelled` (the engine, for someone else),
+`privilege_revoked` or `server_shutdown`. A client treats a reason it doesn't know as a generic
+one (<Spec s="12" />).
+
+## Cancel everything the session runs
+
+A client whose submit hasn't been answered yet has no statement id to cancel. `POST
+/warp/v1/sessions/{id}/cancel` cancels every statement of the session that is queued or running
+when it arrives, and lists them:
+
+```bash test
+OTHER=$(curl -s $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
+  -H 'Prefer: respond-async' -d "$LONG" | jq -r .statement_id)
+curl -s -X POST $WARP/warp/v1/sessions/$SESSION/cancel -H "$AUTH" > cancelled.json
+jq --arg id "$OTHER" '.cancelled | index($id) != null' cancelled.json
+```
+
+```text output
+true
+```
+
+## Time limits
+
+`Warp-Statement-Timeout` (milliseconds) limits how long a statement may run. When it runs out
+the server cancels the statement (`cancel_reason: timeout`, code `statement_timeout`). A
+statement that has been cancelled by the time its submit is answered is an error response, not
+a success:
+
+```bash test
+curl -s $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
+  -H 'Prefer: wait=10' -H 'Warp-Statement-Timeout: 200' -d "$LONG" | jq -c '{status, code, cancel_reason}'
+```
+
+```text output
+{"status":409,"code":"statement_timeout","cancel_reason":"timeout"}
+```
+
+## Close a statement
+
+`DELETE` says the client is done: the result is freed and the id forgotten. A query still running
+is cancelled; a statement that changes data runs to the end with its rows discarded (to stop a
+write, cancel it):
+
+```bash test
+curl -s -o /dev/null -w '%{http_code}\n' -X DELETE $WARP/warp/v1/sessions/$SESSION/statements/$STATEMENT -H "$AUTH"
+curl -s $WARP/warp/v1/sessions/$SESSION/statements/$STATEMENT -H "$AUTH" | jq -c '{status, code}'
+```
+
+```text output
+204
+{"status":404,"code":"statement_not_found"}
+```
+
+Closing the session (`DELETE /warp/v1/sessions/{id}`) cancels everything it runs, with
+`cancel_reason: session_closed`.

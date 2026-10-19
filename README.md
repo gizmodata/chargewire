@@ -229,6 +229,7 @@ for 1.0.0 keeps working.
 | [`docs/distributed.md`](docs/distributed.md) | How partitioned results leave room for distributed query |
 | [`cpp/`](cpp/README.md) | `libwarpsql` and `warp-duckdb` |
 | [`conformance/`](conformance/README.md) | The conformance suite, and the MUSTs it doesn't test yet |
+| [`site/`](site/README.md) | The protocol's site: the spec, every flow with a sequence diagram and commands that run, the OpenAPI reference in Swagger UI |
 | [`CHANGELOG.md`](CHANGELOG.md) | Changes by version |
 
 ## 🏹 Relationship to Apache Arrow
