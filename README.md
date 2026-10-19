@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <a href="spec/warp-sql.md"><img src="https://img.shields.io/badge/spec-draft%200.1.0-31a8db.svg" alt="Spec: draft 0.1.0"></a>
-  <a href="conformance/tests"><img src="https://img.shields.io/badge/conformance-206%20tests-brightgreen.svg" alt="Conformance: 206 tests"></a>
+  <a href="spec/warp-sql.md"><img src="https://img.shields.io/badge/spec-1.0.0-31a8db.svg" alt="Spec: 1.0.0"></a>
+  <a href="conformance/tests"><img src="https://img.shields.io/badge/conformance-231%20tests-brightgreen.svg" alt="Conformance: 231 tests"></a>
   <a href="spec/warp-sql.md#21-transport"><img src="https://img.shields.io/badge/transport-HTTP%2F1.1%20%2B%20TLS-f15a24.svg" alt="Transport: HTTP/1.1 + TLS"></a>
   <a href="https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format"><img src="https://img.shields.io/badge/wire%20format-Arrow%20IPC-f15a24.svg" alt="Wire format: Arrow IPC"></a>
   <img src="https://img.shields.io/badge/gRPC-not%20needed-lightgrey.svg" alt="No gRPC">
@@ -73,11 +73,10 @@ Every server describes itself at `GET /warp`, so a client knows what it may use:
 {
   "protocol": "warp-sql",
   "protocol_versions": ["1"],
-  "draft": "0.1.0",
-  "server": {"name": "warp-duckdb", "version": "0.1.0 (DuckDB v2.0.0-dev88520)"},
-  "capabilities": ["prepared_statements", "transactions", "ingest", "result_retention",
+  "server": {"name": "warp-duckdb", "version": "1.0.0 (DuckDB v2.0.0-alpha48624)"},
+  "capabilities": ["prepared_statements", "transactions", "ingest", "partitioned_ingest",
                    "long_poll", "ipc_compression_zstd", "ipc_compression_lz4_frame",
-                   "result_partitions", "partitioned_ingest"],
+                   "result_partitions"],
   "auth": {"grant_types": ["password"]}
 }
 ```
@@ -199,7 +198,9 @@ See [cpp/README.md](cpp/README.md) for TLS, mTLS and the other options.
 
 ## 🗺️ Status and roadmap
 
-**Draft 0.1.0.** The protocol is designed in the open, and may still change until 1.0.0.
+**1.0.0.** Version 1 is stable: it changes only by addition (new endpoints, fields,
+capabilities and error codes, [§12](spec/warp-sql.md#12-versioning)), so a client written
+for 1.0.0 keeps working.
 
 1. ~~Spec draft.~~
 2. ~~Spike: which Arrow library does the IPC, checked value by value for every DuckDB
@@ -210,7 +211,8 @@ See [cpp/README.md](cpp/README.md) for TLS, mTLS and the other options.
    which runs GizmoSQL 1.x's test battery over Warp SQL alone.
 6. ~~Parallel multi-partition results~~ (§6.10, with the SDK's pipelined streaming).
 7. ~~A JavaScript client~~ ([warp-sql-js](https://github.com/gizmodata/warp-sql-js)) and ~~partitioned uploads~~ (§8.3).
-8. Spec 1.0.0: [Appendix A](spec/warp-sql.md#appendix-a-open-items-before-10) lists the open items.
+8. ~~Spec 1.0.0.~~ [Appendix A](spec/warp-sql.md#appendix-a-possible-future-additions) lists
+   what may come next, each behind a capability.
 
 ## 📂 In this repo
 
@@ -219,9 +221,8 @@ See [cpp/README.md](cpp/README.md) for TLS, mTLS and the other options.
 | [`spec/warp-sql.md`](spec/warp-sql.md) | The protocol specification |
 | [`docs/server-sdk.md`](docs/server-sdk.md) | Design of the C++ server SDK |
 | [`docs/distributed.md`](docs/distributed.md) | How partitioned results leave room for distributed query |
-| [`docs/gizmosql-parity.md`](docs/gizmosql-parity.md) | How GizmoSQL 1.x's Flight SQL surface maps onto Warp SQL |
 | [`cpp/`](cpp/README.md) | `libwarpsql` and `warp-duckdb` |
-| [`conformance/`](conformance/tests) | The conformance suite |
+| [`conformance/`](conformance/README.md) | The conformance suite, and the MUSTs it doesn't test yet |
 | [`CHANGELOG.md`](CHANGELOG.md) | Changes by version |
 
 ## 🏹 Relationship to Apache Arrow

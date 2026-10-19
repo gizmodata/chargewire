@@ -28,6 +28,8 @@ def test_status_document_path(warp, session_id):
     assert schema.names == ["answer"]
     assert result["partitions"][0]["index"] == 0
     assert result["partitions"][0]["rows"] == 1
+    # §6.2: no partition on another server for a client that didn't send Warp-Result-Locations.
+    assert all(p["location"] is None for p in result["partitions"]), result
 
 
 def test_streamed_path_returns_arrow_in_one_round_trip(warp, session_id):

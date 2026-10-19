@@ -7,6 +7,65 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-19
+
+The first stable version of the protocol. From here on version 1 changes only by addition
+(spec §12). These shape fixes landed before the tag, so they are not additive changes over
+the drafts; nobody depended on the drafts, so none has a fallback.
+
+### Changed
+
+- **Statuses say whose problem it is** (§11). `execution_error` (a statement that failed
+  while running: a division by zero, a constraint, a conversion) is `422`, not `500`; the
+  new `internal_error` (`500`) is for the server's own faults (DuckDB's internal and fatal
+  errors, an exception that isn't a protocol error, a broken invariant). A statement's own
+  outcome is never `5xx` and never `408`. `statement_cancelled` and `statement_timeout` are
+  `409` (they were "—" in the spec and `500` in the SDK).
+- **A statement cancelled by the time its submit is answered is an error response** (§6.1),
+  as a failed one already was: `409` with the problem document's new `cancel_reason`
+  member, and `Warp-Statement-Id` naming the statement (now on a failed statement's error
+  response too). Before, the SDK answered `200`/`201` with a `cancelled` document. An
+  engine that cancels a statement itself (`statement_cancelled` from the engine) leaves it
+  `cancelled` with `cancel_reason: cancelled`, not `failed`.
+- **Codes**: a forgotten statement is `statement_not_found` (§6.5 said `not_found`); a
+  partition the result doesn't have is the new `partition_not_found`; `not_found` means no
+  such endpoint only. `client_certificate_required` is `certificate_required`, the name of
+  the TLS alert it stands for. Codes a client makes up for its own failures begin with
+  `client_`, which servers never send; the C++ client's are `client_protocol_error`,
+  `client_connection_failed`, `client_tls_failed`, `client_session_closed`,
+  `client_invalid_argument`, and `client_http_<status>` for an error answer that carries no
+  problem document.
+- **Open enumerations** (§12): clients accept unknown values of every enumerated field (an
+  unknown statement or ingest `state` is not terminal, an unknown `reason` or
+  `cancel_reason` is generic), and a request field, header or value that asks for new
+  behaviour comes with a capability.
+- **Capabilities** (§3.1): a table of them, with what each gates. Result retention is core
+  (a server may still decline to retain, and says so in `retained`), so `result_retention`
+  is gone; `partitioned_results` is gone, and partitions on other servers are the new
+  `result_locations`: a partition's `location` is `null` unless the client sent
+  `Warp-Result-Locations: remote`. `mtls_identity` is in the example. Discovery has no
+  `draft` field.
+- **Names for extensions** (§2.7): the protocol's capabilities, session options,
+  `server-info` keys, codes and reasons are unprefixed; an implementation's own take its
+  prefix. warp-duckdb's session option is `duckdb_arrow_lossless_conversion` (was
+  `arrow_lossless_conversion`) and its `server-info` key `duckdb_version` (was `engine` and
+  `engine_version`).
+- **`server-info`** (§10): the naming rule is exact (drop a leading `FLIGHT_SQL_`, then lower
+  case), values take their `SqlInfo` type's JSON type, and the version 1 keys are a table
+  (`server_name`, `server_version`, `server_arrow_version`, `server_read_only`,
+  `sql_identifier_quote_char`, `sql_transactions_supported`). `protocol` and
+  `protocol_version` are gone (discovery has them). warp-duckdb adds `server_read_only`.
+- Partitioned ingest's commit body is `{"part_count": n}` (was `{"parts": n}`, which the
+  ingest document uses for its array of parts).
+- `session_ended`'s MUST (§5.6) is for the token-related reasons only: after `killed` a
+  client may open a new session with the token it has.
+- After `invalid_token` with `token_revoked`, `credentials_changed` or `principal_dropped`,
+  a client doesn't sign in again on its own (§4.2); it may once without a reason, after
+  `token_expired`, or with a reason it doesn't know.
+- `problem.title` is a human-readable summary of the code ("Permission denied"); the SDK
+  sent the code.
+- The spec names no implementation: its examples are generic.
+
 ### Added
 
 - Browser sign-in in the protocol (spec §4.3, capability `oauth_browser`), complete: a
@@ -50,6 +109,41 @@ spec's version is the repository's version.
   `return_to` values, the bound on pending flows, and `not_implemented` without the
   capability. The server flags are a template (`WARP_SQL_TEST_SERVER_OAUTH_ARGS`). With the
   secret check removed the secret test fails, and with `return_to` unchecked 17 tests fail.
+- Spec: `Warp-Query-Tag` defined (§2.5): an ASCII JSON object of at most 4,096 bytes that a
+  server may record with the statement or ingest. The SDK refuses a malformed one (`400`)
+  and hands it to `EngineSession::SetQueryTag()` around each statement, prepared execution
+  and ingest (for a partitioned ingest, the opening request's).
+- Spec: the statement document's fields as a table (`finished_at`, and a `rows` result while
+  the statement runs), the ingest document's (`rows_ingested`), `PATCH` of a session (`200`,
+  every option and `errors`), a bad option failing `POST /sessions`, `Retry-After` as
+  delta-seconds only, split-result headers that MUST both be present for more than one
+  partition, and `Warp-` header names kept for the protocol.
+- Spec: Appendix A is now "Possible future additions" (upload resumption, result
+  statistics, push notification, forwarded client certificates, per-partition tokens), each
+  additive behind a capability.
+- SDK: `Backend::Capabilities()` (`prepared_statements`, `transactions`, `ingest`): discovery
+  lists only what the backend has, `sql_transactions_supported` follows it, and the
+  endpoints of a missing feature answer `not_implemented`. The default is none.
+- SDK: `CodeTitle()`, `ErrorCode::kInternalError`, `kPartitionNotFound`,
+  `Error::Cancelled()` and `Error::cancel_reason()`.
+- warp-duckdb: `--health-check-query SQL`; a health check that hangs is interrupted after
+  10 s, and a probe that comes while one runs fails at once instead of queueing.
+- C++ client: `User-Agent: warpsql-client-cpp/1.0.0` (the version from CMake), and
+  `cancel_reason` read from problem documents.
+- Conformance (231 tests): another principal's session, statement, retained result,
+  prepared statement and ingest are `404 session_not_found` (and its ids `*_not_found` in
+  one's own session), with the owner's twin; a forwarded client-certificate header is no
+  certificate; unknown request fields are ignored; ids are long random strings; query tags;
+  one signal drains (new work `503 server_draining` with `Retry-After`, running work
+  finishes, what remains at the end of the grace period is cut); health answers in bounded
+  time while its query hangs; metadata follows authorization and a prepared statement is
+  authorized at each execution (on a server with privileges, `WARP_SQL_TEST_AUTHZ_*`);
+  `PATCH` and create of a session; the statement document while running and finished;
+  cancelled-at-submit answers; `Cache-Control: no-store` on every result response; status-only
+  checks now assert codes; every problem's `title` is for people.
+  `conformance/README.md` lists the MUSTs it doesn't test yet.
+
+### Added (before the 1.0.0 shape fixes)
 
 - The SDK's view of its sessions, for an engine's own SQL (Hardcharger's
   `hardcharger_active_connections()`, `hardcharger_cancel()`, `KILL SESSION`):
@@ -271,7 +365,7 @@ spec's version is the repository's version.
 - Conformance suite (`conformance/`): 46 black-box tests; fails, never skips, without a
   server.
 
-### Changed
+### Changed (before the 1.0.0 shape fixes)
 
 - SDK: compressed results compress only the buffers worth it. A buffer of 256 KiB or more
   is judged by compressing 48 KiB of it (start, middle, end); lz4_frame wants that sample
@@ -474,3 +568,6 @@ spec's version is the repository's version.
 - `cpp/README.md` says `warp-duckdb` is for testing and development only: whoever signs in
   is the administrator with all of DuckDB's file, network and extension access, and it has
   no users, access control or file guards. Production use is Hardcharger.
+
+[Unreleased]: https://github.com/gizmodata/warp-sql/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/gizmodata/warp-sql/releases/tag/v1.0.0

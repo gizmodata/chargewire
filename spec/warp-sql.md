@@ -111,7 +111,8 @@ they don't know.
 `Warp-Query-Tag` carries a JSON object, serialized in ASCII (any other character
 written as a `\u` escape) and at most 4,096 bytes long, such as
 `{"job":"nightly-load","run":"2026-10-19"}`. It labels the statement (or ingest) the
-request creates, so it can be found in the server's logs, query history or audit trail. A
+request creates, so it can be found in the server's logs, query history or audit trail; a
+partitioned ingest (§8.3) takes it on the request that opens it. A
 server MAY record it and MAY ignore it; a server that reads it SHOULD refuse one that is
 not a JSON object, not ASCII or too long with `400` and code `bad_request`. A tag never
 changes what the statement does.

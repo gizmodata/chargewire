@@ -81,6 +81,10 @@ def read_streamed_split(warp, session_id: str, sql: str, n: int, order: str | No
     k = int(response.headers.get("warp-result-partitions", "1"))
     chosen = response.headers.get("warp-result-order")
     assert 1 <= k <= n
+    # §6.10: both headers when the result is split, neither when it isn't.
+    assert (chosen is None) == (k == 1) and (("warp-result-partitions" in response.headers) == (k > 1)), response.headers
+    if k > 1:
+        assert chosen in ("interleaved", "any"), chosen
     reader = Partitions(warp=warp, session_id=session_id, statement_id=statement_id)
     others = reader.pool.submit(reader.get_many, range(1, k))
     try:
