@@ -118,6 +118,11 @@ the drafts; nobody depended on the drafts, so none has a fallback.
   every option and `errors`), a bad option failing `POST /sessions`, `Retry-After` as
   delta-seconds only, split-result headers that MUST both be present for more than one
   partition, and `Warp-` header names kept for the protocol.
+- Spec §6.5: expiry applies to reads that start after it; a server MUST deliver a read
+  already under way when its result expires in full, end-of-stream marker included
+  (deleting the statement or ending its session may still cut it, §6.6). Conformance:
+  `test_a_read_under_way_when_its_result_expires_is_delivered_in_full` (warp-duckdb's new
+  `--result-retention-seconds`; it fails on a server without the SDK fix above).
 - Spec: Appendix A is now "Possible future additions" (upload resumption, result
   statistics, push notification, forwarded client certificates, per-partition tokens), each
   additive behind a capability.
@@ -130,7 +135,7 @@ the drafts; nobody depended on the drafts, so none has a fallback.
   10 s, and a probe that comes while one runs fails at once instead of queueing.
 - C++ client: `User-Agent: warpsql-client-cpp/1.0.0` (the version from CMake), and
   `cancel_reason` read from problem documents.
-- Conformance (231 tests): another principal's session, statement, retained result,
+- Conformance (232 tests): another principal's session, statement, retained result,
   prepared statement and ingest are `404 session_not_found` (and its ids `*_not_found` in
   one's own session), with the owner's twin; a forwarded client-certificate header is no
   certificate; unknown request fields are ignored; ids are long random strings; query tags;

@@ -7,7 +7,7 @@
 //       [--mtls-crl-allow-missing-ca-crls]
 //       [--cors-origin ORIGIN]... [--drain-seconds N] [--token-lifetime-seconds N]
 //       [--session-idle-timeout-seconds N] [--finished-statement-ttl-seconds N]
-//       [--health-check-query SQL]
+//       [--health-check-query SQL] [--result-retention-seconds N]
 //       [--oauth-issuer URL --oauth-client-id ID --oauth-identities A,B [--oauth-scopes S]
 //        [--oauth-base-url URL] [--oauth-redirect-uri URL] [--oauth-provider-name NAME] [--oauth-max-flows N]]
 //
@@ -56,10 +56,9 @@ struct Flags {
             << "       [--mtls-require-identity-match[=BOOL]] [--mtls-crl-allow-missing-ca-crls]\n"
             << "       [--cors-origin ORIGIN]... [--drain-seconds N] [--token-lifetime-seconds N]\n"
             << "       [--session-idle-timeout-seconds N] [--finished-statement-ttl-seconds N]\n"
+            << "       [--health-check-query SQL] [--result-retention-seconds N]\n"
             << "       [--oauth-issuer URL --oauth-client-id ID --oauth-identities A,B [--oauth-scopes S]\n"
-            << "        [--oauth-base-url URL] [--oauth-redirect-uri URL] [--oauth-provider-name NAME] [--oauth-max-flows N]]\n"
-
-            << "       [--health-check-query SQL]\n";
+            << "        [--oauth-base-url URL] [--oauth-redirect-uri URL] [--oauth-provider-name NAME] [--oauth-max-flows N]]\n";
   std::exit(2);
 }
 
@@ -114,6 +113,8 @@ Flags ParseFlags(int argc, char** argv) {
     else if (flag == "--cors-origin") flags.server.cors_allowed_origins.push_back(value());
     else if (flag == "--drain-seconds") flags.drain_seconds = std::stoi(value());
     else if (flag == "--health-check-query") flags.backend.health_query = value();
+    else if (flag == "--result-retention-seconds")
+      flags.server.result_ttl = std::chrono::seconds(std::stoi(value()));
     // Short lifetimes let clients test token renewal, session eviction and statement expiry.
     else if (flag == "--token-lifetime-seconds")
       flags.server.token_lifetime = std::chrono::seconds(std::stoi(value()));

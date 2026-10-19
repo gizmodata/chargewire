@@ -863,7 +863,11 @@ lives.
   a result checks `retained`.
 - Re-reading an unretained result, or `from_batch` greater than 0 on one, gets `409`
   with code `result_not_resumable`.
-- An expired result gets `410 Gone` with code `result_expired`.
+- An expired result gets `410 Gone` with code `result_expired`. Expiry applies to reads
+  that start after it: a server MUST deliver in full, to its end-of-stream marker, a read
+  of a result (or of one of its partitions) that was already under way when the result
+  expired. Deleting the statement (§6.8) or ending its session may still end such a read
+  early, without the marker (§6.6).
 - Retained results are a resource the server MAY limit per principal; a statement
   that would exceed the limit fails with `429` and code `result_quota_exceeded`.
 - If the client disconnects while reading an **unretained** result, the server

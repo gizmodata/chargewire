@@ -1,10 +1,12 @@
-"""Spec §11.1 (graceful shutdown) and §3.2 (health that answers when its query hangs).
+"""Spec §11.1 (graceful shutdown), §3.2 (health that answers when its query hangs) and §6.5
+(a read under way when its result expires).
 
 These start servers of their own from WARP_SQL_TEST_SERVER_BINARY, with these flags
 (defaults are warp-duckdb's; Hardcharger's in brackets):
 
     WARP_SQL_TEST_SERVER_DRAIN_FLAG         --drain-seconds          [--shutdown-grace-period-seconds]
     WARP_SQL_TEST_SERVER_HEALTH_QUERY_FLAG  --health-check-query     [--health-check-query]
+    WARP_SQL_TEST_SERVER_RETENTION_FLAG     --result-retention-seconds [--result-retention-seconds]
 
 Against a server given by URL they cannot run: deselect them with -m "not own_server".
 """
@@ -14,6 +16,7 @@ import os
 import time
 
 import httpx
+import pyarrow.ipc as ipc
 import pytest
 
 from conftest import STOP_SIGNAL, start_server, stop_server
@@ -118,5 +121,45 @@ def test_health_answers_in_bounded_time_when_its_query_hangs():
         # The server itself still serves.
         warp = Warp(base_url=server.base_url, username=server.username, password=server.password)
         assert warp.query(session_id=warp.new_session(), sql="SELECT 1 AS v").to_pylist() == [{"v": 1}]
+    finally:
+        assert stop_server(server=server) == 0, server.log_tail()
+
+
+def test_a_read_under_way_when_its_result_expires_is_delivered_in_full():
+    # §6.5: expiry applies to reads that start after it. A client reading a retained result
+    # slowly (backpressure holds the server's stream) past its expiry still gets every
+    # batch and the end-of-stream marker; a read that starts afterwards gets 410.
+    flag = os.environ.get("WARP_SQL_TEST_SERVER_RETENTION_FLAG", "--result-retention-seconds")
+    retention = 2
+    server = start_server(binary=binary(), extra_args=[flag, str(retention)])
+    try:
+        warp = Warp(base_url=server.base_url, username=server.username, password=server.password)
+        session_id = warp.new_session()
+        rows = 40_000_000  # 320 MB of BIGINT: far more than socket buffers hold
+        sql = f"SELECT i FROM range({rows}) t(i)"
+        doc = warp.submit(session_id=session_id, sql=sql,
+                          headers={"Prefer": "wait=60", "Warp-Retain-Result": "true"}).json()
+        if doc["state"] != "succeeded":
+            doc = warp.wait_done(session_id=session_id, statement_id=doc["statement_id"], timeout=120)
+        assert doc["state"] == "succeeded" and doc["result"]["retained"] is True, doc
+        url = f"{warp.statement_url(session_id, doc['statement_id'])}/result"
+        reader = httpx.Client(base_url=server.base_url, timeout=120)
+        try:
+            response = reader.send(request=reader.build_request(method="GET", url=url, headers=warp.headers()),
+                                   stream=True)
+            assert response.status_code == 200, response.read()
+            chunks = response.iter_raw(chunk_size=1 << 20)
+            body = bytearray(next(chunks))
+            # Past the expiry and the server's next look at expired results.
+            time.sleep(retention + 8)
+            refused = warp.result(session_id=session_id, statement_id=doc["statement_id"])
+            assert_problem(response=refused, status=410, code="result_expired")
+            for chunk in chunks:
+                body.extend(chunk)
+        finally:
+            reader.close()
+        assert bytes(body).endswith(EOS), "the read under way was cut when its result expired"
+        table = ipc.open_stream(source=bytes(body)).read_all()
+        assert table.num_rows == rows
     finally:
         assert stop_server(server=server) == 0, server.log_tail()
