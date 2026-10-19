@@ -1524,7 +1524,7 @@ BrowserSignInFlow Client::StartBrowserSignIn(const std::string& return_to) {
     flow.expires_at = String(*object, "expires_at");
   }
   if (flow.flow_id.empty() || flow.poll_secret.empty() || flow.authorize_url.empty()) {
-    throw Error(reply.status, "protocol_error", "the browser sign-in answer lacks flow_id, poll_secret or authorize_url");
+    throw Error(reply.status, "client_protocol_error", "the browser sign-in answer lacks flow_id, poll_secret or authorize_url");
   }
   return flow;
 }
@@ -1550,8 +1550,10 @@ bool Client::PollBrowserSignIn(const BrowserSignInFlow& flow) {
     throw Error(401, error ? String(*error, "code") : "invalid_credentials",
                 error ? String(*error, "detail") : "the browser sign-in failed");
   }
-  if (state != "complete" || String(*object, "access_token").empty()) {
-    throw Error(reply.status, "protocol_error", "unexpected browser sign-in state '" + state + "'");
+  // A state this client doesn't know is not an end (spec §12): poll again.
+  if (state != "complete") return false;
+  if (String(*object, "access_token").empty()) {
+    throw Error(reply.status, "client_protocol_error", "a completed browser sign-in answer has no access_token");
   }
   std::lock_guard token_lock(core_->token_mutex);
   core_->token = String(*object, "access_token");

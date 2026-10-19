@@ -158,7 +158,7 @@ These endpoints need no authentication.
                    "ipc_compression_zstd", "ipc_compression_lz4_frame", "result_partitions",
                    "partitioned_ingest", "mtls_identity", "oauth_browser"],
   "auth": {"grant_types": ["password", "token_exchange", "client_certificate"],
-           "oauth_browser": {"provider": "Example IdP"}}
+           "oauth_browser": {"provider": "Okta"}}
 }
 ```
 
@@ -1407,11 +1407,12 @@ So that additions break nothing, clients MUST:
 
 - ignore JSON fields, headers, capabilities and grant types they don't know;
 - treat an unknown error `code` by its HTTP status;
-- accept an unknown value of an enumerated field rather than fail: an unknown statement
-  or ingest `state` is not terminal (keep polling; later versions add only states that
-  are not terminal, and every terminal outcome stays `succeeded`, `failed`, `cancelled`,
-  `committed` or `aborted`); an unknown `reason` or `cancel_reason` is a generic one (the
-  token, session or statement is gone, for no reason the client can name); an unknown
+- accept an unknown value of an enumerated field rather than fail: an unknown statement,
+  ingest or browser sign-in flow `state` is not terminal (keep polling; later versions add
+  only states that are not terminal, and every terminal outcome stays `succeeded`,
+  `failed`, `cancelled`, `committed`, `aborted` or `complete`); an unknown `reason` or
+  `cancel_reason` is a generic one (the token, session or statement is gone, for no reason
+  the client can name), and so is an unknown failed flow's `error.code`; an unknown
   `transaction` value is reported as unknown; an unknown health `reason` is a generic
   `not_serving`.
 

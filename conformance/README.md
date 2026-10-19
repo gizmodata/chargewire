@@ -31,6 +31,8 @@ between servers; the defaults are `warp-duckdb`'s:
 | `WARP_SQL_TEST_SERVER_TOKEN_LIFETIME_FLAG` | `--token-lifetime-seconds` | |
 | `WARP_SQL_TEST_SERVER_DRAIN_FLAG` | `--drain-seconds` | `--shutdown-grace-period-seconds` |
 | `WARP_SQL_TEST_SERVER_HEALTH_QUERY_FLAG` | `--health-check-query` | `--health-check-query` |
+| `WARP_SQL_TEST_SERVER_RETENTION_FLAG` | `--result-retention-seconds` | `--result-retention-seconds` |
+| `WARP_SQL_TEST_SERVER_OAUTH_ARGS`, `WARP_SQL_TEST_SERVER_OAUTH_SECRET_ENV` | see [`test_oauth_browser.py`](tests/test_oauth_browser.py) | see there |
 
 [`test_authorization.py`](tests/test_authorization.py) needs a server with SQL privileges
 and the `WARP_SQL_TEST_AUTHZ_*` variables its docstring describes; on a server without

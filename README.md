@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="spec/warp-sql.md"><img src="https://img.shields.io/badge/spec-1.0.0-31a8db.svg" alt="Spec: 1.0.0"></a>
-  <a href="conformance/tests"><img src="https://img.shields.io/badge/conformance-232%20tests-brightgreen.svg" alt="Conformance: 232 tests"></a>
+  <a href="conformance/tests"><img src="https://img.shields.io/badge/conformance-266%20tests-brightgreen.svg" alt="Conformance: 266 tests"></a>
   <a href="spec/warp-sql.md#21-transport"><img src="https://img.shields.io/badge/transport-HTTP%2F1.1%20%2B%20TLS-f15a24.svg" alt="Transport: HTTP/1.1 + TLS"></a>
   <a href="https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format"><img src="https://img.shields.io/badge/wire%20format-Arrow%20IPC-f15a24.svg" alt="Wire format: Arrow IPC"></a>
   <img src="https://img.shields.io/badge/gRPC-not%20needed-lightgrey.svg" alt="No gRPC">

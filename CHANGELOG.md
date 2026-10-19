@@ -135,7 +135,7 @@ the drafts; nobody depended on the drafts, so none has a fallback.
   10 s, and a probe that comes while one runs fails at once instead of queueing.
 - C++ client: `User-Agent: warpsql-client-cpp/1.0.0` (the version from CMake), and
   `cancel_reason` read from problem documents.
-- Conformance (232 tests): another principal's session, statement, retained result,
+- Conformance (266 tests with browser sign-in's): another principal's session, statement, retained result,
   prepared statement and ingest are `404 session_not_found` (and its ids `*_not_found` in
   one's own session), with the owner's twin; a forwarded client-certificate header is no
   certificate; unknown request fields are ignored; ids are long random strings; query tags;
