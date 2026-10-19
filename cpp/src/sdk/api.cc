@@ -31,12 +31,12 @@ constexpr auto kClientCheck = std::chrono::seconds(1);
 // (compressing is slow, so more of them then), the bytes they may hold, and how much
 // encoded data is gathered into one write.
 constexpr std::size_t kEncodeWindow = 2;
+constexpr std::size_t kEncodeWindowCompressed = 8;
 // How long a result that may be split waits for its second batch before it is read as
 // one partition (spec §6.10): the stream's schema message isn't held back longer.
 constexpr auto kSplitWait = std::chrono::seconds(5);
 // The most partitions a client may ask for (Warp-Result-Partitions).
 constexpr int64_t kMaxRequestedPartitions = 256;
-constexpr std::size_t kEncodeWindowZstd = 8;
 constexpr std::size_t kEncodeBytes = 64 * 1024 * 1024;
 constexpr std::size_t kGatherBytes = 1024 * 1024;
 // Authentication failures one connection may have before the server closes it.
@@ -416,8 +416,8 @@ bool Api::OffersCertificateSignIn() const {
 Task<Response> Api::Discovery(Request&) {
   const ServerIdentity identity = state_.backend->Identity();
   json::array capabilities{"prepared_statements", "transactions", "ingest", "result_retention",
-                           "long_poll", "ipc_compression_zstd", "result_partitions",
-                           "partitioned_ingest"};
+                           "long_poll", "ipc_compression_zstd", "ipc_compression_lz4_frame",
+                           "result_partitions", "partitioned_ingest"};
   // client_certificate only where the server verifies client certificates and its tokens
   // can be bound to them (spec §4.4).
   json::array grants;
@@ -1590,7 +1590,7 @@ Response Api::ResultStream(std::shared_ptr<Session> session, std::shared_ptr<Sta
 }
 
 // The result stream's pipeline. The statement's engine thread produces batches; encoding
-// (and zstd compression) runs on the encode pool, several batches at once; this
+// (and compression) runs on the encode pool, several batches at once; this
 // coroutine, on the connection's strand, writes the encoded batches in order, gathered
 // into large writes (with TLS, each is encrypted in one go). Each stage runs while the
 // others do, within bounds: the statement buffers a few batches, at most kEncodeWindow
@@ -1624,7 +1624,7 @@ Task<bool> Api::StreamBatches(Statement& statement, std::size_t partition, int64
                    Seconds(encode) > 0 ? raw / 1e6 / Seconds(encode) : 0.0);
     }
   } stats{partition};
-  const std::size_t window = compression == IpcCompression::kZstd ? kEncodeWindowZstd : kEncodeWindow;
+  const std::size_t window = compression == IpcCompression::kNone ? kEncodeWindow : kEncodeWindowCompressed;
   std::deque<std::shared_ptr<Job>> encoding;
   std::size_t encoding_bytes = 0;
   std::vector<EncodedBatch> gathered;  // encoded, not yet written

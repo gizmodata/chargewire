@@ -581,13 +581,15 @@ class SessionCore : public std::enable_shared_from_this<SessionCore> {
 
   ExecuteResult Execute(const std::string& target, const json::value* body, arrow::RecordBatchReader* parameters,
                         const StatementOptions& options);
+  // `ipc_compression` is the Warp-IPC-Compression the request sends (spec §8.2).
   std::shared_ptr<ResultReader> Fetch(const std::string& statement_id, int64_t partition, int64_t from_batch,
-                                      uint64_t serial);
-  ExecuteResult Finish(StatementDocument doc, uint64_t serial);
+                                      uint64_t serial, const std::string& ipc_compression);
+  ExecuteResult Finish(StatementDocument doc, uint64_t serial, const std::string& ipc_compression);
   // A reader of every partition of a split result at once (spec §6.10). `first`, when
   // set, is partition 0's response; otherwise partition 0 is requested too.
   std::shared_ptr<ResultReader> MakePartitioned(const std::string& statement_id, uint64_t serial, int partitions,
-                                                bool any_order, std::unique_ptr<BodyReader> first);
+                                                bool any_order, std::unique_ptr<BodyReader> first,
+                                                const std::string& ipc_compression);
 
   std::shared_ptr<ClientCore> client;
   std::string id;
@@ -951,7 +953,7 @@ std::shared_ptr<arrow::RecordBatchReader> ResultReader::AsRecordBatchReader() {
   return std::make_shared<ReaderAdapter>(this);
 }
 
-ExecuteResult SessionCore::Finish(StatementDocument doc, uint64_t serial) {
+ExecuteResult SessionCore::Finish(StatementDocument doc, uint64_t serial, const std::string& ipc_compression) {
   SetRunning(serial, doc.statement_id);
   try {
     if (!doc.Terminal() && doc.result_kind != "update") doc = Wait(doc.statement_id);
@@ -961,9 +963,9 @@ ExecuteResult SessionCore::Finish(StatementDocument doc, uint64_t serial) {
       result.statement_id = doc.statement_id;
       if (doc.partitions.size() > 1 && (doc.partition_order == "interleaved" || doc.partition_order == "any")) {
         result.reader = MakePartitioned(doc.statement_id, serial, static_cast<int>(doc.partitions.size()),
-                                        doc.partition_order == "any", nullptr);
+                                        doc.partition_order == "any", nullptr, ipc_compression);
       } else {
-        result.reader = Fetch(doc.statement_id, 0, 0, serial);
+        result.reader = Fetch(doc.statement_id, 0, 0, serial, ipc_compression);
       }
       return result;
     }
@@ -987,7 +989,7 @@ ExecuteResult SessionCore::Execute(const std::string& target, const json::value*
   if (options.timeout_ms) request.set("Warp-Statement-Timeout", std::to_string(*options.timeout_ms));
   if (options.retain_result) request.set("Warp-Retain-Result", *options.retain_result ? "true" : "false");
   if (!options.query_tag.empty()) request.set("Warp-Query-Tag", options.query_tag);
-  if (options.accept_zstd) request.set("Warp-IPC-Compression", "zstd");
+  if (!options.ipc_compression.empty()) request.set("Warp-IPC-Compression", options.ipc_compression);
   if (options.result_partitions > 1 && client->OffersPartitions()) {
     request.set("Warp-Result-Partitions", std::to_string(std::min(options.result_partitions, 256)));
     if (options.any_order) request.set("Warp-Result-Order", "any");
@@ -1026,7 +1028,8 @@ ExecuteResult SessionCore::Execute(const std::string& target, const json::value*
       if (partitions > 1 && partitions <= 256) {
         // A split result (spec §6.10): this body is partition 0; the rest are read at once.
         const bool any = reply->Header("Warp-Result-Order") != "interleaved";
-        result.reader = MakePartitioned(statement_id, serial, partitions, any, std::move(reply));
+        result.reader = MakePartitioned(statement_id, serial, partitions, any, std::move(reply),
+                                        options.ipc_compression);
       } else {
         result.reader = std::make_shared<StreamResultReader>(shared_from_this(), std::move(reply), statement_id, serial);
       }
@@ -1049,7 +1052,7 @@ ExecuteResult SessionCore::Execute(const std::string& target, const json::value*
       EndRun(serial);
       throw Error(status, "protocol_error", "the statement document is not JSON");
     }
-    return Finish(ParseStatement(*object), serial);
+    return Finish(ParseStatement(*object), serial, options.ipc_compression);
   }
   EndRun(serial);
   throw ProblemOf(status, text, content_type);
@@ -1057,11 +1060,13 @@ ExecuteResult SessionCore::Execute(const std::string& target, const json::value*
 
 std::shared_ptr<ResultReader> SessionCore::MakePartitioned(const std::string& statement_id, uint64_t serial,
                                                            int partitions, bool any_order,
-                                                           std::unique_ptr<BodyReader> first) {
+                                                           std::unique_ptr<BodyReader> first,
+                                                           const std::string& ipc_compression) {
   auto open = [&](int index, Transport& on) {
     auto request = client->Request(
         http::verb::get, Path("/statements/" + statement_id + "/result?partition=" + std::to_string(index)), true);
     request.set(http::field::accept, kArrowStream);
+    if (!ipc_compression.empty()) request.set("Warp-IPC-Compression", ipc_compression);
     auto reply = on.Open(std::move(request));
     if (reply->status() != 200 || reply->ContentType() != kArrowStream) {
       const int status = reply->status();
@@ -1092,7 +1097,8 @@ std::shared_ptr<ResultReader> SessionCore::MakePartitioned(const std::string& st
 }
 
 std::shared_ptr<ResultReader> SessionCore::Fetch(const std::string& statement_id, int64_t partition,
-                                                 int64_t from_batch, uint64_t serial) {
+                                                 int64_t from_batch, uint64_t serial,
+                                                 const std::string& ipc_compression) {
   auto backoff = std::chrono::milliseconds(50);
   while (true) {
     CheckOpen();
@@ -1102,6 +1108,7 @@ std::shared_ptr<ResultReader> SessionCore::Fetch(const std::string& statement_id
              "&from_batch=" + std::to_string(from_batch)),
         true);
     request.set(http::field::accept, kArrowStream);
+    if (!ipc_compression.empty()) request.set("Warp-IPC-Compression", ipc_compression);
     auto reply = transport->Open(std::move(request));
     if (reply->status() == 200 && reply->ContentType() == kArrowStream) {
       return std::make_shared<StreamResultReader>(shared_from_this(), std::move(reply), statement_id, serial);
@@ -1217,11 +1224,11 @@ StatementDocument Session::Wait(const std::string& statement_id) {
 }
 
 std::shared_ptr<ResultReader> Session::FetchResult(const std::string& statement_id, int64_t partition,
-                                                   int64_t from_batch) {
+                                                   int64_t from_batch, const std::string& ipc_compression) {
   const uint64_t serial = core_->BeginRun();
   core_->SetRunning(serial, statement_id);
   try {
-    return core_->Fetch(statement_id, partition, from_batch, serial);
+    return core_->Fetch(statement_id, partition, from_batch, serial, ipc_compression);
   } catch (...) {
     core_->EndRun(serial);
     throw;

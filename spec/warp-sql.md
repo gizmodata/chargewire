@@ -98,7 +98,7 @@ name (`timeout_ms`, `idle_timeout_s`).
 | `Warp-Statement-Timeout` | submit, execute | Milliseconds before the server cancels the statement |
 | `Warp-Retain-Result` | submit, execute | `true` or `false`: keep the result for re-reading (§6.5) |
 | `Warp-Query-Tag` | submit, execute, ingest | A JSON object recorded with the statement for observability |
-| `Warp-IPC-Compression` | any request that returns Arrow | `zstd` or `none`: Arrow buffer compression the client accepts (§8) |
+| `Warp-IPC-Compression` | any request that returns Arrow | The Arrow buffer compression the client accepts, in its order of preference: `lz4_frame`, `zstd`, `none` (§8.2) |
 | `Warp-Result-Partitions` | submit, execute | The most partitions the client reads at once (§6.10) |
 | `Warp-Result-Order` | submit, execute | `preserve` or `any`: whether the client needs rows in order (§6.10) |
 
@@ -112,7 +112,7 @@ Large` (code `headers_too_large`). The limit SHOULD be configurable.
 |---|---|---|
 | `Warp-Request-Id` | every response | The `request_id` of this request (§11), also in the server's logs |
 | `Warp-Statement-Id` | statement responses | The statement the response belongs to |
-| `Warp-IPC-Compression` | Arrow responses | The Arrow buffer compression used: `zstd` or `none` (§8.2) |
+| `Warp-IPC-Compression` | Arrow responses | The Arrow buffer compression used: `lz4_frame`, `zstd` or `none` (§8.2) |
 | `Warp-Result-Partitions`, `Warp-Result-Order` | streamed results | How a split result is spread over partitions (§6.10) |
 
 ## 3. Discovery and health
@@ -128,8 +128,8 @@ These endpoints need no authentication.
   "draft": "0.1.0",
   "server": {"name": "GizmoSQL", "version": "2.0.0"},
   "capabilities": ["prepared_statements", "transactions", "ingest", "result_retention",
-                   "long_poll", "ipc_compression_zstd", "result_partitions", "partitioned_ingest",
-                   "oauth_browser"],
+                   "long_poll", "ipc_compression_zstd", "ipc_compression_lz4_frame",
+                   "result_partitions", "partitioned_ingest", "oauth_browser"],
   "auth": {"grant_types": ["password", "token_exchange"]}
 }
 ```
@@ -777,10 +777,30 @@ Two independent layers, both optional:
 
 - **HTTP content coding.** Standard `Accept-Encoding` / `Content-Encoding`
   (`gzip`, `zstd`, …). Browsers decode it transparently.
-- **Arrow buffer compression.** The Arrow IPC format's own per-buffer compression.
-  A client sends `Warp-IPC-Compression: zstd` to accept it; the server says what it
-  used in the response's `Warp-IPC-Compression` header. Servers with capability
-  `ipc_compression_zstd` MUST be able to produce and read it. Uploads MAY use it.
+- **Arrow buffer compression.** The Arrow IPC format's own per-buffer compression
+  (`BodyCompression`), with either of the codecs Arrow defines:
+
+  | Name | Arrow codec | Capability |
+  |---|---|---|
+  | `lz4_frame` | `LZ4_FRAME` | `ipc_compression_lz4_frame` |
+  | `zstd` | `ZSTD` | `ipc_compression_zstd` |
+
+  A server with a codec's capability MUST be able to produce and read it.
+
+  A client accepts compression with the `Warp-IPC-Compression` request header: a
+  comma-separated list of codec names in its order of preference, optionally ending in
+  `none` (`Warp-IPC-Compression: lz4_frame, zstd`). The server uses the first codec in
+  the list that it supports, ignoring names it doesn't know; it sends uncompressed Arrow
+  when the header is absent, names no codec it supports, or reaches `none` first. The
+  response's `Warp-IPC-Compression` header names what it used: `lz4_frame`, `zstd` or
+  `none`. The same header on each partition's request (§6.10) applies to that
+  partition. Within a compressed stream a server MAY leave a buffer uncompressed (Arrow's
+  uncompressed length `-1`) when compressing it would save little; clients MUST read
+  such buffers.
+
+  `lz4_frame` costs a fraction of `zstd`'s CPU on both sides and compresses less;
+  `zstd` suits links where bandwidth is scarcer than CPU. Uploads (§7.2, §8) MAY use any
+  codec whose capability the server lists; the stream's own metadata says which.
 
 Uncompressed Arrow MUST always be accepted.
 

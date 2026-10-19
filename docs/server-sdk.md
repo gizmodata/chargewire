@@ -133,8 +133,8 @@ DuckDB would truncate.
   (Go driver + cgo C exports + Python bindings). One driver serves every ADBC language.
 - **JavaScript**: separate. It must read timestamps as raw int64 values (DuckDB writes
   infinite timestamps as the int64 extremes, which Arrow JS's `get()` refuses), and it
-  registers a ZSTD codec with Arrow JS's `compressionRegistry` before asking for
-  compressed results.
+  registers LZ4_FRAME and ZSTD codecs with Arrow JS's `compressionRegistry` before asking
+  for compressed results.
 
 ## Open questions
 

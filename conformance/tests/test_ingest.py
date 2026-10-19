@@ -75,6 +75,22 @@ def test_large_compressed_upload_in_many_batches(warp, session_id):
     assert int(stored["total"]) == n * (n - 1) // 2
 
 
+def test_lz4_frame_compressed_upload(warp, session_id):
+    import random
+    rng = random.Random(7)
+    n = 500_001
+    table = pa.table({"i": pa.array(range(n), type=pa.int64()),
+                      "s": pa.array([f"s{i}" if i % 13 else None for i in range(n)]),
+                      "d": pa.array([rng.random() for _ in range(n)], type=pa.float64())})
+    response = ingest(warp=warp, session_id=session_id,
+                      body=ipc_bytes(table=table, compression="lz4", batch_rows=65_536),
+                      table="ing_lz4", mode="create")
+    assert response.status_code == 200, response.text
+    assert response.json() == {"rows_ingested": n}
+    stored = warp.query(session_id=session_id, sql="SELECT * FROM ing_lz4 ORDER BY i")
+    assert stored.equals(table)
+
+
 def test_types_are_kept(warp, session_id):
     import datetime
     import decimal

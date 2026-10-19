@@ -13,9 +13,12 @@
 
 namespace warpsql::detail {
 
-enum class IpcCompression { kNone, kZstd };
+// Arrow IPC body compression (spec §8.2).
+enum class IpcCompression { kNone, kZstd, kLz4Frame };
 
-// From the Warp-IPC-Compression request header: "zstd" if the client accepts it.
+// From the Warp-IPC-Compression request header: the codecs the client accepts, in its
+// order of preference ("lz4_frame, zstd"). The first one this server supports wins;
+// `none`, an empty header, or only unknown names: no compression.
 IpcCompression ParseIpcCompression(std::string_view header);
 std::string_view IpcCompressionName(IpcCompression compression);
 
