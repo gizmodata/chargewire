@@ -79,6 +79,12 @@ the drafts; nobody depended on the drafts, so none has a fallback.
   (`Cache-Control` with `max-age`, `ETag`, `304` on `If-None-Match`); discovery lists the
   capability and the path in its new `links` member (`links.openapi`). Appendix B lists every
   endpoint of version 1, the list the OpenAPI document must match.
+- **The SDK serves it**, so `warp-duckdb` and every server on `libwarpsql` do: the build
+  converts `spec/openapi.yaml` to JSON with a small host tool (`cpp/tools/openapi_json.cc`, a
+  strict YAML subset that refuses anything it would not read as PyYAML does) and compiles it
+  in, so nothing reads YAML at run time. `GET /warp/v1/openapi.json` answers it with
+  `Cache-Control: public, max-age=3600` and an `ETag`; discovery lists `openapi` and
+  `links.openapi`. Unit tests in `cpp/tests/openapi_test.cc`.
 - Browser sign-in in the protocol (spec §4.3, capability `oauth_browser`), complete: a
   client creates a flow (`POST /warp/v1/auth/oauth/flows`, optional `return_to`) and gets
   `flow_id`, `poll_secret`, `authorize_url`, `poll_interval_s` and `expires_at`; the identity

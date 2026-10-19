@@ -29,6 +29,7 @@ safety, and the overridable methods only do engine work:
 | Result retention, resumption from a batch, expiry, quotas (§6.5); split results (§6.10) | Record a request's query tag (§2.5), if it keeps a history |
 | Arrow IPC encoding, buffer compression, incomplete-stream signalling (§6.6) | Say which optional features it has (§3.1) |
 | Graceful drain, health endpoint (§3.2, §11.1), problem documents (§11) | Check its own health; add `server-info` facts |
+| The OpenAPI document (§3.3), compiled in from `spec/openapi.yaml` | |
 
 A public entry point such as fetching a result is not virtual. It checks the
 principal, the session and the handle, and only then calls the backend. A backend

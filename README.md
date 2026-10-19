@@ -76,10 +76,14 @@ Every server describes itself at `GET /warp`, so a client knows what it may use:
   "server": {"name": "warp-duckdb", "version": "1.0.0 (DuckDB v2.0.0-alpha48624)"},
   "capabilities": ["prepared_statements", "transactions", "ingest", "partitioned_ingest",
                    "long_poll", "ipc_compression_zstd", "ipc_compression_lz4_frame",
-                   "result_partitions"],
-  "auth": {"grant_types": ["password"]}
+                   "result_partitions", "openapi"],
+  "auth": {"grant_types": ["password"]},
+  "links": {"openapi": "/warp/v1/openapi.json"}
 }
 ```
+
+and serves the protocol's [OpenAPI 3.1 description](spec/openapi.yaml) at
+`GET /warp/v1/openapi.json`, for API browsers and client generators.
 
 *(Both run against `warp-duckdb`, the reference server in [`cpp/`](cpp/README.md).)*
 

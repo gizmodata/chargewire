@@ -109,8 +109,24 @@ else()
   find_library(DUCKDB_LIBRARY duckdb PATHS "${WARPSQL_DUCKDB_PREFIX}/lib" NO_DEFAULT_PATH REQUIRED)
 endif()
 
+# The OpenAPI document the SDK serves (spec §3.3): spec/openapi.yaml, converted to JSON at
+# build time by a small host tool, so nothing reads YAML at run time.
+add_executable(warpsql_openapi_json tools/openapi_json.cc)
+target_compile_options(warpsql_openapi_json PRIVATE ${WARPSQL_WARNINGS})
+set(WARPSQL_OPENAPI_YAML "${CMAKE_CURRENT_SOURCE_DIR}/../spec/openapi.yaml")
+set(WARPSQL_OPENAPI_CC "${CMAKE_CURRENT_BINARY_DIR}/generated/openapi_document.cc")
+set(WARPSQL_OPENAPI_JSON "${CMAKE_CURRENT_BINARY_DIR}/generated/openapi.json")
+add_custom_command(
+  OUTPUT "${WARPSQL_OPENAPI_CC}" "${WARPSQL_OPENAPI_JSON}"
+  COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/generated"
+  COMMAND warpsql_openapi_json "${WARPSQL_OPENAPI_YAML}" "${WARPSQL_OPENAPI_CC}" "${WARPSQL_OPENAPI_JSON}"
+  DEPENDS warpsql_openapi_json "${WARPSQL_OPENAPI_YAML}"
+  COMMENT "Converting spec/openapi.yaml to JSON"
+  VERBATIM)
+
 # The SDK: everything the protocol requires, independent of any engine.
 add_library(warpsql
+  "${WARPSQL_OPENAPI_CC}"
   src/sdk/api.cc
   src/sdk/auth.cc
   src/sdk/browser_sign_in.cc
@@ -191,9 +207,11 @@ if(WARPSQL_BUILD_TESTS)
                              WARPSQL_TEST_DEFAULT_SERVER="$<TARGET_FILE:warp-duckdb>")
   add_dependencies(warpsql-client-tests warp-duckdb)
   # The SDK's own tests: the security-event limiter, session lifetime, retained results'
-  # expiry, and the plain handler against a server started in the test process.
+  # expiry, the plain handler and the OpenAPI document against a server started in the
+  # test process.
   add_executable(warpsql-sdk-tests tests/security_events_test.cc tests/sessions_test.cc
-                 tests/statements_test.cc tests/plain_handler_test.cc tests/browser_sign_in_test.cc)
+                 tests/statements_test.cc tests/plain_handler_test.cc tests/browser_sign_in_test.cc
+                 tests/openapi_test.cc)
   target_include_directories(warpsql-sdk-tests PRIVATE src/sdk)
   target_link_libraries(warpsql-sdk-tests PRIVATE warpsql warpsql_client GTest::gtest_main)
 endif()
