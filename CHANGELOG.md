@@ -199,6 +199,13 @@ spec's version is the repository's version.
 
 ### Changed
 
+- SDK: `Backend::OpenSession(principal, session_id, options)` is given the session's id
+  (spec §2.3), the one its client holds, and the DuckDB backend passes it on to
+  `NewSession(principal, session_id)`. An engine that shows or takes session ids (a
+  sessions table, a command that ends a session, logs) uses that id, so there is one id per
+  session and a client finds its own session without translating; Hardcharger used to
+  make up a second one.
+
 - With `autocommit` false, a SQL `COMMIT` or `ROLLBACK` now starts the next transaction,
   as the commit and rollback calls do (spec §5.5). The reference server used to leave
   manual-commit mode silently after one.

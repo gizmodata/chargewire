@@ -79,13 +79,13 @@ warpsql::ServerIdentity DuckDBBackend::Identity() {
   return {"warp-duckdb", "0.1.0 (DuckDB " + version_ + ")"};
 }
 
-std::unique_ptr<warpsql::EngineSession> DuckDBBackend::NewSession(const warpsql::Principal&) {
+std::unique_ptr<warpsql::EngineSession> DuckDBBackend::NewSession(const warpsql::Principal&, const std::string&) {
   return std::make_unique<DuckDBSession>(instance_.get(), result_batch_rows_);
 }
 
 std::unique_ptr<warpsql::EngineSession> DuckDBBackend::OpenSession(
-    const warpsql::Principal& principal, const json::object& options) {
-  auto session = NewSession(principal);
+    const warpsql::Principal& principal, const std::string& session_id, const json::object& options) {
+  auto session = NewSession(principal, session_id);
   if (!options.empty()) {
     auto errors = session->SetOptions(options);
     if (!errors.empty()) {

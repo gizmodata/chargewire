@@ -34,7 +34,7 @@ namespace http = boost::beast::http;
 class NoEngine : public warpsql::Backend {
  public:
   warpsql::ServerIdentity Identity() override { return {"plain-handler-test", "0"}; }
-  std::unique_ptr<warpsql::EngineSession> OpenSession(const warpsql::Principal&,
+  std::unique_ptr<warpsql::EngineSession> OpenSession(const warpsql::Principal&, const std::string&,
                                                       const boost::json::object&) override {
     throw warpsql::Error(warpsql::ErrorCode::kNotImplemented, "no engine");
   }
