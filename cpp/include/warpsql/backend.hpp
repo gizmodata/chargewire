@@ -27,6 +27,11 @@
 
 namespace warpsql {
 
+// A new id in the shape the SDK gives its own (spec §2.3): `prefix`, '_', then 32
+// random base32 characters ("q_3x..."). For an engine's ids of its own kind, so they read
+// like the protocol's.
+std::string NewId(std::string_view prefix);
+
 // The identity an access token establishes (spec §9.1). Handles belong to a principal
 // by name; the other fields are what the server's authorization reads.
 struct Principal {
@@ -242,6 +247,15 @@ class EngineSession {
   // with null right after they return. An engine that records statements (a query history,
   // an audit log) records the tag with the statement it starts; the default ignores it.
   virtual void SetQueryTag(const boost::json::object* tag) { (void)tag; }
+
+  // The id the client holds (spec §2.3) for the work about to run in this session: the
+  // statement's id (q_...) right before Execute() and ExecutePrepared(), the prepared
+  // statement's id (p_...) right before Prepare() (the id the prepare answer will carry
+  // when it succeeds); empty right after they return. Called on the session's engine
+  // thread. An engine that records or logs statements uses these ids, so what a client
+  // holds (from Warp-Statement-Id, an error, a prepare answer) finds its record; the
+  // default ignores them.
+  virtual void SetStatementId(std::string_view id) { (void)id; }
 
   // The session's transaction (spec §5.2), as the engine has it now. Called on the
   // session's engine thread after every call that runs work in it (a statement, an ingest,

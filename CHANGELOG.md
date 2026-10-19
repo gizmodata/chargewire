@@ -7,6 +7,16 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Added
+
+- **SDK: `EngineSession::SetStatementId()`** tells the engine the id the client holds for
+  what it is about to run: the statement's `q_…` around `Execute()` and
+  `ExecutePrepared()`, the prepared statement's `p_…` around `Prepare()` (the SDK now
+  chooses that id before preparing). An engine that records statements (a query history,
+  instrumentation, logs) keys them by the ids clients see in `Warp-Statement-Id`, errors
+  and prepare answers. `warpsql::NewId(prefix)` makes ids in the SDK's shape (§2.3) for an
+  engine's own kinds.
+
 ## [1.0.0] - 2026-10-19
 
 The first stable version of the protocol. From here on version 1 changes only by addition

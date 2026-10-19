@@ -179,6 +179,18 @@ auto WithQueryTag(EngineSession& engine, const std::optional<json::object>& tag,
   return run();
 }
 
+// Runs `run` with the engine told the id of the work it runs (a statement's, a prepared
+// statement's), and untold after.
+template <typename Fn>
+auto WithStatementId(EngineSession& engine, const std::string& id, Fn run) {
+  struct Told {
+    EngineSession& engine;
+    ~Told() { engine.SetStatementId({}); }
+  } told{engine};
+  engine.SetStatementId(id);
+  return run();
+}
+
 json::object OptionErrorsDocument(const OptionErrors& errors) {
   json::object out;
   for (const auto& [name, error] : errors) {
@@ -1130,7 +1142,8 @@ void Api::Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> state
     }
     try {
       const auto started = Clock::now();
-      StatementOutcome outcome = work(session->engine());
+      StatementOutcome outcome = WithStatementId(session->engine(), statement->id(),
+                                                 [&] { return work(session->engine()); });
       if (outcome.rows) {
         statement->SetRows(outcome.rows->schema(), outcome.finish_if_abandoned);
         Clock::duration producing{}, handing_over{};
@@ -1391,9 +1404,12 @@ Task<Response> Api::PrepareStatement(Request& request, const std::string& sessio
     json::value result_schema;
     json::value result_kind;
   };
-  auto prepared = co_await OnEngine(*session, [session, sql = std::move(sql)] {
+  // The id is chosen first, so the engine knows it while it prepares (SetStatementId).
+  std::string id = NewId("p");
+  auto prepared = co_await OnEngine(*session, [session, sql = std::move(sql), id] {
     Prepared out;
-    out.statement = session->engine().Prepare(sql);
+    out.statement =
+        WithStatementId(session->engine(), id, [&] { return session->engine().Prepare(sql); });
     out.parameter_schema = SchemaBase64(out.statement->ParameterSchema());
     std::optional<bool> rows = out.statement->ReturnsRows();
     if (auto result = out.statement->ResultSchema()) {
@@ -1403,7 +1419,7 @@ Task<Response> Api::PrepareStatement(Request& request, const std::string& sessio
     out.result_kind = rows ? json::value(*rows ? "rows" : "update") : json::value(nullptr);
     return out;
   });
-  const std::string id = session->AddPrepared(prepared.statement);
+  session->AddPrepared(id, prepared.statement);
   Response response = JsonResponse(http::status::created,
                                    json::object{{"prepared_id", id},
                                                 {"parameter_schema", prepared.parameter_schema},

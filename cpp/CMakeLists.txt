@@ -191,9 +191,11 @@ if(WARPSQL_BUILD_TESTS)
                              WARPSQL_TEST_DEFAULT_SERVER="$<TARGET_FILE:warp-duckdb>")
   add_dependencies(warpsql-client-tests warp-duckdb)
   # The SDK's own tests: the security-event limiter, session lifetime, retained results'
-  # expiry, and the plain handler against a server started in the test process.
+  # expiry, the plain handler and the statement ids engines are told, against a server
+  # started in the test process.
   add_executable(warpsql-sdk-tests tests/security_events_test.cc tests/sessions_test.cc
-                 tests/statements_test.cc tests/plain_handler_test.cc tests/browser_sign_in_test.cc)
+                 tests/statements_test.cc tests/plain_handler_test.cc tests/browser_sign_in_test.cc
+                 tests/statement_ids_test.cc)
   target_include_directories(warpsql-sdk-tests PRIVATE src/sdk)
   target_link_libraries(warpsql-sdk-tests PRIVATE warpsql warpsql_client GTest::gtest_main)
 endif()

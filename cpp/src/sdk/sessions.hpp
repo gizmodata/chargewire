@@ -57,7 +57,8 @@ class Session {
   void RefreshTransaction();
 
   // Prepared statements (spec §7). Engine objects: destroy them on strand().
-  std::string AddPrepared(std::shared_ptr<PreparedStatement> prepared);
+  // Keeps `prepared` under `id` (NewId("p"), chosen before the engine prepared it).
+  void AddPrepared(const std::string& id, std::shared_ptr<PreparedStatement> prepared);
   // Throws prepared_not_found.
   std::shared_ptr<PreparedStatement> FindPrepared(const std::string& id) const;
   std::shared_ptr<PreparedStatement> RemovePrepared(const std::string& id);

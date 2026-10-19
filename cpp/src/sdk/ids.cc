@@ -1,5 +1,7 @@
 #include "ids.hpp"
 
+#include "warpsql/backend.hpp"
+
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -75,3 +77,9 @@ std::string Base64(std::string_view data) {
 }
 
 }  // namespace warpsql::detail
+
+namespace warpsql {
+
+std::string NewId(std::string_view prefix) { return detail::NewId(prefix); }
+
+}  // namespace warpsql

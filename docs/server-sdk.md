@@ -47,7 +47,10 @@ author cannot forget the ownership check, because there is nothing to forget.
   an `arrow::RecordBatchReader`, or a count); `Ingest()`, `Metadata()`, `SetOptions()` and
   `Options()`, `Commit()`, `Rollback()` and `Transaction()`; `Interrupt()` / `Cancel()`,
   `Progress()` and `CheckEnded()`, which may be called from any thread; `SetQueryTag()`
-  around each statement and ingest.
+  around each statement and ingest, and `SetStatementId()` around each statement,
+  prepared execution and prepare, with the id the client holds for it (`q_…`, `p_…`), so
+  an engine that records or logs statements keys them the way clients see them.
+  `warpsql::NewId(prefix)` makes ids of the same shape for an engine's own kinds.
 - **`Authenticator`** turns credentials into a `Principal`; **`TokenService`** issues and
   checks tokens (the default keeps random tokens in memory; a server with replicas supplies
   signed ones).

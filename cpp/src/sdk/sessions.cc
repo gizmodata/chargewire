@@ -239,11 +239,9 @@ std::vector<std::shared_ptr<IngestOperation>> Session::Ingests() const {
   return out;
 }
 
-std::string Session::AddPrepared(std::shared_ptr<PreparedStatement> prepared) {
-  std::string id = NewId("p");
+void Session::AddPrepared(const std::string& id, std::shared_ptr<PreparedStatement> prepared) {
   std::lock_guard lock(mutex_);
   prepared_[id] = std::move(prepared);
-  return id;
 }
 
 std::shared_ptr<PreparedStatement> Session::FindPrepared(const std::string& id) const {
