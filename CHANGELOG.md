@@ -7,29 +7,6 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
-### Added
-
-- **SDK: `EngineSession::SetStatementId()`** tells the engine the id the client holds for
-  what it is about to run: the statement's `q_…` around `Execute()` and
-  `ExecutePrepared()`, the prepared statement's `p_…` around `Prepare()` (the SDK now
-  chooses that id before preparing). An engine that records statements (a query history,
-  instrumentation, logs) keys them by the ids clients see in `Warp-Statement-Id`, errors
-  and prepare answers. `warpsql::NewId(prefix)` makes ids in the SDK's shape (§2.3) for an
-  engine's own kinds.
-- **The protocol's site** (`site/`, Astro Starlight; future address `warpsql.gizmodata.com`,
-  a private GitHub Pages preview until launch): the specification, generated from
-  `spec/warp-sql.md` with every "§" linked; eleven flows (sign-in by password, token exchange
-  and browser, sessions and transactions, the streamed and submit/long-poll/fetch paths,
-  retention and resumption, partitioned results, prepared statements, single and partitioned
-  ingest, cancel and close, errors mid-stream, graceful shutdown), each with sequence diagrams
-  rendered at build time to light and dark SVG and `curl` commands that
-  `site/scripts/verify_examples.py` runs against the reference server (60 examples); the
-  OpenAPI reference in Swagger UI 5.33.3, bundled, with "Try it out" against a server of the
-  reader's choosing; the endpoint list; the conformance page, generated from the suite; the
-  implementations; and versioning. `.github/workflows/site.yml` checks the generated pages
-  and diagrams, lints the OpenAPI document, builds (failing on broken internal links), checks
-  external links with lychee, and deploys to GitHub Pages on pushes to `main`.
-
 ## [1.0.0] - 2026-10-19
 
 The first stable version of the protocol. From here on version 1 changes only by addition
@@ -194,6 +171,26 @@ the drafts; nobody depended on the drafts, so none has a fallback.
   cancelled-at-submit answers; `Cache-Control: no-store` on every result response; status-only
   checks now assert codes; every problem's `title` is for people.
   `conformance/README.md` lists the MUSTs it doesn't test yet.
+- **SDK: `EngineSession::SetStatementId()`** tells the engine the id the client holds for
+  what it is about to run: the statement's `q_…` around `Execute()` and
+  `ExecutePrepared()`, the prepared statement's `p_…` around `Prepare()` (the SDK now
+  chooses that id before preparing). An engine that records statements (a query history,
+  instrumentation, logs) keys them by the ids clients see in `Warp-Statement-Id`, errors
+  and prepare answers. `warpsql::NewId(prefix)` makes ids in the SDK's shape (§2.3) for an
+  engine's own kinds.
+- **The protocol's site** (`site/`, Astro Starlight; future address `warpsql.gizmodata.com`,
+  a private GitHub Pages preview until launch): the specification, generated from
+  `spec/warp-sql.md` with every "§" linked; eleven flows (sign-in by password, token exchange
+  and browser, sessions and transactions, the streamed and submit/long-poll/fetch paths,
+  retention and resumption, partitioned results, prepared statements, single and partitioned
+  ingest, cancel and close, errors mid-stream, graceful shutdown), each with sequence diagrams
+  rendered at build time to light and dark SVG and `curl` commands that
+  `site/scripts/verify_examples.py` runs against the reference server (60 examples); the
+  OpenAPI reference in Swagger UI 5.33.3, bundled, with "Try it out" against a server of the
+  reader's choosing; the endpoint list; the conformance page, generated from the suite; the
+  implementations; and versioning. `.github/workflows/site.yml` checks the generated pages
+  and diagrams, lints the OpenAPI document, builds (failing on broken internal links), checks
+  external links with lychee, and deploys to GitHub Pages on pushes to `main`.
 
 ### Added (before the 1.0.0 shape fixes)
 
