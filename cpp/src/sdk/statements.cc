@@ -127,16 +127,39 @@ bool Statement::HasRoom() const {
   return partition.batches.size() < 2 || partition.buffered_bytes < limit;
 }
 
+void Statement::DecideSplit(bool total) {
+  if (split_decided_) return;
+  const std::size_t waiting = pending_.size();
+  const std::size_t most = std::max<std::size_t>(config_.partitions, 1);
+  std::size_t k = 1;
+  if (waiting >= most) {
+    k = most;  // a large result: as many partitions as the client reads at once
+  } else if (total) {
+    k = std::clamp<std::size_t>((waiting + 1) / 2, 1, most);  // the whole result: two batches each
+  } else {
+    k = std::clamp<std::size_t>(waiting, 1, most);  // a slow one: one per batch so far
+  }
+  partitions_.resize(k);
+  split_decided_ = true;
+  for (auto& batch : pending_) {
+    Partition& partition = partitions_[Route()];
+    batch_count_ += 1;
+    partition.row_count += batch->num_rows();
+    partition.batch_count += 1;
+    if (!config_.retain) partition.buffered_bytes += BatchBytes(*batch);
+    partition.batches.push_back(std::move(batch));
+  }
+  pending_.clear();
+}
+
+std::optional<Clock::time_point> Statement::FirstBatchAt() const {
+  std::lock_guard lock(mutex_);
+  return first_pending_at_;
+}
+
 bool Statement::AddBatch(std::shared_ptr<arrow::RecordBatch> batch) {
-  bool split_now = false;
   {
     std::unique_lock lock(mutex_);
-    if (!split_decided_ && batch_count_ >= 1) {
-      // A second batch: the result is large enough to split.
-      partitions_.resize(config_.partitions);
-      split_decided_ = true;
-      split_now = true;
-    }
     if (abandoned_ && cancel_reason_ == CancelReason::kNone && state_ == StatementState::kRunning) {
       row_count_ += batch->num_rows();
       batch_count_ += 1;
@@ -153,9 +176,24 @@ bool Statement::AddBatch(std::shared_ptr<arrow::RecordBatch> batch) {
         return false;
       }
       reserved_bytes_ += bytes;
-    } else {
+    }
+    if (!split_decided_) {
+      // Held back until the result's size shows (see PartitionCount). At most as many
+      // batches wait as the result may get partitions, then the split is decided; that is
+      // no more than the two per partition a split result buffers anyway.
+      if (cancel_reason_ != CancelReason::kNone || state_ != StatementState::kRunning) {
+        return false;
+      }
+      row_count_ += batch->num_rows();
+      if (!first_pending_at_) first_pending_at_ = Clock::now();
+      pending_.push_back(std::move(batch));
+      if (pending_.size() >= std::max<std::size_t>(config_.partitions, 1)) DecideSplit(false);
+      lock.unlock();
+      changed_.Notify();
+      return true;
+    }
+    if (!config_.retain) {
       // Backpressure: wait for the partition's reader, unless the statement ends meanwhile.
-      if (split_now) changed_.Notify();  // readers waiting for the split learn it before we block
       waiting_for_reader_ = true;
       room_.wait(lock, [this] {
         return HasRoom() || abandoned_ || cancel_reason_ != CancelReason::kNone || IsTerminalLocked();
@@ -192,7 +230,7 @@ void Statement::Finish() {
       Terminate(StatementState::kCancelled, CancelError(cancel_reason_));
     } else {
       produced_all_ = true;
-      split_decided_ = true;  // one batch or none: one partition
+      DecideSplit(true);  // the whole result is known: split by its size
       Terminate(StatementState::kSucceeded, std::nullopt);
     }
   }
@@ -276,6 +314,7 @@ bool Statement::IsTerminalLocked() const {
 }
 
 void Statement::DropBatches() {
+  pending_.clear();
   for (auto& partition : partitions_) {
     partition.batches.clear();
     partition.buffered_bytes = 0;
@@ -394,8 +433,9 @@ void Statement::SettleSplit() {
   {
     std::lock_guard lock(mutex_);
     if (split_decided_) return;
-    split_decided_ = true;
+    DecideSplit(false);
   }
+  room_.notify_all();
   changed_.Notify();
 }
 

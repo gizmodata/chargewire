@@ -86,13 +86,18 @@ class Statement {
   std::optional<Error> error() const;
   std::shared_ptr<arrow::Schema> schema() const;
 
-  // How many partitions the result has, once that is decided: at once for a result the
-  // client asked to have in one partition, otherwise when the statement produces its
-  // second batch (a split result) or ends with fewer (one partition).
+  // How many partitions the result has, once that is decided (spec §6.10): at once for a
+  // result the client asked to have in one partition. Otherwise the first batches are
+  // held back until the result's size shows: when as many batches as the client reads
+  // partitions at once are waiting, the result gets that many partitions; when it ends
+  // first, one partition per two batches; when its batches come slowly (SettleSplit),
+  // one per batch waiting.
   std::optional<std::size_t> PartitionCount() const;
-  // Decides on one partition now if the split isn't decided yet: a result whose second
-  // batch is slow to come isn't held back for it.
+  // Decides the split now if it isn't decided yet, from the batches waiting (one partition
+  // when there are none): a result that is slow to come isn't held back.
   void SettleSplit();
+  // When the first batch held back for the split arrived, if one did.
+  std::optional<Clock::time_point> FirstBatchAt() const;
   // "interleaved" or "any" for a result in several partitions (spec §6.10).
   std::string_view PartitionOrder() const;
 
@@ -124,6 +129,9 @@ class Statement {
   void Terminate(StatementState state, std::optional<Error> error);  // mutex_ held
   void DropBatches();                                                // mutex_ held
   bool IsTerminalLocked() const;                                     // mutex_ held
+  // Splits the result into partitions, dealing out the batches held back (see
+  // PartitionCount); `total` says they are the whole result.
+  void DecideSplit(bool total);                                      // mutex_ held
   // The partition the next batch goes to, and whether it has room for it.
   std::size_t Route() const;                                         // mutex_ held
   bool HasRoom() const;                                              // mutex_ held
@@ -162,6 +170,9 @@ class Statement {
 
   std::vector<Partition> partitions_{1};
   bool split_decided_ = false;  // partitions_ has its final size
+  // Batches produced before the split was decided, in result order.
+  std::deque<std::shared_ptr<arrow::RecordBatch>> pending_;
+  std::optional<Clock::time_point> first_pending_at_;
   int64_t batch_count_ = 0;  // over all partitions
   int64_t row_count_ = 0;
   int64_t reserved_bytes_ = 0;
