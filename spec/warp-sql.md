@@ -1,7 +1,7 @@
 # Warp SQL Protocol, version 1
 
-**Status:** Draft 0.1.0 (2026-10-16). Nothing here is frozen; every section can change
-until 1.0.0 is tagged.
+**Status:** 1.0.0 (2026-10-19). Version 1 is stable: from here on it changes only by
+addition (§12).
 
 Warp SQL is an open protocol for running SQL against a database server over plain
 HTTP, with results and bulk data carried in the
@@ -84,9 +84,14 @@ check the caller on every use (§9.2).
 ### 2.4 JSON
 
 Field names are `snake_case`. Both sides MUST ignore JSON fields they do not
-recognise, so later minor versions can add fields. Timestamps are RFC 3339 strings
+recognise, so later minor versions can add fields: a server MUST NOT refuse a request
+because its JSON body has a field the server doesn't know. Timestamps are RFC 3339 strings
 in UTC (`2026-10-16T21:04:05.123Z`). Durations are integers with the unit in the
 name (`timeout_ms`, `idle_timeout_s`).
+
+Fields whose value is one of a listed set of strings (a statement's `state`, a
+`cancel_reason`, a `reason`, …) can gain values later; §12 says how clients treat a value
+they don't know.
 
 ### 2.5 Request headers defined by this protocol
 
@@ -97,10 +102,19 @@ name (`timeout_ms`, `idle_timeout_s`).
 | `Prefer` | submit, execute, status | `wait=<seconds>` and `respond-async` ([RFC 7240](https://www.rfc-editor.org/rfc/rfc7240)) |
 | `Warp-Statement-Timeout` | submit, execute | Milliseconds before the server cancels the statement |
 | `Warp-Retain-Result` | submit, execute | `true` or `false`: keep the result for re-reading (§6.5) |
-| `Warp-Query-Tag` | submit, execute, ingest | A JSON object recorded with the statement for observability |
+| `Warp-Query-Tag` | submit, execute, ingest | A JSON object the server may record with the statement, for observability (below) |
 | `Warp-IPC-Compression` | any request that returns Arrow | The Arrow buffer compression the client accepts, in its order of preference: `lz4_frame`, `zstd`, `none` (§8.2) |
 | `Warp-Result-Partitions` | submit, execute | The most partitions the client reads at once (§6.10) |
 | `Warp-Result-Order` | submit, execute | `preserve` or `any`: whether the client needs rows in order (§6.10) |
+| `Warp-Result-Locations` | submit, execute | `remote`: the client can read partitions held by other servers (§6.2, capability `result_locations`) |
+
+`Warp-Query-Tag` carries a JSON object, serialized in ASCII (any other character
+written as a `\u` escape) and at most 4,096 bytes long, such as
+`{"job":"nightly-load","run":"2026-10-19"}`. It labels the statement (or ingest) the
+request creates, so it can be found in the server's logs, query history or audit trail. A
+server MAY record it and MAY ignore it; a server that reads it SHOULD refuse one that is
+not a JSON object, not ASCII or too long with `400` and code `bad_request`. A tag never
+changes what the statement does.
 
 Servers MUST accept request headers totalling at least 16 KiB (identity tokens can
 be large) and MUST answer a larger header block with `431 Request Header Fields Too
@@ -111,9 +125,22 @@ Large` (code `headers_too_large`). The limit SHOULD be configurable.
 | Header | On | Meaning |
 |---|---|---|
 | `Warp-Request-Id` | every response | The `request_id` of this request (§11), also in the server's logs |
-| `Warp-Statement-Id` | statement responses | The statement the response belongs to |
+| `Warp-Statement-Id` | statement responses | The statement the response belongs to, on the error response for a statement that failed or was cancelled (§6.1) too |
 | `Warp-IPC-Compression` | Arrow responses | The Arrow buffer compression used: `lz4_frame`, `zstd` or `none` (§8.2) |
-| `Warp-Result-Partitions`, `Warp-Result-Order` | streamed results | How a split result is spread over partitions (§6.10) |
+| `Warp-Result-Partitions`, `Warp-Result-Order` | streamed results | How a split result is spread over partitions (§6.10); both MUST be present when the result has more than one partition |
+| `Retry-After` | `429`, `503` | When retrying can help: the seconds to wait, as an integer (the delta-seconds form of [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110#field.retry-after); servers MUST NOT send the date form) |
+
+### 2.7 Names for extensions
+
+The capabilities (§3.1), session options (§5.3), `server-info` keys (§10), error codes and
+`reason` values (§11) that this document defines belong to the protocol, and so does every
+such name a later version adds. A server's own names in those places begin with a prefix
+that names its implementation or engine, in lower case, followed by `_`
+(`duckdb_arrow_lossless_conversion`, `acme_instance_id`). Later versions of this document
+never define a name that begins with a prefix an implementation uses this way, so an
+extension can't collide with a name the protocol adds. A client ignores an extension name
+it doesn't know, as it ignores any unknown name (§12). Headers whose names begin with
+`Warp-` are the protocol's; a server's own headers take other names.
 
 ## 3. Discovery and health
 
@@ -125,20 +152,36 @@ These endpoints need no authentication.
 {
   "protocol": "warp-sql",
   "protocol_versions": ["1"],
-  "draft": "0.1.0",
-  "server": {"name": "GizmoSQL", "version": "2.0.0"},
-  "capabilities": ["prepared_statements", "transactions", "ingest", "result_retention",
-                   "long_poll", "ipc_compression_zstd", "ipc_compression_lz4_frame",
-                   "result_partitions", "partitioned_ingest", "oauth_browser"],
-  "auth": {"grant_types": ["password", "token_exchange"],
-           "oauth_browser": {"provider": "Okta"}}
+  "server": {"name": "Example SQL Server", "version": "3.2.1"},
+  "capabilities": ["prepared_statements", "transactions", "ingest", "long_poll",
+                   "ipc_compression_zstd", "ipc_compression_lz4_frame", "result_partitions",
+                   "partitioned_ingest", "mtls_identity", "oauth_browser"],
+  "auth": {"grant_types": ["password", "token_exchange", "client_certificate"],
+           "oauth_browser": {"provider": "Example IdP"}}
 }
 ```
 
-`capabilities` lists the optional features (§10) the server supports. A client MUST
-NOT use an optional feature the server does not list. `auth.grant_types` lists the grants of
-`POST /warp/v1/auth/token` (§4.1); `auth.oauth_browser` describes browser sign-in (§4.3)
-when the server offers it.
+`capabilities` lists the optional features the server supports. A client MUST NOT use an
+optional feature the server does not list, and ignores names it doesn't know.
+`auth.grant_types` lists the grants of `POST /warp/v1/auth/token` (§4.1); `auth.oauth_browser`
+describes browser sign-in (§4.3) when the server offers it. The capabilities of version 1:
+
+| Capability | Section | What it gates |
+|---|---|---|
+| `prepared_statements` | §7 | `POST …/prepared`, its `execute` and `DELETE` |
+| `transactions` | §5.5 | The `autocommit` option set to `false`, and `POST …/commit` and `…/rollback` |
+| `ingest` | §8.1 | `POST …/ingest` (bulk ingest in one request) |
+| `partitioned_ingest` | §8.3 | `POST …/ingests` and the rest of partitioned ingest |
+| `long_poll` | §6.3 | `Prefer: wait` honoured on a statement's status |
+| `ipc_compression_lz4_frame`, `ipc_compression_zstd` | §8.2 | Arrow buffer compression with that codec, in both directions |
+| `result_partitions` | §6.10 | Results split over several partitions on this server, read concurrently (`Warp-Result-Partitions`, `Warp-Result-Order`) |
+| `result_locations` | §6.2 | Partitions held by other servers (`Warp-Result-Locations: remote`, non-null `location`) |
+| `mtls_identity` | §4.4 | The `client_certificate` grant: signing in with a TLS client certificate |
+| `oauth_browser` | §4.3 | Browser sign-in for clients that cannot take a redirect themselves |
+
+Everything else in this document is core: every server implements it. A feature added
+after 1.0 that a client must ask for, or that changes what a request means, comes with a
+capability of its own (§12).
 
 ### 3.2 `GET /warp/v1/health`
 
@@ -207,11 +250,13 @@ field of the problem document (§11):
 A server MUST NOT send a `reason` for a token it cannot verify as its own (malformed,
 forged, altered, signed with another key, unknown): the reason tells something about the
 principal the token names, and only the holder of a real token may learn it. The same
-token never starts working again, so a client SHOULD NOT retry with it; after
-`token_expired` it signs in again, and after `credentials_changed` or `principal_dropped`
-signing in with the old credentials fails too, so a client SHOULD show the reason to the
-person rather than retry. Sessions the token was used with may have ended for the same
-reason (§5.6).
+token never starts working again, so a client SHOULD NOT retry with it. A client that holds
+the credentials it signed in with MAY sign in again (once) after `invalid_token` without a
+`reason`, with `token_expired`, or with a `reason` it doesn't know. After `token_revoked`
+(someone withdrew that access on purpose), `credentials_changed` or `principal_dropped`
+(signing in with the old credentials fails too) it SHOULD NOT sign in again on its own, and
+SHOULD show the reason to the person instead. Sessions the token was used with may have
+ended for the same reason (§5.6).
 
 ### 4.3 Browser sign-in (optional capability `oauth_browser`)
 
@@ -410,7 +455,7 @@ answers as for any grant (§4.1), or refuses:
 
 | Code | Status | When |
 |---|---|---|
-| `client_certificate_required` | 401 | The connection presented no client certificate (a server where certificates are optional) |
+| `certificate_required` | 401 | The connection presented no client certificate (a server where certificates are optional) |
 | `unknown_certificate_identity` | 401 | The certificate has no identity of the kind the server maps, has more than one (ambiguous), or names no principal allowed to sign in this way |
 | `certificate_revoked` | 401 | The certificate was revoked, or no longer verifies, after the connection was set up (see below) |
 
@@ -457,7 +502,7 @@ handshake is a TLS alert (`certificate_revoked`, or `certificate_required` when 
 sent no certificate); with TLS 1.3 the client's side of the handshake is already over
 when the server checks the certificate, so the alert reaches the client on its first
 read. Clients SHOULD report such an alert as the refusal it stands for (this section's
-`certificate_revoked` and `client_certificate_required`), not as a server they could
+`certificate_revoked` and `certificate_required`), not as a server they could
 not reach. It SHOULD pick
 up new revocation data without a restart and SHOULD then re-check the certificates of
 connections already open, answering their next request with `certificate_revoked`; it
@@ -509,6 +554,12 @@ session.
 }
 ```
 
+`options` (optional in the request) sets session options (§5.3) as the session opens. An
+option the server doesn't have, or a bad value, fails the whole request with the error
+§5.3 gives that option (`400`, `unknown_option` or `invalid_option_value`, with the
+option's name in `detail`), and no session is created. The response's `options` holds
+every option the session has, with its current value, not only the ones the request set.
+
 `transaction` is the session's transaction (§5.5), read-only:
 
 | Value | Meaning |
@@ -518,7 +569,7 @@ session.
 | `aborted` | A statement failed or was cancelled inside the transaction, and the engine refuses every statement until a rollback |
 
 `aborted` says what the engine does, not merely that a statement failed: an engine that
-keeps a transaction usable after some errors (DuckDB does after a syntax error) reports
+keeps a transaction usable after some errors (some do after a syntax error) reports
 `open` then. With `autocommit` false, a commit or rollback, through §5.5's calls or in
 SQL, ends the transaction and starts the next, so the value stays `open` (and is `open`
 again once an `aborted` one is rolled back).
@@ -538,12 +589,18 @@ for a statement the session is running.
 
 ### 5.3 `PATCH /warp/v1/sessions/{session_id}`
 
-Sets options. Body `{"options": {…}}`. The response reports each option:
+Sets options. Body `{"options": {…}}`. The server applies each option on its own, so one
+bad option doesn't stop the others, and answers `200` with every option the session has
+and the failures, by option name (`errors` is `{}` when every option was set):
 
 ```json
-{"options": {"catalog": "lake"},
+{"options": {"catalog": "lake", "schema": "analytics", "autocommit": true},
  "errors": {"schema": {"code": "invalid_option_value", "detail": "schema 'x' does not exist"}}}
 ```
+
+`options` is the session's options after the request, as `GET` of the session shows them
+(§5.2); an option that failed keeps its earlier value. Each entry of `errors` has the
+`code` and `detail` a problem document would (§11).
 
 Standard options:
 
@@ -554,8 +611,8 @@ Standard options:
 | `autocommit` | boolean | `false` starts a transaction that §5.5 ends |
 | `session_tag` | object | JSON recorded with the session for observability |
 
-A server MAY support more options; names it does not support get
-`unknown_option`.
+A server MAY support more options, named as §2.7 says (`duckdb_arrow_lossless_conversion`);
+names it does not support get `unknown_option`.
 
 ### 5.4 `DELETE /warp/v1/sessions/{session_id}`
 
@@ -603,8 +660,12 @@ has signed in again (or holds another token of the same principal) and uses the 
 session; a `killed` session's token still stands, so its next request gets
 `session_ended` directly. Either way the client learns the reason from the first refusal.
 
-After `session_ended` the client MUST get a new access token before creating a new
-session.
+The session is gone either way, and only the client can decide to start a new one. After
+`session_ended` with `credentials_changed`, `principal_dropped`, `token_revoked` or
+`token_expired`, the client MUST get a new access token before it creates a new session
+(the old one no longer stands, or no longer carries what the session needed). After
+`killed`, or a `reason` it doesn't know, it MAY create a new session with the token it
+has.
 
 ### 5.7 Idle sessions
 
@@ -666,10 +727,13 @@ How the server answers depends on `Accept` and `Prefer`:
   statement is accepted. Without either, the wait is the server's choice.
 
 An error found before execution starts (a syntax error, a permission denial) is an
-error response (§11), not a statement document. So is a statement that has failed by
-the time the server answers its submission, whether or not it had produced rows: the
-response is the error response for the statement's error (`execution_error`, …), never
-a success status with a `failed` document.
+error response (§11), not a statement document. So is a statement that has failed or
+been cancelled by the time the server answers its submission, whether or not it had
+produced rows: the response is the error response for the statement's error
+(`execution_error`, `statement_cancelled`, `statement_timeout`, …), with
+`Warp-Statement-Id` naming the statement, never a success status with a `failed` or
+`cancelled` document. The problem document of a cancelled statement also carries its
+`cancel_reason` (§6.2).
 
 ### 6.2 The statement document
 
@@ -680,24 +744,42 @@ a success status with a `failed` document.
   "submitted_at": "2026-10-16T21:04:05.123Z",
   "started_at": "2026-10-16T21:04:05.130Z",
   "progress": {"fraction": 0.42, "rows_produced": 1048576},
-  "result": null
+  "result": {
+    "kind": "rows",
+    "schema": "<base64 Arrow schema>",
+    "partitions": [{"index": 0, "location": null, "batches": null, "rows": null}],
+    "retained": true
+  }
 }
 ```
 
-`state` is one of `queued`, `running`, `succeeded`, `failed`, `cancelled`. The last
-three are terminal. `progress` is optional and every field in it is optional;
-`fraction` is between 0 and 1.
+| Field | When | Meaning |
+|---|---|---|
+| `statement_id` | always | The statement's id (§2.3) |
+| `state` | always | `queued`, `running`, `succeeded`, `failed` or `cancelled`; the last three are terminal |
+| `submitted_at` | always | When the server accepted the statement |
+| `started_at` | once it has started | When it began to run (a statement cancelled while queued never has one) |
+| `finished_at` | in a terminal state | When it reached that state |
+| `progress` | optional, while running | Every field in it is optional: `fraction` (0 to 1), `rows_produced` |
+| `result` | see below | What the statement produces, or `null` |
+| `error` | `failed`, `cancelled` | The statement's error, a problem document (§11) |
+| `cancel_reason` | `cancelled` | Why it was cancelled (below) |
 
-A failed or cancelled statement carries `error`, a problem document (§11), and a
-cancelled one also carries `cancel_reason`: `client`, `timeout`, `session_closed`,
+`result` is `null` until the server knows what the statement returns. A statement that
+returns rows has a `rows` result as soon as its schema is known, while it runs too: its
+`partitions` then list the partitions decided so far (§6.10), with `batches` and `rows`
+`null`, and `retained` says whether the result is kept (§6.5). A failed or cancelled
+statement's `result` is `null`.
+
+A cancelled statement's `cancel_reason` is one of `client`, `timeout`, `session_closed`,
 `killed`, `cancelled`, `privilege_revoked` or `server_shutdown`. `killed`: an
 administrator ended the session (§5.6) and its work with it; `cancelled`: the engine
 cancelled it for someone else, the session going on (an administrator's, or the same
-principal's, SQL such as Hardcharger's `hardcharger_cancel()`). A cancelled statement's error code
-is `statement_timeout` when its timeout ran out and `statement_cancelled` otherwise.
-A client MUST treat a `failed` or `cancelled` document as the statement's error whatever
-the response's status code (an idempotent replay, §6.7, answers `200` with the
-statement's document in any state).
+principal's, SQL, such as an engine's own cancel function). A cancelled statement's
+error code is `statement_timeout` when its timeout ran out and `statement_cancelled`
+otherwise. A client MUST treat a `failed` or `cancelled` document as the statement's
+error whatever the response's status code (an idempotent replay, §6.7, answers `200`
+with the statement's document in any state).
 
 A succeeded statement carries `result`:
 
@@ -725,17 +807,19 @@ UPDATE, DELETE) and absent otherwise (DDL, SET, …); clients report it as unkno
 `partitions` lists the pieces of the result. Most results have one partition with
 `location: null`, meaning "this server". A client that asks for it (§6.10) may get a
 result split into several partitions on this server, read concurrently over separate
-connections; the result then also carries `partition_order` (§6.10). A partition's
-`location` MAY be the base URL of another server that holds it (capability
-`partitioned_results`); the client fetches each partition from its location with the
-same access token and may do so in parallel. `location` is an absolute URL of the same
-form as a server's base (`https://worker-3.example:31337/warp`), and the partition is
-read at
-`{location}/v1/sessions/{session_id}/statements/{statement_id}/result?partition={index}`
-with the coordinator's session and statement ids (whether it carries its own token
-instead is §A.4). A client that did not ask for partitions (§6.10) gets one partition
-on this server. `batches` and `rows` are known only once the partition is complete and
-MAY be `null` before that.
+connections; the result then also carries `partition_order` (§6.10). A client that did
+not ask for partitions gets one partition on this server. `batches` and `rows` are known
+only once the partition is complete and are `null` before that.
+
+**Partitions on other servers** (capability `result_locations`). A partition's `location`
+MUST be `null` unless the request that created the statement carried
+`Warp-Result-Locations: remote`, so a client that doesn't follow locations never meets
+one. To a client that sent it, a server with the capability MAY give a partition the base
+URL of another server that holds it: an absolute URL of the same form as a server's base
+(`https://worker-3.example:31337/warp`). The client reads the partition at
+`{location}/v1/sessions/{session_id}/statements/{statement_id}/result?partition={index}`,
+with the coordinator's session and statement ids and the same access token, concurrently
+with the others (§6.10).
 
 ### 6.3 Status: `GET /warp/v1/sessions/{session_id}/statements/{statement_id}`
 
@@ -747,7 +831,8 @@ so the server MUST answer at once.
 ### 6.4 Results: `GET …/statements/{statement_id}/result`
 
 Query parameters: `partition` (default 0) and `from_batch` (default 0, counting that
-partition's batches). A partition the result doesn't have is `404` (`not_found`).
+partition's batches). A partition the result doesn't have is `404` with code
+`partition_not_found`.
 
 Returns `200` with an Arrow stream of that partition's record batches, starting at
 batch number `from_batch` (counting from 0). The stream always begins with the
@@ -766,10 +851,13 @@ A **retained** result can be read again, and from any batch, until it expires; a
 unretained result can be read once, from batch 0, while the statement's session
 lives.
 
-- `Warp-Retain-Result: true|false` on submit chooses; without it the server decides
+- `Warp-Retain-Result: true|false` on submit asks; without it the server decides
   (servers SHOULD retain for `respond-async` submissions and SHOULD NOT for
-  streamed submissions). The statement document says what the server chose
-  (`retained`) and until when (`expires_at`).
+  streamed submissions). A server MAY decline to retain a result it was asked to keep
+  (for example one that keeps no results at all); it MUST NOT retain one it was asked
+  not to. The statement document says what the server chose (`retained`) and until when
+  (`expires_at`, once the statement has finished), and a client that wants to re-read
+  a result checks `retained`.
 - Re-reading an unretained result, or `from_batch` greater than 0 on one, gets `409`
   with code `result_not_resumable`.
 - An expired result gets `410 Gone` with code `result_expired`.
@@ -784,8 +872,8 @@ lives.
 - A finished statement is not kept forever. A server MAY forget one once at least 5
   minutes have passed since it finished and its retained result, if any, has expired,
   or sooner when the session holds more than 1,000 finished statements (oldest first);
-  requests for a forgotten statement get `404` (`not_found`). Clients that are done
-  with a statement SHOULD delete it (§6.8).
+  requests for a forgotten statement get `404` with code `statement_not_found`. Clients
+  that are done with a statement SHOULD delete it (§6.8).
 
 ### 6.6 Errors during a result stream
 
@@ -860,8 +948,9 @@ more than 1, says how the rows are spread over them in `partition_order`:
   rows' order means nothing, within a partition or across partitions.
 
 On the streamed path (§6.1) the `200` Arrow response is partition 0, and its headers say
-how the result is split: `Warp-Result-Partitions: <k>` and `Warp-Result-Order:
-interleaved` or `any` (both absent for one partition). The client reads partitions 1 to
+how the result is split: when `k` is more than 1 the response MUST carry both
+`Warp-Result-Partitions: <k>` and `Warp-Result-Order: interleaved` or `any`; for one
+partition it carries neither. A client MUST NOT guess a missing `Warp-Result-Order`. The client reads partitions 1 to
 `k - 1` with `GET …/result?partition=<i>` (§6.4), each on its own connection, all at
 once. Until the server has decided how to split a running statement's result, its
 document lists partition 0 only and has no `partition_order`; a client that reads the
@@ -1009,8 +1098,8 @@ into one ingest, which the server commits as one transaction.
    schema; the first part to arrive decides it, and a part with another schema fails
    the ingest. The answer, once the server has read the whole part, is `200` with
    `{"part": 3, "rows_received": 250000}`. The rows are not visible yet.
-3. **Commit** with `POST …/ingests/{ingest_id}/commit` and `{"parts": n}`: the parts are
-   0 to n-1. The server answers `200` with `{"rows_ingested": …}` once every row of
+3. **Commit** with `POST …/ingests/{ingest_id}/commit` and `{"part_count": n}`: the parts
+   are 0 to n-1. The server answers `200` with `{"rows_ingested": …}` once every row of
    every part is written and committed, atomically: in one transaction, as §8.1 does.
    If a part from 0 to n-1 has not finished (or another part number was used), the
    answer is `409` with code `ingest_incomplete` and the ingest stays open: the client
@@ -1021,9 +1110,21 @@ into one ingest, which the server commits as one transaction.
    abort that arrives once the server is already committing may come too late to stop
    it; the ingest's document then says `committed`, and that is the outcome.
 
-`GET …/ingests/{ingest_id}` returns the ingest's document: `state` (`open`,
-`committing`, `committed`, `failed`, `aborted`), `parts` (the part numbers finished,
-each with `rows_received`), and for a failed ingest `error`, a problem document.
+`GET …/ingests/{ingest_id}` returns the ingest's document:
+
+```json
+{"ingest_id": "i_…", "state": "committed",
+ "parts": [{"part": 0, "rows_received": 250000}, {"part": 1, "rows_received": 250000}],
+ "rows_ingested": 500000}
+```
+
+| Field | When | Meaning |
+|---|---|---|
+| `ingest_id` | always | The ingest's id (§2.3) |
+| `state` | always | `open`, `committing`, `committed`, `failed` or `aborted`; the last three are terminal |
+| `parts` | always | The parts whose upload has finished, each with its `part` number and `rows_received` |
+| `rows_ingested` | `committed` | The rows written, as the commit answered |
+| `error` | `failed` | The ingest's error, a problem document (§11) |
 
 All or nothing: if any part fails (its data is invalid, it can't be written, its
 connection breaks before its body ends), the ingest fails: no row of any part remains,
@@ -1059,10 +1160,11 @@ session is created and that every operation runs as that principal.
 ### 9.2 Handles are bound to their principal
 
 Every session belongs to the principal that created it, and every statement,
-prepared statement and retained result belongs to its session. On every request the
-server MUST check that the token's principal owns the session named in the URL. A
-request for another principal's handle gets the same `404` as a handle that does not
-exist, so ids cannot be probed. Possessing an id grants nothing.
+prepared statement, ingest and retained result belongs to its session. On every request
+the server MUST check that the token's principal owns the session named in the URL. A
+request naming another principal's session gets `404` with code `session_not_found`,
+exactly as for a session that does not exist, whatever the rest of the URL names, so ids
+cannot be probed. Possessing an id grants nothing.
 
 Administrative actions on other principals' work (ending their session, cancelling
 their query) are done in SQL, under the server's own authorization rules, not
@@ -1179,10 +1281,27 @@ comment is `…:REMARKS`. Flight SQL has no key for a column's default, so Warp 
 `WARP:SQL:COLUMN_DEFAULT`: the default's SQL text. Ordering follows the Flight SQL definitions.
 
 `GET /warp/v1/sessions/{session_id}/metadata/server-info` returns JSON rather than
-Flight SQL's `SqlInfo` union: one object whose keys are the Flight SQL `SqlInfo`
-names in lower case (`flight_sql_server_name` becomes `server_name`,
-`sql_identifier_quote_char`, `sql_transactions_supported`, …) with JSON values. A
-server includes the keys it knows. *(Draft note: the full key list is §A.2's job.)*
+Flight SQL's `SqlInfo` union: one object of facts about the server. The protocol's keys
+are Flight SQL's `SqlInfo` names, taken exactly this way: drop a leading `FLIGHT_SQL_`,
+then write the rest in lower case (`FLIGHT_SQL_SERVER_NAME` becomes `server_name`,
+`SQL_IDENTIFIER_QUOTE_CHAR` becomes `sql_identifier_quote_char`). A value has the JSON
+type of its `SqlInfo` type: a string, a boolean, a number (int32 and int64, bitmasks
+included), an array of strings (a string list), or an object (an int32-to-int32-list map,
+its keys written as decimal strings). A server includes the keys it knows; a client
+treats a missing key as unknown, not as false. These are the keys of version 1:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `server_name` | string | The server's name, as in discovery (§3.1) |
+| `server_version` | string | The server's version, as in discovery (§3.1) |
+| `server_arrow_version` | string | The version of the Arrow library the server uses |
+| `server_read_only` | boolean | The server accepts no writes |
+| `sql_identifier_quote_char` | string | The character that quotes identifiers (`"`) |
+| `sql_transactions_supported` | boolean | Transactions are supported (with capability `transactions`, §5.5) |
+
+Later versions add other `SqlInfo` names this way. A server's own keys follow §2.7
+(`duckdb_version`, `acme_instance_id`). The protocol's name and version are in discovery
+(§3.1), not here.
 
 ## 11. Errors
 
@@ -1200,12 +1319,24 @@ Every error response is a problem document:
 }
 ```
 
-`code` is the stable, machine-readable part; `detail` is for people and may change.
+`code` is the stable, machine-readable part, and `type` is `urn:warp-sql:error:` followed
+by it. `title` is a short, human-readable summary of the code ("Permission denied"), the
+same for every error with that code; `detail` is for people too, says what happened in
+this case, and may change. Clients decide on `code`, never on `title` or `detail`.
 `sqlstate` (optional) is the SQL standard's five-character class and subclass. Where
 the standard has one, servers SHOULD send it, in particular `42P07` (the table already
 exists) and `42P01` (the table doesn't exist), which bulk ingest's `create` and `append`
 modes meet (§8.1) and which clients map to "already exists" and "not found".
-`request_id` SHOULD also appear in the server's logs.
+`request_id` SHOULD also appear in the server's logs. Some codes add members:
+`reason` for `invalid_token` (§4.2) and `session_ended` (§5.6), and `cancel_reason` for
+`statement_cancelled` and `statement_timeout` (§6.2).
+
+**Statuses.** A `4xx` status means the request, or the statement it ran, ended because of
+what it asked for: its SQL or data, a privilege it lacks, a limit, its timeout, a cancel.
+A `5xx` status means the server itself failed or can't serve now. A statement's own outcome
+is never `5xx` and never `408` (which says the server gave up waiting for the request, and
+which clients and proxies may retry on their own): a division by zero is `422`, not a
+server fault, and proxies and monitoring that count `5xx` as outages count only real ones.
 
 | Code | Status | Meaning |
 |---|---|---|
@@ -1213,35 +1344,43 @@ modes meet (§8.1) and which clients map to "already exists" and "not found".
 | `unknown_option`, `invalid_option_value` | 400 | A session option the server doesn't have, or a bad value (§5.3) |
 | `invalid_return_to` | 400 | A browser sign-in's `return_to` that is not a path on the server's own origin (§4.3.3) |
 | `sql_error` | 400 | The engine rejected the SQL (syntax, binding, missing object) |
+| `unsupported_grant_type` | 400 | A grant this server does not offer, such as `client_certificate` where certificate sign-in is off (§4.4) |
 | `invalid_credentials` | 401 | §4.1 |
 | `invalid_token` | 401 | §4.2 |
 | `session_ended` | 401 | §5.6 |
-| `client_certificate_required`, `unknown_certificate_identity`, `certificate_revoked` | 401 | §4.4 |
+| `certificate_required`, `unknown_certificate_identity`, `certificate_revoked` | 401 | §4.4 |
 | `certificate_mismatch` | 401 | A certificate-bound token on a connection without that certificate (§4.4) |
 | `certificate_identity_mismatch` | 401 | A sign-in for another identity than the connection's certificate (§4.4) |
-| `unsupported_grant_type` | 400 | A grant this server does not offer, such as `client_certificate` where certificate sign-in is off (§4.4) |
 | `permission_denied` | 403 | The principal lacks a privilege |
 | `read_only` | 403 | The server or session is read-only |
-| `session_not_found`, `statement_not_found`, `prepared_not_found`, `ingest_not_found` | 404 | No such handle, or not the caller's |
+| `session_not_found`, `statement_not_found`, `prepared_not_found`, `ingest_not_found` | 404 | No such handle, or not the caller's (§9.2); `statement_not_found` also for a statement the server has forgotten (§6.5) |
 | `flow_not_found` | 404 | No such browser sign-in flow, a wrong poll secret, or one already collected or expired (§4.3.2) |
+| `partition_not_found` | 404 | The result has no partition with that index (§6.4) |
 | `not_found` | 404 | No such endpoint |
 | `method_not_allowed` | 405 | The endpoint exists but not for this method |
 | `result_not_ready` | 409 | The statement has no result schema yet (§6.4) |
 | `result_not_resumable` | 409 | §6.5 |
-| `result_expired` | 410 | §6.5 |
 | `ingest_incomplete`, `ingest_part_exists` | 409 | §8.3 |
+| `statement_cancelled` | 409 | The statement was cancelled (§6.2, §6.8); `cancel_reason` says why |
+| `statement_timeout` | 409 | The statement ran out of time and was cancelled (§6.9) |
+| `result_expired` | 410 | §6.5 |
 | `ingest_expired` | 410 | §8.3 |
 | `payload_too_large` | 413 | A JSON request body over the server's limit |
 | `unsupported_arrow_type` | 415 | §8.1 |
 | `session_elsewhere` | 421 | §5.6 |
 | `idempotency_key_reused` | 422 | §6.7 |
-| `headers_too_large` | 431 | §2.5 |
+| `execution_error` | 422 | The statement failed while running: the engine could not complete what it asked (a division by zero, a constraint, a conversion) |
 | `too_many_sessions`, `result_quota_exceeded`, `rate_limited` | 429 | A limit was reached (with `Retry-After` when retrying can help) |
-| `statement_timeout`, `statement_cancelled` | — | Errors inside a statement document (§6.2, §6.9) |
-| `execution_error` | 500 | The statement failed while running |
-| `server_draining` | 503 | The server is shutting down; with `Retry-After` |
+| `headers_too_large` | 431 | §2.5 |
+| `internal_error` | 500 | The server failed in a way that is not the request's doing (a bug, a broken invariant) |
 | `not_implemented` | 501 | The server does not implement this operation (browser sign-in on a server without `oauth_browser`, §4.3) |
-| `access_denied`, `identity_provider_error` | — | A failed browser sign-in's `error.code`, in the poll answer (§4.3.2) |
+| `server_draining` | 503 | The server is shutting down; with `Retry-After` |
+| `access_denied`, `identity_provider_error` | — | A failed browser sign-in's `error.code` in the poll answer, as is `invalid_credentials` (§4.3.2); never a response's status |
+
+**Codes a client makes up.** A client that reports a failure it found itself, with no
+problem document from the server (a broken connection, a response it can't read), may
+give it a code in the same place as the server's. Such codes begin with `client_`
+(`client_transport_error`), and servers never send a code that begins with `client_`.
 
 ### 11.1 Graceful shutdown
 
@@ -1253,26 +1392,48 @@ running statements finish within its grace period, and then cancel what remains
 ## 12. Versioning
 
 The major version is in the path (`/warp/v1`). Within a major version, changes are
-additive only: new endpoints, new optional fields, new capabilities, new error codes.
-Clients MUST ignore unknown fields and treat an unknown error `code` by its HTTP
-status. A change that would break a v1 client gets a new major version, and a server
-MAY serve several majors at once.
+additive only: new endpoints, new optional fields, new capabilities, new error codes, new
+values of enumerated fields. A change that would break a v1 client gets a new major
+version, and a server MAY serve several majors at once.
+
+So that additions break nothing, clients MUST:
+
+- ignore JSON fields, headers, capabilities and grant types they don't know;
+- treat an unknown error `code` by its HTTP status;
+- accept an unknown value of an enumerated field rather than fail: an unknown statement
+  or ingest `state` is not terminal (keep polling; later versions add only states that
+  are not terminal, and every terminal outcome stays `succeeded`, `failed`, `cancelled`,
+  `committed` or `aborted`); an unknown `reason` or `cancel_reason` is a generic one (the
+  token, session or statement is gone, for no reason the client can name); an unknown
+  `transaction` value is reported as unknown; an unknown health `reason` is a generic
+  `not_serving`.
+
+A value that changes how a client must read a response (a new `result.kind`, a new
+`partition_order`, a new compression codec) reaches only a client that asked for it. Any
+new request field, header or header value that asks for new behaviour comes with a
+capability: servers ignore what they don't know (§2.4), so a client must not rely on a
+server older than the feature to refuse it.
 
 ---
 
-## Appendix A. Open items before 1.0
+## Appendix A. Possible future additions
 
-1. **Upload resumption.** An interrupted multi-gigabyte ingest restarts from zero.
-   Consider an ingest session (create, append chunks with offsets, commit).
-2. **Server-info keys.** Fix the full list of `server-info` keys and their types.
-3. **Result statistics.** Whether the statement document should carry per-column
-   statistics or a query profile handle.
-4. **Partition routing.** Whether a partition `location` needs a per-partition
-   short-lived token instead of the client's own access token.
-5. **Push notification.** Whether long-poll (§6.3) is enough or a server-sent-events
-   stream of state changes is worth adding.
-6. **Conformance suite.** Every MUST in this document needs a test in the
-   conformance suite (`conformance/`); most have one, and the rest are listed there.
-7. **Forwarded client certificates.** How a server trusts a TLS-terminating proxy that
-   verified the client certificate (which header, which proxies, how the thumbprint of a
-   bound token is checked through it). Until then §4.4 needs TLS to end at the server.
+Each of these would be an addition under §12, behind a capability of its own; none
+changes what a version 1 client sees.
+
+1. **Upload resumption.** Ingest that survives a broken connection without starting over
+   (append chunks at offsets, then commit). Partitioned ingest (§8.3) already splits a
+   large upload into parts that each go over their own connection.
+2. **Result statistics.** Per-column statistics or a query-profile handle in the
+   statement document.
+3. **Push notification.** A server-sent-events stream of state changes, for clients that
+   would otherwise long-poll (§6.3).
+4. **Forwarded client certificates.** A defined way for a TLS-terminating proxy that
+   verified a client certificate to pass it on, with the thumbprint checks of bound
+   tokens (§4.4). Until then a server trusts no forwarded certificate unless it is
+   configured to (§4.4).
+5. **Per-partition tokens.** A short-lived token of its own for each remote partition
+   (§6.2, `result_locations`), instead of the client's access token.
+
+The conformance suite (`conformance/`) tests the MUSTs a server can be tested for, and
+its README lists the ones it doesn't test yet.
