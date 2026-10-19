@@ -108,3 +108,19 @@ def test_another_origin_gets_no_cors_headers_at_all(cors_server):
     # The twin: the allowed origin, on the same server.
     allowed = httpx.get(url=f"{cors_server.base_url}/warp", headers={"Origin": ALLOWED_ORIGIN})
     assert allowed.headers["access-control-allow-origin"] == ALLOWED_ORIGIN
+
+
+def test_small_requests_answer_without_waiting_for_acks(warp):
+    # A server that sends an answer in more than one write must not hold the later ones
+    # back for the client's ACK (Nagle's algorithm against a delayed ACK): on Linux that
+    # added 40 ms to every small request. Twenty discovery requests on one connection.
+    import statistics
+    import time
+
+    timings = []
+    for _ in range(20):
+        started = time.perf_counter()
+        response = warp.http.get(url="/warp")
+        timings.append(time.perf_counter() - started)
+        assert response.status_code == 200
+    assert statistics.median(timings) < 0.02, f"median {statistics.median(timings) * 1000:.1f} ms"
