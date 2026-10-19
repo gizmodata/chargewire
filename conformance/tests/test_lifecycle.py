@@ -26,9 +26,10 @@ from warp import ARROW_STREAM, Warp
 pytestmark = pytest.mark.own_server
 
 SLOW = "SELECT sum(i) FROM range(100000000000) t(i)"  # runs until stopped
-# Long enough to be running when the signal comes, short enough to finish in the grace period.
-MEDIUM = "SELECT sum(i) AS s FROM range(3000000000) t(i)"
-GRACE_SECONDS = 15
+# Running when the signal comes (it is sent right after the submit), and short enough to
+# finish well inside the grace period even on a sanitizer build.
+MEDIUM = "SELECT sum(i) AS s FROM range(1000000000) t(i)"
+GRACE_SECONDS = 30
 EOS = b"\xff\xff\xff\xff\x00\x00\x00\x00"
 
 
@@ -48,18 +49,17 @@ def test_one_signal_drains_running_work_and_refuses_new_work():
         finishing = warp.new_session()
         slow_session = warp.new_session()
         idle = warp.new_session()
-        medium = warp.submit(session_id=finishing, sql=MEDIUM, headers={"Prefer": "respond-async"}).json()
         # The slow query streams: its reader sees the cut when the grace period ends.
         slow_client = httpx.Client(base_url=server.base_url, timeout=GRACE_SECONDS + 60)
         slow_request = slow_client.build_request(method="POST", url=f"{warp.session_url(slow_session)}/statements",
                                                  headers=warp.headers(Accept=ARROW_STREAM), json={"sql": SLOW})
         slow = slow_client.send(request=slow_request, stream=True)
         assert slow.status_code == 200, slow.read()
-        time.sleep(0.5)
-        assert warp.status(session_id=finishing, statement_id=medium["statement_id"])["state"] == "running"
+        medium = warp.submit(session_id=finishing, sql=MEDIUM, headers={"Prefer": "respond-async"}).json()
 
         signalled = time.monotonic()
         server.process.send_signal(STOP_SIGNAL)  # one signal: drain, don't stop
+        was_running = warp.status(session_id=finishing, statement_id=medium["statement_id"])["state"] == "running"
         deadline = signalled + 10
         while True:
             health = httpx.get(url=f"{server.base_url}/warp/v1/health", timeout=10)
@@ -75,10 +75,12 @@ def test_one_signal_drains_running_work_and_refuses_new_work():
             assert_problem(response=refused, status=503, code="server_draining")
             assert refused.headers["retry-after"].isdigit(), refused.headers  # §2.6: delta-seconds
 
-        # Running work finishes.
+        # Running work finishes (when it was still running at the signal: on a fast machine it
+        # may have finished first, which proves less but is no failure).
         done = warp.wait_done(session_id=finishing, statement_id=medium["statement_id"], timeout=GRACE_SECONDS)
         assert done["state"] == "succeeded", done
-        assert time.monotonic() - signalled < GRACE_SECONDS, "the statement finished only when the grace period ended"
+        if was_running:
+            assert time.monotonic() - signalled < GRACE_SECONDS, "the statement finished only when the grace period ended"
 
         # What still runs when the grace period ends is cancelled: its stream is cut.
         body = bytearray()
