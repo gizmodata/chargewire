@@ -12,6 +12,7 @@ Against a server given by URL they cannot run: deselect them with -m "not own_se
 """
 
 import concurrent.futures
+import datetime
 import os
 import time
 
@@ -163,5 +164,30 @@ def test_a_read_under_way_when_its_result_expires_is_delivered_in_full():
         assert bytes(body).endswith(EOS), "the read under way was cut when its result expired"
         table = ipc.open_stream(source=bytes(body)).read_all()
         assert table.num_rows == rows
+    finally:
+        assert stop_server(server=server) == 0, server.log_tail()
+
+
+def test_a_result_is_expired_from_its_expires_at_on():
+    # §6.5: a read that starts after expires_at gets 410, whenever the server next tidies up.
+    # Two results whose expiries are 2.5 s apart, each read 0.2 s after its expires_at: a
+    # server that expires results only on a periodic sweep can't have swept just then for both.
+    flag = os.environ.get("WARP_SQL_TEST_SERVER_RETENTION_FLAG", "--result-retention-seconds")
+    server = start_server(binary=binary(), extra_args=[flag, "2"])
+    try:
+        warp = Warp(base_url=server.base_url, username=server.username, password=server.password)
+        session_id = warp.new_session()
+        for attempt in range(2):
+            doc = warp.submit(session_id=session_id, sql="SELECT 1 AS one",
+                              headers={"Prefer": "wait=30", "Warp-Retain-Result": "true"}).json()
+            assert doc["state"] == "succeeded" and doc["result"]["retained"] is True, doc
+            expires_at = datetime.datetime.fromisoformat(doc["result"]["expires_at"].replace("Z", "+00:00"))
+            # Before expires_at the result can be read again.
+            assert warp.result(session_id=session_id, statement_id=doc["statement_id"]).status_code == 200
+            wait = (expires_at - datetime.datetime.now(tz=datetime.timezone.utc)).total_seconds() + 0.2
+            time.sleep(max(wait, 0))
+            refused = warp.result(session_id=session_id, statement_id=doc["statement_id"])
+            assert_problem(response=refused, status=410, code="result_expired")
+            time.sleep(0.3 if attempt == 0 else 0)
     finally:
         assert stop_server(server=server) == 0, server.log_tail()

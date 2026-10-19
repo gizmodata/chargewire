@@ -453,7 +453,9 @@ std::string_view Statement::PartitionOrder() const {
 
 void Statement::ClaimRead(std::size_t partition, int64_t from_batch) {
   std::lock_guard lock(mutex_);
-  if (expired_) {
+  // Expired from expires_at on, not from the server's next sweep (spec §6.5): a read that
+  // starts after it gets result_expired. The sweep (ExpireIfDue) frees the batches.
+  if (expired_ || (expires_at_ && WallClock::now() >= *expires_at_)) {
     throw Error(ErrorCode::kResultExpired, "this statement's result is no longer kept");
   }
   if (from_batch < 0) {

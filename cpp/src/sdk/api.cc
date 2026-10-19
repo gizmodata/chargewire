@@ -17,6 +17,7 @@
 #include "ipc.hpp"
 #include "json.hpp"
 #include "metadata.hpp"
+#include "openapi_document.hpp"
 #include "tls_context.hpp"
 #include "upload.hpp"
 
@@ -303,7 +304,7 @@ Task<Response> Api::Handle(Request& request) {
     response.headers.emplace_back(
         "Access-Control-Expose-Headers",
         "Location, Warp-Statement-Id, Warp-IPC-Compression, Warp-Request-Id, Retry-After, "
-        "Warp-Result-Partitions, Warp-Result-Order");
+        "Warp-Result-Partitions, Warp-Result-Order, ETag");
     if (request.method == http::verb::options) {
       response.headers.emplace_back("Access-Control-Allow-Methods",
                                     "GET, POST, PATCH, DELETE, OPTIONS");
@@ -311,7 +312,7 @@ Task<Response> Api::Handle(Request& request) {
           "Access-Control-Allow-Headers",
           "Authorization, Content-Type, Accept, Prefer, Idempotency-Key, "
           "Warp-Statement-Timeout, Warp-Retain-Result, Warp-Query-Tag, Warp-IPC-Compression, "
-          "Warp-Result-Partitions, Warp-Result-Order");
+          "Warp-Result-Partitions, Warp-Result-Order, If-None-Match");
       response.headers.emplace_back("Access-Control-Max-Age", "600");
     }
   }
@@ -364,6 +365,10 @@ Task<Response> Api::Route(Request& request) {
   if (rest.size() == 1 && rest[0] == "health") {
     if (method != http::verb::get) throw wrong_method();
     co_return co_await Health(request);
+  }
+  if (rest.size() == 1 && rest[0] == "openapi.json") {
+    if (method != http::verb::get) throw wrong_method();
+    co_return OpenApi(request);
   }
   if (rest.size() == 2 && rest[0] == "auth" && rest[1] == "token") {
     if (method != http::verb::post) throw wrong_method();
@@ -524,14 +529,35 @@ Task<Response> Api::Discovery(Request&) {
     if (std::string name = provider->DisplayName(); !name.empty()) browser["provider"] = std::move(name);
     auth["oauth_browser"] = std::move(browser);
   }
+  capabilities.emplace_back("openapi");  // GET /warp/v1/openapi.json (spec §3.3)
   json::object doc{
       {"protocol", "warp-sql"},
       {"protocol_versions", json::array{"1"}},
       {"server", {{"name", identity.name}, {"version", identity.version}}},
       {"capabilities", std::move(capabilities)},
       {"auth", std::move(auth)},
+      {"links", {{"openapi", "/warp/v1/openapi.json"}}},
   };
   co_return JsonResponse(http::status::ok, doc);
+}
+
+Response Api::OpenApi(const Request& request) {
+  // The same for every caller and fixed for this build, so cacheable (spec §3.3), unlike
+  // every other answer: revalidated with the ETag after an hour.
+  Response response;
+  response.headers.emplace_back("X-Content-Type-Options", "nosniff");
+  response.headers.emplace_back("Cache-Control", "public, max-age=3600");
+  response.headers.emplace_back("ETag", std::string(OpenApiEtag()));
+  const std::string_view if_none_match = request.Header("If-None-Match");
+  if (!if_none_match.empty() &&
+      (if_none_match == "*" || if_none_match.find(OpenApiEtag()) != std::string_view::npos)) {
+    response.status = http::status::not_modified;
+    return response;
+  }
+  response.status = http::status::ok;
+  response.content_type = kJson;
+  response.body = std::string(OpenApiJson());
+  return response;
 }
 
 Task<Response> Api::Health(Request&) {
@@ -1288,7 +1314,10 @@ Task<Response> Api::Launch(Request& request, std::shared_ptr<Session> session, S
           ReserveIdempotencyKey(request, *session, statement_id, idempotency_material)) {
     auto original = state_.sessions.Find(existing->session_id, session->owner())
                         ->FindStatement(existing->statement_id);
-    co_return JsonResponse(http::status::ok, StatementDocument(*session, *original));
+    // A statement response, so it names the statement (spec §2.6), as the first answer did.
+    Response replay = JsonResponse(http::status::ok, StatementDocument(*session, *original));
+    replay.headers.emplace_back("Warp-Statement-Id", original->id());
+    co_return replay;
   }
 
   Statement::Config config;

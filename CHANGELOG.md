@@ -78,6 +78,30 @@ the drafts; nobody depended on the drafts, so none has a fallback.
 
 ### Added
 
+- **An OpenAPI 3.1 description of the protocol** (`spec/openapi.yaml`): every endpoint of
+  version 1 with its parameters, headers, request and response schemas, the problem
+  document, and Arrow bodies as `application/vnd.apache.arrow.stream` binary; HTTP bearer
+  authentication (`bearerAuth`) everywhere except discovery, health, sign-in and the document
+  itself. The specification stays the definition. `spec/scripts/lint-openapi.sh` lints it
+  (Redocly CLI 2.57.0's recommended rules, with no warnings, and openapi-spec-validator).
+- **Servers can serve it** (spec §3.3, optional capability `openapi`): `GET
+  /warp/v1/openapi.json` answers the document as JSON without authentication, cacheable
+  (`Cache-Control` with `max-age`, `ETag`, `304` on `If-None-Match`); discovery lists the
+  capability and the path in its new `links` member (`links.openapi`). Appendix B lists every
+  endpoint of version 1, the list the OpenAPI document must match.
+- **The SDK serves it**, so `warp-duckdb` and every server on `libwarpsql` do: the build
+  converts `spec/openapi.yaml` to JSON with a small host tool (`cpp/tools/openapi_json.cc`, a
+  strict YAML subset that refuses anything it would not read as PyYAML does) and compiles it
+  in, so nothing reads YAML at run time. `GET /warp/v1/openapi.json` answers it with
+  `Cache-Control: public, max-age=3600` and an `ETag`; discovery lists `openapi` and
+  `links.openapi`. Unit tests in `cpp/tests/openapi_test.cc`.
+- **The conformance suite holds every response to the OpenAPI document**
+  (`conformance/tests/openapi_check.py`): status, content type, required headers and the
+  JSON body's schema, on every request of every test, so a server and the document can't
+  drift apart unnoticed (responses of all 38 operations are checked in a run against
+  `warp-duckdb`). `test_openapi.py` checks the document against Appendix B and the served
+  copy against the published one, and shows the check rejects real responses broken on
+  purpose.
 - Browser sign-in in the protocol (spec §4.3, capability `oauth_browser`), complete: a
   client creates a flow (`POST /warp/v1/auth/oauth/flows`, optional `return_to`) and gets
   `flow_id`, `poll_secret`, `authorize_url`, `poll_interval_s` and `expires_at`; the identity
@@ -465,6 +489,14 @@ the drafts; nobody depended on the drafts, so none has a fallback.
 
 ### Fixed
 
+- A retained result is expired from its `expires_at` on (spec §6.5): the SDK refused new reads
+  only after its next sweep, up to 5 seconds later, and served them in the meantime. Found
+  by the site's examples; `test_a_result_is_expired_from_its_expires_at_on` reads two results
+  0.2 s after they expire.
+- An idempotent replay of a submit or execute (spec §6.7) carries `Warp-Statement-Id`, as
+  every statement response does (§2.6); the SDK left it out. Found by the OpenAPI check.
+- Spec §6.10 names the partition read in full (`GET …/statements/{statement_id}/result`),
+  as §6.4 does; it wrote `…/result`, where `…` stood for something else than everywhere else.
 - SDK: a retained result that expires while it is being read no longer cuts that read.
   The sweep (every 5 s) dropped the result's batches at once, so a read in progress found
   them gone at its next batch and the server ended the body without the end-of-stream

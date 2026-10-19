@@ -63,6 +63,8 @@ class Api {
 
   Task<Response> Discovery(Request& request);
   Task<Response> Health(Request& request);
+  // The OpenAPI document (spec §3.3).
+  Response OpenApi(const Request& request);
   Task<Response> IssueToken(Request& request);
   // Browser sign-in (spec §4.3).
   Task<Response> CreateBrowserFlow(Request& request);

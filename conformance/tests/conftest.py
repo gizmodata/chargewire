@@ -31,6 +31,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from openapi_check import OpenApi
+from openapi_check import operations as operations_of
 from warp import Warp
 
 
@@ -160,3 +162,67 @@ def session_id(warp):
     sid = warp.new_session()
     yield sid
     warp.http.delete(url=warp.session_url(sid), headers=warp.headers())
+
+
+# ---- Every response is checked against the OpenAPI document (spec/openapi.yaml) ----
+#
+# The check wraps httpx.Client.send, which every request of the suite goes through
+# (httpx.get and the like included), so each JSON endpoint the suite exercises has its
+# responses validated on every call, errors included. A response that disagrees fails the
+# test that made it, with what was wrong. A test that must see a response the document does
+# not describe says so with @pytest.mark.openapi_unchecked.
+
+OPENAPI = OpenApi()
+_openapi_problems: list[str] = []
+_original_send = httpx.Client.send
+
+
+def _checked_send(self, request, *args, **kwargs):
+    response = _original_send(self, request, *args, **kwargs)
+    streamed = kwargs.get("stream", False)
+    try:
+        problems = OPENAPI.check(
+            method=request.method, path=request.url.path, status=response.status_code,
+            headers={name.lower(): value for name, value in response.headers.items()},
+            body=None if streamed else response.content)
+    except Exception as error:  # a bug in the check must not hide behind the test's result
+        problems = [f"{request.method} {request.url.path}: the OpenAPI check failed: {error!r}"]
+    _openapi_problems.extend(problems)
+    return response
+
+
+httpx.Client.send = _checked_send
+
+
+def _fail_on_openapi_problems(item) -> None:
+    problems = list(_openapi_problems)
+    _openapi_problems.clear()
+    if problems and item.get_closest_marker("openapi_unchecked") is None:
+        pytest.fail(reason="responses that disagree with spec/openapi.yaml:\n  "
+                           + "\n  ".join(dict.fromkeys(problems)), pytrace=False)
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item):
+    # The test's own requests: a disagreement fails the test itself.
+    result = yield
+    _fail_on_openapi_problems(item=item)
+    return result
+
+
+@pytest.fixture(autouse=True)
+def responses_match_the_openapi_document(request):
+    # Requests made by fixtures, before and after the test, are held to the document too.
+    _fail_on_openapi_problems(item=request.node)
+    yield
+    _fail_on_openapi_problems(item=request.node)
+
+
+def pytest_terminal_summary(terminalreporter):
+    if not OPENAPI.seen:
+        return
+    every = sorted(operations_of(OPENAPI.doc))
+    missing = [f"{method} {path}" for method, path in every if (method, path) not in OPENAPI.seen]
+    terminalreporter.write_line(
+        f"OpenAPI: responses of {len(every) - len(missing)} of {len(every)} operations checked"
+        + (f"; not exercised in this run: {', '.join(missing)}" if 0 < len(missing) <= 8 else ""))

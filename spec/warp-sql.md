@@ -156,16 +156,18 @@ These endpoints need no authentication.
   "server": {"name": "Example SQL Server", "version": "3.2.1"},
   "capabilities": ["prepared_statements", "transactions", "ingest", "long_poll",
                    "ipc_compression_zstd", "ipc_compression_lz4_frame", "result_partitions",
-                   "partitioned_ingest", "mtls_identity", "oauth_browser"],
+                   "partitioned_ingest", "mtls_identity", "oauth_browser", "openapi"],
   "auth": {"grant_types": ["password", "token_exchange", "client_certificate"],
-           "oauth_browser": {"provider": "Okta"}}
+           "oauth_browser": {"provider": "Okta"}},
+  "links": {"openapi": "/warp/v1/openapi.json"}
 }
 ```
 
 `capabilities` lists the optional features the server supports. A client MUST NOT use an
 optional feature the server does not list, and ignores names it doesn't know.
 `auth.grant_types` lists the grants of `POST /warp/v1/auth/token` (§4.1); `auth.oauth_browser`
-describes browser sign-in (§4.3) when the server offers it. The capabilities of version 1:
+describes browser sign-in (§4.3) when the server offers it, and `links` (optional) says where
+the server's optional documents are (§3.3). The capabilities of version 1:
 
 | Capability | Section | What it gates |
 |---|---|---|
@@ -179,6 +181,7 @@ describes browser sign-in (§4.3) when the server offers it. The capabilities of
 | `result_locations` | §6.2 | Partitions held by other servers (`Warp-Result-Locations: remote`, non-null `location`) |
 | `mtls_identity` | §4.4 | The `client_certificate` grant: signing in with a TLS client certificate |
 | `oauth_browser` | §4.3 | Browser sign-in for clients that cannot take a redirect themselves |
+| `openapi` | §3.3 | `GET /warp/v1/openapi.json`, the OpenAPI description, and `links.openapi` in discovery |
 
 Everything else in this document is core: every server implements it. A feature added
 after 1.0 that a client must ask for, or that changes what a request means, comes with a
@@ -190,6 +193,31 @@ capability of its own (§12).
 with `{"status": "not_serving", "reason": "draining" | "starting" | "check_failed"}`.
 A server MAY run a configurable health query to decide; if that query hangs, the
 endpoint MUST still answer (`503`, `check_failed`) within a bounded time.
+
+### 3.3 `GET /warp/v1/openapi.json` (optional capability `openapi`)
+
+The [OpenAPI 3.1](https://spec.openapis.org/oas/v3.1.1) description of the protocol version
+the server implements: the document published with this specification (`openapi.yaml`, next
+to it), as JSON, with `Content-Type: application/json`. It describes every endpoint of
+Appendix B with its parameters, headers, request and response schemas and errors, for tools
+(API browsers, client generators, validators). This specification is the definition: where
+the two differ, this text is right and the document has a bug.
+
+Like §3.1, it needs no authentication. The document is the same for every caller and changes
+only when the server does, so the answer is cacheable: it SHOULD carry `Cache-Control` with a
+`max-age` and an `ETag`, and a request whose `If-None-Match` names that `ETag` SHOULD get `304
+Not Modified`. A server MAY set the document's `servers` to its own address and MAY add
+specification extensions (`x-` fields); otherwise it serves the document unchanged. Endpoints
+of a server's own, outside the protocol, are described elsewhere.
+
+A server MAY offer it. One that does lists `openapi` in `capabilities` and gives the path in
+discovery's `links` (a path on the server's origin, base path included, or an absolute URL):
+
+```json
+"links": {"openapi": "/warp/v1/openapi.json"}
+```
+
+A server without the capability answers `404` with code `not_found`.
 
 ## 4. Authentication
 
@@ -958,7 +986,7 @@ On the streamed path (§6.1) the `200` Arrow response is partition 0, and its he
 how the result is split: when `k` is more than 1 the response MUST carry both
 `Warp-Result-Partitions: <k>` and `Warp-Result-Order: interleaved` or `any`; for one
 partition it carries neither. A client MUST NOT guess a missing `Warp-Result-Order`. The client reads partitions 1 to
-`k - 1` with `GET …/result?partition=<i>` (§6.4), each on its own connection, all at
+`k - 1` with `GET …/statements/{statement_id}/result?partition=<i>` (§6.4), each on its own connection, all at
 once. Until the server has decided how to split a running statement's result, its
 document lists partition 0 only and has no `partition_order`; a client that reads the
 result while the statement runs waits for `partition_order` or a finished statement.
@@ -1445,3 +1473,50 @@ changes what a version 1 client sees.
 
 The conformance suite (`conformance/`) tests the MUSTs a server can be tested for, and
 its README lists the ones it doesn't test yet.
+
+## Appendix B. Endpoints
+
+Every endpoint of version 1, under the base path (§2.1). The OpenAPI document (§3.3) has
+exactly these; the conformance suite checks that the two lists agree. `…` stands for
+`/warp/v1/sessions/{session_id}`.
+
+| Method | Path | Section | Capability |
+|---|---|---|---|
+| `GET` | `/warp` | §3.1 | |
+| `GET` | `/warp/v1/health` | §3.2 | |
+| `GET` | `/warp/v1/openapi.json` | §3.3 | `openapi` |
+| `POST` | `/warp/v1/auth/token` | §4.1 | |
+| `POST` | `/warp/v1/auth/oauth/flows` | §4.3.1 | `oauth_browser` |
+| `POST` | `/warp/v1/auth/oauth/flows/{flow_id}` | §4.3.2 | `oauth_browser` |
+| `GET` | `/warp/v1/auth/oauth/callback` | §4.3.4 | `oauth_browser` |
+| `POST` | `/warp/v1/sessions` | §5.1 | |
+| `GET` | `…` | §5.2 | |
+| `PATCH` | `…` | §5.3 | |
+| `DELETE` | `…` | §5.4 | |
+| `POST` | `…/commit` | §5.5 | `transactions` |
+| `POST` | `…/rollback` | §5.5 | `transactions` |
+| `POST` | `…/cancel` | §6.8 | |
+| `POST` | `…/statements` | §6.1 | |
+| `GET` | `…/statements/{statement_id}` | §6.3 | |
+| `DELETE` | `…/statements/{statement_id}` | §6.8 | |
+| `GET` | `…/statements/{statement_id}/result` | §6.4 | |
+| `POST` | `…/statements/{statement_id}/cancel` | §6.8 | |
+| `POST` | `…/prepared` | §7.1 | `prepared_statements` |
+| `POST` | `…/prepared/{prepared_id}/execute` | §7.2 | `prepared_statements` |
+| `DELETE` | `…/prepared/{prepared_id}` | §7.3 | `prepared_statements` |
+| `POST` | `…/ingest` | §8.1 | `ingest` |
+| `POST` | `…/ingests` | §8.3 | `partitioned_ingest` |
+| `GET` | `…/ingests/{ingest_id}` | §8.3 | `partitioned_ingest` |
+| `DELETE` | `…/ingests/{ingest_id}` | §8.3 | `partitioned_ingest` |
+| `POST` | `…/ingests/{ingest_id}/parts/{part}` | §8.3 | `partitioned_ingest` |
+| `POST` | `…/ingests/{ingest_id}/commit` | §8.3 | `partitioned_ingest` |
+| `GET` | `…/metadata/catalogs` | §10 | |
+| `GET` | `…/metadata/db-schemas` | §10 | |
+| `GET` | `…/metadata/tables` | §10 | |
+| `GET` | `…/metadata/table-types` | §10 | |
+| `GET` | `…/metadata/primary-keys` | §10 | |
+| `GET` | `…/metadata/imported-keys` | §10 | |
+| `GET` | `…/metadata/exported-keys` | §10 | |
+| `GET` | `…/metadata/cross-reference` | §10 | |
+| `GET` | `…/metadata/type-info` | §10 | |
+| `GET` | `…/metadata/server-info` | §10 | |
