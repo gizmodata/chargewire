@@ -74,6 +74,11 @@ the drafts; nobody depended on the drafts, so none has a fallback.
   authentication (`bearerAuth`) everywhere except discovery, health, sign-in and the document
   itself. The specification stays the definition. `spec/scripts/lint-openapi.sh` lints it
   (Redocly CLI 2.57.0's recommended rules, with no warnings, and openapi-spec-validator).
+- **Servers can serve it** (spec §3.3, optional capability `openapi`): `GET
+  /warp/v1/openapi.json` answers the document as JSON without authentication, cacheable
+  (`Cache-Control` with `max-age`, `ETag`, `304` on `If-None-Match`); discovery lists the
+  capability and the path in its new `links` member (`links.openapi`). Appendix B lists every
+  endpoint of version 1, the list the OpenAPI document must match.
 - Browser sign-in in the protocol (spec §4.3, capability `oauth_browser`), complete: a
   client creates a flow (`POST /warp/v1/auth/oauth/flows`, optional `return_to`) and gets
   `flow_id`, `poll_secret`, `authorize_url`, `poll_interval_s` and `expires_at`; the identity

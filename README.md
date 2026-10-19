@@ -111,6 +111,7 @@ sequenceDiagram
 | | Spec |
 |---|---|
 | 🔎 Discovery, health and capabilities | [§3](spec/warp-sql.md#3-discovery-and-health) |
+| 📜 An OpenAPI 3.1 description, served at `GET /warp/v1/openapi.json` | [§3.3](spec/warp-sql.md#33-get-warpv1openapijson-optional-capability-openapi), [`openapi.yaml`](spec/openapi.yaml) |
 | 🔑 Token sign-in (password, token exchange), browser sign-in | [§4](spec/warp-sql.md#4-authentication) |
 | 🗂️ Sessions with options, and transactions | [§5](spec/warp-sql.md#5-sessions) |
 | ▶️ Statements: streamed or submit/poll/fetch, positional and named bind parameters | [§6](spec/warp-sql.md#6-statements) |
@@ -219,6 +220,7 @@ for 1.0.0 keeps working.
 | Path | What |
 |---|---|
 | [`spec/warp-sql.md`](spec/warp-sql.md) | The protocol specification |
+| [`spec/openapi.yaml`](spec/openapi.yaml) | Its OpenAPI 3.1 description (linted by `spec/scripts/lint-openapi.sh`) |
 | [`docs/server-sdk.md`](docs/server-sdk.md) | Design of the C++ server SDK |
 | [`docs/distributed.md`](docs/distributed.md) | How partitioned results leave room for distributed query |
 | [`cpp/`](cpp/README.md) | `libwarpsql` and `warp-duckdb` |
