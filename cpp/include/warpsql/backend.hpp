@@ -245,8 +245,11 @@ class Backend {
 
   virtual ServerIdentity Identity() = 0;
 
-  // Opens the engine side of a new session for `principal`.
-  virtual std::unique_ptr<EngineSession> OpenSession(const Principal& principal,
+  // Opens the engine side of a new session for `principal`. `session_id` is the session's
+  // id (spec §2.3), the one its client holds: an engine that shows or takes session ids
+  // (a sessions table, a command that ends a session, logs) uses this one, so a client
+  // finds its own session without a second id to translate.
+  virtual std::unique_ptr<EngineSession> OpenSession(const Principal& principal, const std::string& session_id,
                                                      const boost::json::object& options) = 0;
 
   // Reports whether the engine can take work (spec §3.2). Throws if not. Must not hang:

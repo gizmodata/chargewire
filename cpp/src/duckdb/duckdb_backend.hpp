@@ -30,7 +30,7 @@ class DuckDBBackend : public warpsql::Backend {
   ~DuckDBBackend() override;
 
   warpsql::ServerIdentity Identity() override;
-  std::unique_ptr<warpsql::EngineSession> OpenSession(const warpsql::Principal& principal,
+  std::unique_ptr<warpsql::EngineSession> OpenSession(const warpsql::Principal& principal, const std::string& session_id,
                                                       const boost::json::object& options) override;
   void CheckHealth() override;
   boost::json::object ServerInfo() override;
@@ -40,9 +40,10 @@ class DuckDBBackend : public warpsql::Backend {
   const std::string& duckdb_version() const { return version_; }
 
  protected:
-  // Creates the engine side of a session; servers built on this backend return their
-  // own DuckDBSession subclass.
-  virtual std::unique_ptr<warpsql::EngineSession> NewSession(const warpsql::Principal& principal);
+  // Creates the engine side of session `session_id` (its Warp SQL id); servers built on
+  // this backend return their own DuckDBSession subclass.
+  virtual std::unique_ptr<warpsql::EngineSession> NewSession(const warpsql::Principal& principal,
+                                                             const std::string& session_id);
 
  private:
   Environment environment_;

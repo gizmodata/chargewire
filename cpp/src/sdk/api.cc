@@ -690,8 +690,8 @@ Task<Response> Api::CreateSession(Request& request) {
   auto session = std::make_shared<Session>(NewId("s"), principal,
                                            net::make_strand(state_.engine_pool.get_executor()));
   auto backend = state_.backend;
-  auto opened = co_await OnEngine(*session, [backend, principal, options] {
-    auto engine = backend->OpenSession(principal, options);
+  auto opened = co_await OnEngine(*session, [backend, principal, options, id = session->id()] {
+    auto engine = backend->OpenSession(principal, id, options);
     json::object current = engine->Options();
     return std::make_pair(std::move(engine), std::move(current));
   });
