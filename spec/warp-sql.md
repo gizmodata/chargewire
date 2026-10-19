@@ -657,7 +657,10 @@ faster. It asks for that when it submits (or executes a prepared statement):
 
 The server MAY then split the result into `k` partitions, 1 ≤ `k` ≤ `n`; it keeps a
 small result in one (a result that turns out to have fewer than two batches, for
-example). The statement document's `result` lists all `k` partitions and, when `k` is
+example). A server SHOULD choose `k` by the result's size, so that a result of a few
+batches doesn't open many connections that carry little: it MAY hold back the first
+batches, for a bounded time, until the size shows. A client can therefore ask for as
+many partitions as its link and cores can use, whatever the query. The statement document's `result` lists all `k` partitions and, when `k` is
 more than 1, says how the rows are spread over them in `partition_order`:
 
 - `interleaved` (the client asked for `preserve`): the result's batches are dealt round
