@@ -321,9 +321,11 @@ class StreamingBodySource : public BodySource {
 };
 
 // `tls` and `peer`: the TLS configuration and the connection's client certificate, or null.
+// `tls_version`: the connection's (SSL_get_version), static; empty without TLS.
 template <class Stream>
 Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler& handler,
-                         TlsContext* tls = nullptr, PeerCertificate* peer = nullptr) {
+                         TlsContext* tls = nullptr, PeerCertificate* peer = nullptr,
+                         std::string_view tls_version = {}) {
   beast::flat_buffer buffer;
   int auth_failures = 0;
   std::string peer_address;
@@ -368,6 +370,7 @@ Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler
       request.headers = static_cast<const http::fields&>(message.base());
       request.request_id = NewId("r");
       request.peer = peer_address;
+      request.tls_version = tls_version;
       request.connection_auth_failures = &auth_failures;
       if (peer != nullptr) {
         request.client_certificate = peer->info();
@@ -516,7 +519,8 @@ class HttpServer::Impl {
         }
         SSL_set_ex_data(tls_stream.native_handle(), TlsContext::RefusalIndex(), nullptr);
         auto peer = tls_->PeerOf(tls_stream.native_handle(), context.generation);
-        co_await ServeRequests(tls_stream, limits_, handler_, tls_.get(), peer.get());
+        co_await ServeRequests(tls_stream, limits_, handler_, tls_.get(), peer.get(),
+                               SSL_get_version(tls_stream.native_handle()));
       } catch (const std::exception&) {
         // the connection failed; it still ends below
       }

@@ -61,6 +61,8 @@ class IngestOperation : public std::enable_shared_from_this<IngestOperation> {
   bool Forgettable(Clock::time_point cutoff) const;
   // Committed, failed or aborted.
   bool Finished() const;
+  // Part uploads under way.
+  int ActiveUploads() const;
   json::object Document() const;
 
   // ---- Engine side ----

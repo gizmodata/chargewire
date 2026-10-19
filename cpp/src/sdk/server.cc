@@ -159,6 +159,36 @@ class Server::Impl {
     stopped_cv_.wait(lock, [this] { return stopped_; });
   }
 
+  std::vector<SessionActivity> Sessions() const {
+    std::vector<SessionActivity> out;
+    for (const auto& session : state_.sessions.All()) {
+      out.push_back(api_.Describe(*session));
+    }
+    return out;
+  }
+
+  std::optional<std::size_t> CancelSession(const std::string& id, SessionCancelReason reason) {
+    auto session = state_.sessions.Get(id);
+    if (!session) return std::nullopt;
+    return api_.CancelWork(session, reason == SessionCancelReason::kKilled ? CancelReason::kKilled
+                                                                         : CancelReason::kCancelled);
+  }
+
+  bool EndSession(const std::string& id, const Error& why) {
+    auto session = state_.sessions.Get(id);
+    if (!session || !session->End(why)) return false;
+    // On the session's strand, so after the engine call it is running (which a cancel
+    // stops): then nothing runs in it, its results are freed and its engine goes.
+    net::post(session->strand(), [this, session, why] {
+      session->Close(CancelReason::kKilled);
+      state_.sessions.Retire(session->id(), session->owner(), why,
+                             Clock::now() + std::max<Clock::duration>(state_.options.session_idle_timeout,
+                                                                      std::chrono::minutes(15)));
+      session->DestroyEngine();
+    });
+    return true;
+  }
+
  private:
   // Lets running statements finish within `grace`, then stops (spec §11.1).
   Task<void> FinishDraining(std::chrono::seconds grace) {
@@ -203,6 +233,7 @@ class Server::Impl {
       state_.in_memory_tokens->Sweep();
     }
     state_.idempotency.Sweep();
+    state_.sessions.SweepEnded(Clock::now());
     api_.FlushSecurityEvents();
     const auto now = WallClock::now();
     const auto idle_cutoff = Clock::now() - state_.options.session_idle_timeout;
@@ -268,6 +299,14 @@ void Server::Drain(std::chrono::seconds grace) { impl_->Drain(grace); }
 void Server::Stop() { impl_->Stop(); }
 
 void Server::Wait() { impl_->Wait(); }
+
+std::vector<SessionActivity> Server::Sessions() const { return impl_->Sessions(); }
+
+std::optional<std::size_t> Server::CancelSession(const std::string& session_id, SessionCancelReason reason) {
+  return impl_->CancelSession(session_id, reason);
+}
+
+bool Server::EndSession(const std::string& session_id, const Error& why) { return impl_->EndSession(session_id, why); }
 
 void InitializeProcess() { OPENSSL_init_crypto(OPENSSL_INIT_NO_ATEXIT, nullptr); }
 

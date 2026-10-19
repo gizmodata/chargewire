@@ -9,6 +9,26 @@ spec's version is the repository's version.
 
 ### Added
 
+- The SDK's view of its sessions, for an engine's own SQL (Hardcharger's
+  `hardcharger_active_connections()`, `hardcharger_cancel()`, `KILL SESSION`):
+  `Server::Sessions()` describes each session as the transport sees it (the latest
+  request's address, User-Agent, TLS version and client certificate, the identity that
+  certificate maps to, whether the token is bound, the statement it works on and its state,
+  submit and start times, partitions, open result streams, ingest bodies arriving, retained
+  results and their rows, and why a cancelled statement is unwinding).
+  `Server::CancelSession(id, reason)` stops a session's work and keeps the session: its
+  statements end cancelled with `cancel_reason` `cancelled` or `killed` (spec §6.2, which
+  gains `cancelled`), its result readers get an incomplete stream (§6.6), its open
+  partitioned ingests and its ingest bodies still arriving are aborted (nothing written).
+  `Server::EndSession(id, error)` ends one: every request naming it, by its owner, gets that
+  error at once (`session_ended`, §5.6), nothing new starts in it, and once its running work
+  has stopped (it cancels nothing itself) its results are freed and its engine session
+  destroyed, on its strand; the registry remembers why for its owner (for at least 15
+  minutes, or the idle timeout), and a DELETE of it answers 204.
+  `EngineSession::Cancel(reason)` (default: `Interrupt()`) is how the SDK interrupts an
+  engine for a cancelled statement, with the cancel_reason, so an engine can record why its
+  work stopped.
+
 - The session's transaction (spec §5.2): the session document carries `transaction`,
   `none`, `open` or `aborted`, so a client shows whether a transaction is open, and
   whether a failed or cancelled statement has left it needing a rollback, without
