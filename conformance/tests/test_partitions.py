@@ -219,18 +219,20 @@ def test_unretained_partition_is_read_once(warp, session_id):
     assert_problem(response=reader.get(1, from_batch=1), status=409, code="result_not_resumable")
 
 
-def test_empty_partitions_are_complete_streams(warp, session_id):
+def test_small_results_split_into_complete_streams(warp, session_id):
     # The server's batch size, from an unsplit result.
     probe = warp.query(session_id=session_id, sql=BIG)
     batch_rows = probe.to_batches()[0].num_rows
-    # Two batches' worth of rows, split up to eight ways: some partitions get no batch.
-    sql = f"SELECT i FROM range({2 * batch_rows}) t(i)"
-    k, _, parts, _ = read_streamed_split(warp, session_id, sql, n=8)
-    rows = [v for b in interleave(parts) for v in b.column("i").to_pylist()]
-    assert rows == list(range(2 * batch_rows))
-    batches = sum(len(part) for part in parts)
-    assert k > batches, f"{k} partitions for {batches} batches: no empty partition to check"
-    assert all(len(part) == 0 for part in parts[batches:]), [len(p) for p in parts]
+    # Two to five batches' worth of rows, up to eight partitions: a server may make fewer
+    # partitions than batches (spec §6.10), or more, and then some partitions get no
+    # batch. Either way every partition is a complete stream and the rows are exact.
+    for batches in (2, 3, 5):
+        sql = f"SELECT i FROM range({batches * batch_rows}) t(i)"
+        k, _, parts, _ = read_streamed_split(warp, session_id, sql, n=8)
+        rows = [v for b in interleave(parts) for v in b.column("i").to_pylist()]
+        assert rows == list(range(batches * batch_rows)), batches
+        got = sum(len(part) for part in parts)
+        assert all(len(part) == 0 for part in parts[got:]), [len(p) for p in parts]
 
 
 def read_until_cut(response: httpx.Response) -> bytes:

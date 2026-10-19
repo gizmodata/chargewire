@@ -32,9 +32,27 @@ constexpr auto kClientCheck = std::chrono::seconds(1);
 // encoded data is gathered into one write.
 constexpr std::size_t kEncodeWindow = 2;
 constexpr std::size_t kEncodeWindowCompressed = 8;
-// How long a result that may be split waits for its second batch before it is read as
-// one partition (spec §6.10): the stream's schema message isn't held back longer.
+// A result that may be split (spec §6.10) holds back its first batches until its size
+// shows (Statement::PartitionCount). A reader waiting for the split decides it itself
+// when the first batch has waited kSplitDecideWait (the result comes slowly, so few
+// partitions do), or when no batch came within kSplitWait (the stream's schema message
+// isn't held back longer). It looks every kSplitPoll.
 constexpr auto kSplitWait = std::chrono::seconds(5);
+constexpr auto kSplitDecideWait = std::chrono::milliseconds(100);
+constexpr auto kSplitPoll = std::chrono::milliseconds(10);
+
+// Decides `statement`'s split if a reader that started waiting at `waiting_since` should
+// no longer wait for it; returns when to look again.
+Clock::time_point SettleSplitIfDue(Statement& statement, Clock::time_point waiting_since) {
+  const auto now = Clock::now();
+  if (!statement.HasRows() || statement.PartitionCount()) return Clock::time_point::max();
+  const auto first = statement.FirstBatchAt();
+  if ((first && now - *first >= kSplitDecideWait) || now - waiting_since >= kSplitWait) {
+    statement.SettleSplit();
+    return now;
+  }
+  return now + kSplitPoll;
+}
 // The most partitions a client may ask for (Warp-Result-Partitions).
 constexpr int64_t kMaxRequestedPartitions = 256;
 constexpr std::size_t kEncodeBytes = 64 * 1024 * 1024;
@@ -1004,20 +1022,18 @@ Task<Response> Api::Launch(Request& request, std::shared_ptr<Session> session, S
     if (!streamed) return statement->IsTerminal();
     return statement->HasOutcome() && (!statement->HasRows() || statement->PartitionCount());
   };
-  const auto split_deadline = Clock::now() + kSplitWait;
+  const auto waiting_since = Clock::now();
   while (Clock::now() < deadline && !ready()) {
-    if (streamed && statement->HasRows() && Clock::now() >= split_deadline) {
-      statement->SettleSplit();
-      continue;
-    }
-    seen = co_await statement->changed().WaitChange(seen, std::min(deadline, split_deadline > Clock::now() ? split_deadline : deadline));
+    const auto look_again = streamed ? SettleSplitIfDue(*statement, waiting_since) : Clock::time_point::max();
+    if (ready()) break;
+    seen = co_await statement->changed().WaitChange(seen, std::min(deadline, look_again));
   }
 
   // A statement that failed before its answer started is an error response (§6.1), even
   // with rows already buffered: those rows were never sent, and a 200 with a statement
   // document is what a statement without rows answers, so a client that took it at its
   // status would report a failed query as an empty success. (The streamed path waits for
-  // a split's decision, up to kSplitWait, so a failure there was the common case.)
+  // a split's decision, so a failure there was the common case.)
   if (statement->state() == StatementState::kFailed) {
     throw *statement->error();
   }
@@ -1534,14 +1550,12 @@ Task<Response> Api::GetResult(Request& request, const std::string& session_id,
     return statement->IsTerminal() || (statement->HasOutcome() && (!statement->HasRows() || statement->PartitionCount()));
   };
   const auto deadline = Clock::now() + state_.options.max_wait;
-  const auto split_deadline = Clock::now() + kSplitWait;
+  const auto waiting_since = Clock::now();
   uint64_t seen = statement->changed().version();
   while (!ready() && Clock::now() < deadline) {
-    if (statement->HasRows() && Clock::now() >= split_deadline) {
-      statement->SettleSplit();
-      continue;
-    }
-    seen = co_await statement->changed().WaitChange(seen, std::min(deadline, split_deadline > Clock::now() ? split_deadline : deadline));
+    const auto look_again = SettleSplitIfDue(*statement, waiting_since);
+    if (ready()) break;
+    seen = co_await statement->changed().WaitChange(seen, std::min(deadline, look_again));
   }
   if (!ready()) {
     throw Error(ErrorCode::kResultNotReady, "the statement has not produced a result yet");
