@@ -105,6 +105,44 @@ def test_sub_microsecond_values_are_refused_not_truncated(warp, session_id):
     assert_problem(response=response, status=415, code="unsupported_arrow_type")
 
 
+def unsupported_columns() -> dict[str, pa.Array]:
+    """Arrow types with no faithful column type in the reference engine (DuckDB): wider
+    decimals than 38 digits in 128 bits, and dense unions; at the top level and nested."""
+    import decimal
+    wide = pa.array([decimal.Decimal("1.25")], type=pa.decimal256(10, 2))  # small values, still a 256-bit type
+    dense = pa.UnionArray.from_dense(types=pa.array([0], type=pa.int8()), value_offsets=pa.array([0], type=pa.int32()),
+                                     children=[pa.array([1], type=pa.int64())], field_names=["i"])
+    return {
+        "decimal256": wide,
+        "decimal256_76": pa.array([decimal.Decimal("1" * 76)], type=pa.decimal256(76, 0)),
+        "dense_union": dense,
+        "list_of_decimal256": pa.ListArray.from_arrays(offsets=pa.array([0, 1], type=pa.int32()), values=wide),
+        "struct_of_dense_union": pa.StructArray.from_arrays(arrays=[dense], names=["u"]),
+        "dictionary_of_decimal256": pa.DictionaryArray.from_arrays(indices=pa.array([0], type=pa.int32()),
+                                                                   dictionary=wide),
+    }
+
+
+def test_types_the_engine_cannot_keep_are_refused_with_415(warp, session_id):
+    # Before, the reference server answered these with 400 sql_error from inside the engine.
+    for name, column in unsupported_columns().items():
+        table = f"ing_unsupported_{name}"
+        body = ipc_bytes(table=pa.table({"k": pa.array([1], type=pa.int64()), "c": column}))
+        response = ingest(warp=warp, session_id=session_id, body=body, table=table, mode="create")
+        assert_problem(response=response, status=415, code="unsupported_arrow_type")
+        exists = warp.query(session_id=session_id,
+                            sql=f"SELECT count(*) AS n FROM duckdb_tables() WHERE table_name = '{table}'")
+        assert exists.column("n").to_pylist() == [0], name
+
+
+def test_a_refused_type_appends_nothing(warp, session_id):
+    warp.execute(session_id=session_id, sql="CREATE TABLE ing_unsupported_append (k BIGINT, c DECIMAL(10, 2))")
+    body = ipc_bytes(table=pa.table({"k": pa.array([1], type=pa.int64()), "c": unsupported_columns()["decimal256"]}))
+    response = ingest(warp=warp, session_id=session_id, body=body, table="ing_unsupported_append", mode="append")
+    assert_problem(response=response, status=415, code="unsupported_arrow_type")
+    assert count(warp=warp, session_id=session_id, table="ing_unsupported_append") == 0
+
+
 def test_retried_upload_with_the_same_key_runs_once(warp, session_id):
     import time
     key = f"upload-{time.time_ns()}"

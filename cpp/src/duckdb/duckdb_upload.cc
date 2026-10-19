@@ -366,17 +366,79 @@ void PartitionData(duckdb_v2_table_function_partition_data_info_handle info, duc
   });
 }
 
-// Arrow types DuckDB can't store faithfully: refused with the reason, before any table
-// is touched, rather than failing inside DuckDB or arriving changed.
+// Arrow types DuckDB can't store faithfully: refused with the reason (unsupported_arrow_type,
+// spec §8.1), before any table is touched, rather than failing inside DuckDB (as a 400
+// sql_error) or arriving changed. Only the types DuckDB's Arrow scan reads are let
+// through (ArrowType::GetTypeFromFormat); any other, a type Arrow adds later included, is
+// refused.
 void RefuseUnsupported(const arrow::DataType& type, bool nested) {
-  if (type.id() == arrow::Type::HALF_FLOAT) {
-    throw Error(ErrorCode::kUnsupportedArrowType,
-                "Arrow type halffloat has no DuckDB equivalent for bulk ingest; send float32 instead");
-  }
-  if (type.id() == arrow::Type::INTERVAL_DAY_TIME && nested) {
-    throw Error(ErrorCode::kUnsupportedArrowType,
-                "a day_time interval nested in another type cannot be ingested (DuckDB misreads it); "
-                "send month_day_nano intervals instead");
+  const auto refuse = [&](const std::string& why) {
+    throw Error(ErrorCode::kUnsupportedArrowType, "Arrow type " + type.ToString() + " cannot be ingested: " + why);
+  };
+  switch (type.id()) {
+    case arrow::Type::NA:
+    case arrow::Type::BOOL:
+    case arrow::Type::INT8:
+    case arrow::Type::INT16:
+    case arrow::Type::INT32:
+    case arrow::Type::INT64:
+    case arrow::Type::UINT8:
+    case arrow::Type::UINT16:
+    case arrow::Type::UINT32:
+    case arrow::Type::UINT64:
+    case arrow::Type::FLOAT:
+    case arrow::Type::DOUBLE:
+    case arrow::Type::DECIMAL32:
+    case arrow::Type::DECIMAL64:
+    case arrow::Type::DECIMAL128:
+    case arrow::Type::STRING:
+    case arrow::Type::LARGE_STRING:
+    case arrow::Type::STRING_VIEW:
+    case arrow::Type::BINARY:
+    case arrow::Type::LARGE_BINARY:
+    case arrow::Type::BINARY_VIEW:
+    case arrow::Type::FIXED_SIZE_BINARY:
+    case arrow::Type::DATE32:
+    case arrow::Type::DATE64:
+    case arrow::Type::TIMESTAMP:
+    case arrow::Type::TIME32:
+    case arrow::Type::TIME64:
+    case arrow::Type::DURATION:
+    case arrow::Type::INTERVAL_MONTHS:
+    case arrow::Type::INTERVAL_MONTH_DAY_NANO:
+    case arrow::Type::LIST:
+    case arrow::Type::LARGE_LIST:
+    case arrow::Type::LIST_VIEW:
+    case arrow::Type::LARGE_LIST_VIEW:
+    case arrow::Type::FIXED_SIZE_LIST:
+    case arrow::Type::STRUCT:
+    case arrow::Type::MAP:
+    case arrow::Type::RUN_END_ENCODED:
+      break;
+    case arrow::Type::SPARSE_UNION:
+      if (type.num_fields() == 0) refuse("DuckDB has no union without members");
+      break;
+    case arrow::Type::INTERVAL_DAY_TIME:
+      if (nested) {
+        throw Error(ErrorCode::kUnsupportedArrowType,
+                    "a day_time interval nested in another type cannot be ingested (DuckDB misreads it); "
+                    "send month_day_nano intervals instead");
+      }
+      break;
+    case arrow::Type::DICTIONARY:
+      RefuseUnsupported(*static_cast<const arrow::DictionaryType&>(type).value_type(), nested);
+      return;
+    case arrow::Type::EXTENSION:
+      RefuseUnsupported(*static_cast<const arrow::ExtensionType&>(type).storage_type(), nested);
+      return;
+    case arrow::Type::HALF_FLOAT:
+      refuse("DuckDB has no 16-bit float; send float32 instead");
+    case arrow::Type::DECIMAL256:
+      refuse("DuckDB decimals hold at most 38 digits in 128 bits; send decimal128 (precision up to 38)");
+    case arrow::Type::DENSE_UNION:
+      refuse("DuckDB reads only sparse unions; send a sparse union");
+    default:
+      refuse("DuckDB has no column type that keeps its values");
   }
   for (const auto& child : type.fields()) RefuseUnsupported(*child->type(), true);
 }

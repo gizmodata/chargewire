@@ -253,6 +253,15 @@ spec's version is the repository's version.
 
 ### Fixed
 
+- Bulk ingest (spec §8.1): an Arrow type the reference engine can't keep is refused with
+  `415 unsupported_arrow_type` before any table is touched; `decimal256` (any precision:
+  DuckDB decimals are 128-bit, at most 38 digits) and dense unions, at the top level or
+  nested in a list, struct or dictionary, were a `400 sql_error` from inside DuckDB
+  ("Unsupported Internal Arrow Type"). The DuckDB backend now lets through only the types
+  DuckDB's Arrow scan reads and refuses any other, a type Arrow adds later included.
+  Conformance: `test_types_the_engine_cannot_keep_are_refused_with_415` (six columns) and
+  `test_a_refused_type_appends_nothing`.
+
 - DuckDB backend: preparing a query no longer runs it. A prepare learned a SELECT's
   result schema by executing it with NULL parameters and dropping the result unread, on
   the claim that this ran nothing; but DuckDB's threads could already have picked the plan
