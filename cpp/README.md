@@ -66,6 +66,22 @@ The password is read from the environment so it never shows in process listings.
 | `--mtls-crl-allow-missing-ca-crls` | off | Every certificate of a chain is revocation-checked, so the CRL file needs every CA's CRL (the root's too); this accepts a CA above the leaf without one |
 | `--mtls-require-identity-match` | off | A password sign-in over a client certificate must be for its identity |
 
+Browser sign-in (spec §4.3) with an OpenID Connect provider, for testing clients: everyone
+listed in `--oauth-identities` signs in as the administrator. The ID token is checked for
+issuer, audience, expiry and nonce, not by signature (it comes straight from the token
+endpoint; an `http://` issuer is accepted only on a loopback address).
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--oauth-issuer URL` | none | The provider, found by its `/.well-known/openid-configuration` |
+| `--oauth-client-id ID` | none | The server's client id (the secret comes from `WARP_DUCKDB_OAUTH_CLIENT_SECRET`) |
+| `--oauth-identities A,B` | none | Who may sign in (the ID token's `email`, else `sub`; ASCII case ignored) |
+| `--oauth-scopes S` | `openid email profile` | |
+| `--oauth-base-url URL` | `http(s)://HOST:PORT` | The server's public URL; the redirect URI to register is `<it>/warp/v1/auth/oauth/callback` |
+| `--oauth-redirect-uri URL` | from the base URL | The redirect URI, given whole |
+| `--oauth-provider-name NAME` | none | The provider's name in discovery ("Sign in with NAME") |
+| `--oauth-max-flows N` | 10000 | Sign-ins held at once |
+
 The `--mtls-*` flags have Hardcharger's option names, so test harnesses start either server
 the same way. `--flag=value` works for every flag. The first SIGTERM drains (running work finishes, new work is refused); a
 second one stops at once. On Windows, Ctrl+C and Ctrl+Break do the same (a parent stops a

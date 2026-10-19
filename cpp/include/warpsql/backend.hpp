@@ -298,6 +298,55 @@ class TokenService {
   }
 };
 
+// Browser sign-in (spec §4.3): the server's side of an OAuth 2.0 authorization code flow
+// with an identity provider, given as ServerOptions::browser_sign_in. The SDK keeps the
+// flows (ids, poll secrets, state, PKCE verifiers, nonces, expiry and bounds), serves
+// POST /warp/v1/auth/oauth/flows, the polls and the callback
+// (GET /warp/v1/auth/oauth/callback, which the provider's redirect URI must name), and
+// issues the access token; the provider knows the identity provider: its endpoints,
+// client id and secret, scopes, and how its answer maps to a principal.
+class BrowserSignInProvider {
+ public:
+  virtual ~BrowserSignInProvider() = default;
+
+  // The identity provider's name for people ("Okta"), for discovery; empty: none.
+  virtual std::string DisplayName() { return {}; }
+
+  struct Authorization {
+    std::string state;           // the request's `state`, as is
+    std::string code_challenge;  // PKCE (RFC 7636), method S256
+    std::string nonce;           // OpenID Connect's `nonce`
+  };
+  // The URL a person opens to sign in: the identity provider's authorization endpoint
+  // with response_type=code, the client id, the redirect URI (the server's callback), the
+  // scopes, and these, code_challenge_method=S256 included. Called on an I/O thread: no
+  // network calls.
+  virtual std::string AuthorizeUrl(const Authorization& authorization) = 0;
+
+  struct Callback {
+    std::string code;           // the authorization code the identity provider sent back
+    std::string code_verifier;  // PKCE: send it with the code
+    std::string nonce;          // the flow's: the ID token must carry it
+  };
+  // Exchanges the code at the identity provider's token endpoint, verifies the answer and
+  // returns the principal it signs in. Runs on an engine thread and may block on the
+  // network. Throws Error(kInvalidCredentials) when the answer does not verify or names
+  // no principal allowed to sign in (the poll's error code invalid_credentials, with the
+  // detail); any other exception fails the flow as identity_provider_error, with its
+  // message as the detail. The SDK sets auth_method "oauth_browser" and never binds the
+  // token to a certificate.
+  virtual Principal CompleteSignIn(const Callback& callback) = 0;
+
+  // A prefix for every `state`, for a proxy on another origin that receives the identity
+  // provider's redirects for several servers and routes each by its state's prefix.
+  // Empty: none.
+  virtual std::string StatePrefix() { return {}; }
+  // The server's public origin ("https://db.example.com"), when the callback may reach it
+  // through such a proxy: the redirect to a flow's return_to (spec §4.3.3) is then an
+  // absolute URL on it. Empty: a relative redirect.
+  virtual std::string PublicOrigin() { return {}; }
+};
+
 // Turns credentials into a principal (spec §4.1).
 class Authenticator {
  public:

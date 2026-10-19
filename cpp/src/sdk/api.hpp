@@ -7,6 +7,7 @@
 #include <mutex>
 
 #include "auth.hpp"
+#include "browser_sign_in.hpp"
 #include "common.hpp"
 #include "http.hpp"
 #include "ipc.hpp"
@@ -47,6 +48,8 @@ struct ServerState {
   RetainedQuota quota;
   std::atomic<bool> draining = false;
   SecurityEventLimiter security_events{};
+  // Browser sign-in's flows (spec §4.3), when options.browser_sign_in is set.
+  std::unique_ptr<BrowserFlows> browser_flows = nullptr;
 };
 
 class Api {
@@ -61,6 +64,10 @@ class Api {
   Task<Response> Discovery(Request& request);
   Task<Response> Health(Request& request);
   Task<Response> IssueToken(Request& request);
+  // Browser sign-in (spec §4.3).
+  Task<Response> CreateBrowserFlow(Request& request);
+  Task<Response> PollBrowserFlow(Request& request, const std::string& flow_id);
+  Task<Response> BrowserCallback(Request& request);
 
   Task<Response> CreateSession(Request& request);
   Task<Response> GetSession(Request& request, const std::string& session_id);

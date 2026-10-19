@@ -108,6 +108,16 @@ struct Discovery {
   bool Has(const std::string& capability) const;
 };
 
+// A browser sign-in flow (spec §4.3): open authorize_url in a browser, then poll with
+// the secret (Client::PollBrowserSignIn).
+struct BrowserSignInFlow {
+  std::string flow_id;
+  std::string poll_secret;  // collects the token: never show or log it
+  std::string authorize_url;
+  int64_t poll_interval_s = 2;
+  std::string expires_at;
+};
+
 struct Partition {
   int64_t index = 0;
   std::string location;  // empty: this server
@@ -326,6 +336,23 @@ class Client {
   // connections presenting it (every connection this client opens does). Repeated by
   // itself before the token expires, as the password grant is.
   void SignInWithClientCertificate();
+  // Browser sign-in (§4.3, servers with capability oauth_browser), in steps: a flow, whose
+  // authorize_url the person opens in a browser, then polls until it answers. A poll
+  // returns false while the sign-in is pending and true once the client holds the token;
+  // a failed sign-in throws Error with status 401 and the flow's error code
+  // (access_denied, invalid_credentials, identity_provider_error), an expired or already
+  // collected one flow_not_found. `return_to` is for clients in a browser (§4.3.3).
+  BrowserSignInFlow StartBrowserSignIn(const std::string& return_to = "");
+  bool PollBrowserSignIn(const BrowserSignInFlow& flow);
+  // The whole browser sign-in: starts a flow, hands its authorize_url to `open` (which
+  // opens a browser or shows the URL), and polls at the server's interval until the person
+  // has signed in, for at most `timeout` (Error "timeout", status 0, after it). The token is
+  // not renewed by itself: when it expires, sign in again.
+  void SignInWithBrowser(const std::function<void(const std::string& authorize_url)>& open,
+                         std::chrono::seconds timeout = std::chrono::seconds(300));
+  // The identity provider's name the server gives for browser sign-in ("Okta"), or empty
+  // (the server names none, or has no browser sign-in).
+  static std::string BrowserSignInProviderName(const Discovery& discovery);
   // Uses an access token obtained elsewhere.
   void SetAccessToken(const std::string& access_token);
   bool SignedIn() const;
@@ -340,11 +367,16 @@ class Client {
   std::shared_ptr<ClientCore> core_;
 };
 
-// GET a JSON document from any http(s) URL with these TLS settings (for helpers such as
-// a browser sign-in server that lives beside a Warp SQL server). Returns the status and
-// the parsed body (null when it isn't JSON).
+// GET a JSON document from any http(s) URL with these TLS settings (an OpenID Connect
+// discovery document, say). Returns the status and the parsed body (null when it isn't JSON).
 std::pair<int, json::value> GetJson(const std::string& url, const TlsOptions& tls,
                                     std::chrono::milliseconds timeout = std::chrono::milliseconds(10000));
+// POST an application/x-www-form-urlencoded body (an OAuth token request, say) to any
+// http(s) URL; returns the status and the parsed JSON answer (null when it isn't JSON).
+std::pair<int, json::value> PostForm(const std::string& url,
+                                     const std::vector<std::pair<std::string, std::string>>& fields,
+                                     const TlsOptions& tls,
+                                     std::chrono::milliseconds timeout = std::chrono::milliseconds(10000));
 
 // Decodes an Arrow schema embedded in JSON (spec §2.2: base64 IPC stream).
 std::shared_ptr<arrow::Schema> DecodeSchema(const std::string& base64);

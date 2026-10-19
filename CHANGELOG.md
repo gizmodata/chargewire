@@ -9,6 +9,48 @@ spec's version is the repository's version.
 
 ### Added
 
+- Browser sign-in in the protocol (spec §4.3, capability `oauth_browser`), complete: a
+  client creates a flow (`POST /warp/v1/auth/oauth/flows`, optional `return_to`) and gets
+  `flow_id`, `poll_secret`, `authorize_url`, `poll_interval_s` and `expires_at`; the identity
+  provider sends the browser to the server's callback (`GET /warp/v1/auth/oauth/callback`, the
+  redirect URI operators register); the client collects the server's own access token once by
+  polling `POST /warp/v1/auth/oauth/flows/{flow_id}` with `{"poll_secret"}` in the body
+  (`pending`, `complete`, `failed` with `error.code` `access_denied`, `invalid_credentials` or
+  `identity_provider_error`; then `404 flow_not_found`, which a wrong secret also gets). The
+  poll secret is never in a URL. Clients in a browser pass a `return_to` path on the server's
+  own origin and are sent back to it with the flow id in the URL fragment
+  (`#warp_oauth_flow=…`); anything else (absolute URLs, `//host`, backslashes, fragments,
+  whitespace, non-ASCII) is `400 invalid_return_to`. The server uses `state`, PKCE (S256) and
+  an OpenID Connect `nonce` with the provider; flows are bounded (`429 rate_limited` with
+  `Retry-After`), expire and are single-use; every answer is `Cache-Control: no-store`, and the
+  callback page runs no script (CSP `default-src 'none'`), sends no Referer and can't be framed.
+  Discovery describes it in `auth.oauth_browser` (`{"provider": "<name>"}`), and §9.7 lists the
+  security rules, phishing by a forwarded authorize URL included. New error codes
+  `flow_not_found` (404) and `invalid_return_to` (400). It replaces a separate sign-in port.
+- SDK: `BrowserSignInProvider` (`ServerOptions::browser_sign_in`): a server supplies the
+  identity provider's authorize URL and the code exchange; the SDK keeps the flows (ids,
+  poll secrets as digests compared in constant time, state, PKCE verifiers, nonces, expiry,
+  bounds in all and per client address: `max_browser_sign_ins`,
+  `max_browser_sign_ins_per_address`, `browser_sign_in_lifetime`), serves the endpoints and
+  the callback, applies identity match (§4.4) when the token is collected, and issues the
+  token (`auth_method` `oauth_browser`, never certificate-bound). `StatePrefix()` and
+  `PublicOrigin()` let a proxy on another origin route the provider's redirects to the server.
+- Client library: `Client::StartBrowserSignIn`, `PollBrowserSignIn`, `SignInWithBrowser` and
+  `BrowserSignInProviderName`; `PostForm` beside `GetJson`.
+- `warp-duckdb`: browser sign-in with an OpenID Connect provider (`--oauth-issuer`,
+  `--oauth-client-id`, `--oauth-identities`, `--oauth-scopes`, `--oauth-base-url`,
+  `--oauth-redirect-uri`, `--oauth-provider-name`, `--oauth-max-flows`; the client secret from
+  `WARP_DUCKDB_OAUTH_CLIENT_SECRET`).
+- Conformance: `test_oauth_browser.py` (marker `oauth`; 34 tests) against a mock OpenID
+  Connect provider (`idp.py`) that checks PKCE, redirect URIs and single-use codes: discovery,
+  a whole flow and its token, the authorize URL (state, PKCE, nonce, no secret), the poll
+  secret required (wrong, missing, in the URL or a header), single-use flows and callbacks,
+  unknown states, callback headers and escaping, refusals at the provider, unauthorized users,
+  a foreign nonce, `return_to` redirects (fragment only, on failure too) and 17 rejected
+  `return_to` values, the bound on pending flows, and `not_implemented` without the
+  capability. The server flags are a template (`WARP_SQL_TEST_SERVER_OAUTH_ARGS`). With the
+  secret check removed the secret test fails, and with `return_to` unchecked 17 tests fail.
+
 - The SDK's view of its sessions, for an engine's own SQL (Hardcharger's
   `hardcharger_active_connections()`, `hardcharger_cancel()`, `KILL SESSION`):
   `Server::Sessions()` describes each session as the transport sees it (the latest

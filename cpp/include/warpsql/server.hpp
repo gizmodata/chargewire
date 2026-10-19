@@ -139,6 +139,17 @@ struct ServerOptions {
 
   std::vector<std::string> cors_allowed_origins;  // empty: no cross-origin access
 
+  // Browser sign-in (spec §4.3, capability oauth_browser); null: not offered.
+  std::shared_ptr<BrowserSignInProvider> browser_sign_in;
+  // A flow is forgotten this long after it was created, finished or not.
+  std::chrono::seconds browser_sign_in_lifetime{600};
+  // Flows held at once (pending, or finished and not yet collected): in all, and per
+  // client address (0: no per-address bound). Beyond either, rate_limited. Behind a proxy
+  // that hides client addresses, every client shares one address.
+  std::size_t max_browser_sign_ins = 10000;
+  std::size_t max_browser_sign_ins_per_address = 100;
+  std::chrono::seconds browser_sign_in_poll_interval{2};
+
   // Told about every SecurityEvent (log it, audit it). Called on an I/O thread: keep it short.
   std::function<void(const SecurityEvent&)> on_security_event;
 

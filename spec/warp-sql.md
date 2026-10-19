@@ -130,12 +130,15 @@ These endpoints need no authentication.
   "capabilities": ["prepared_statements", "transactions", "ingest", "result_retention",
                    "long_poll", "ipc_compression_zstd", "ipc_compression_lz4_frame",
                    "result_partitions", "partitioned_ingest", "oauth_browser"],
-  "auth": {"grant_types": ["password", "token_exchange"]}
+  "auth": {"grant_types": ["password", "token_exchange"],
+           "oauth_browser": {"provider": "Okta"}}
 }
 ```
 
 `capabilities` lists the optional features (§10) the server supports. A client MUST
-NOT use an optional feature the server does not list.
+NOT use an optional feature the server does not list. `auth.grant_types` lists the grants of
+`POST /warp/v1/auth/token` (§4.1); `auth.oauth_browser` describes browser sign-in (§4.3)
+when the server offers it.
 
 ### 3.2 `GET /warp/v1/health`
 
@@ -169,7 +172,6 @@ Grant types:
 - `token_exchange`: `subject_token`, a token from an identity provider the server
   trusts (for example an OpenID Connect ID token). The server validates it and
   issues its own access token.
-- `oauth_browser` (optional capability): see §4.3.
 - `client_certificate` (optional capability `mtls_identity`): no fields. The verified
   client certificate of the TLS connection the request arrives on is the credential;
   see §4.4.
@@ -213,18 +215,179 @@ reason (§5.6).
 
 ### 4.3 Browser sign-in (optional capability `oauth_browser`)
 
-For clients that cannot handle a redirect themselves (command-line tools, desktop
-drivers):
+A person signs in with the server's identity provider (OpenID Connect or any OAuth 2.0
+authorization server) in a web browser, and the client receives an access token of the
+server's own, as from §4.1. The server is the identity provider's client: its client id,
+client secret, scopes and endpoints are server configuration that clients never see. The
+client needs no redirect handling of its own, so command-line tools, desktop drivers and
+web pages all use the same flow:
 
-1. `POST /warp/v1/auth/oauth/flows` returns `{"flow_id", "authorize_url",
-   "poll_interval_s", "expires_at"}`.
-2. The client opens `authorize_url` in a browser; the user signs in with the
-   identity provider.
-3. The client polls `GET /warp/v1/auth/oauth/flows/{flow_id}`, which returns
-   `{"state": "pending"}`, then `{"state": "complete", "access_token", "token_type",
-   "expires_in"}` once, or `{"state": "failed", "error"}`.
+1. The client creates a **flow** and receives its id, a **poll secret** and the URL where
+   the person signs in.
+2. The person opens that URL in a browser and signs in with the identity provider, which
+   sends the browser back to the server's **callback**. The server completes the sign-in
+   with the identity provider there.
+3. The client polls the flow with the poll secret, and receives the access token once.
 
-A completed flow's token is returned exactly once; later polls get `404`.
+**Discovery.** A server that offers browser sign-in lists `oauth_browser` in
+`capabilities` and describes it in `auth.oauth_browser` (§3.1):
+
+```json
+"auth": {"grant_types": ["password", "token_exchange"],
+         "oauth_browser": {"provider": "Okta"}}
+```
+
+`provider` (optional) is the identity provider's name for people to read ("Sign in with
+Okta"); a client without one says "single sign-on". A server without the capability
+answers the endpoints below with `501` and code `not_implemented`.
+
+#### 4.3.1 `POST /warp/v1/auth/oauth/flows`
+
+Needs no authentication. The body is optional: no body, `{}`, or
+
+```json
+{"return_to": "/ui/"}
+```
+
+`return_to` is for clients in a browser (§4.3.3). The answer is `201`, with `Location`
+naming the flow:
+
+```json
+{
+  "flow_id": "f_q3Xv…",
+  "poll_secret": "Wb1n…",
+  "authorize_url": "https://idp.example.com/authorize?response_type=code&client_id=…",
+  "poll_interval_s": 2,
+  "expires_at": "2026-10-19T21:14:05Z"
+}
+```
+
+- `flow_id` is an identifier (§2.3). `poll_secret` is at least 128 bits of randomness, in
+  the same alphabet. The poll secret appears in this answer only: it MUST NOT be part of
+  `authorize_url`, the callback, any redirect, the flow's `Location`, or the server's logs.
+  Whoever sees the authorize URL or the flow id (browser history, a shared screen, a proxy's
+  log) therefore cannot collect the token.
+- `authorize_url` is the identity provider's authorization endpoint with the server's
+  request (§4.3.4). The client opens it in a browser, or shows it for the person to open.
+- The flow is forgotten at `expires_at`, finished or not. Servers SHOULD give flows a
+  lifetime of 5 to 15 minutes.
+- The answer carries `Cache-Control: no-store`.
+
+Anyone can create a flow, so a server MUST bound the flows it holds: at most a
+configured number pending at once in all, and SHOULD also bound them per client address.
+Beyond either limit it answers `429` with code `rate_limited` and `Retry-After`. A
+`return_to` that §4.3.3 does not allow gets `400` with code `invalid_return_to`.
+
+#### 4.3.2 Polling: `POST /warp/v1/auth/oauth/flows/{flow_id}`
+
+The poll secret travels in the JSON body, never in the URL or a header:
+
+```http
+POST /warp/v1/auth/oauth/flows/f_q3Xv…
+Content-Type: application/json
+
+{"poll_secret": "Wb1n…"}
+```
+
+The answer is `200` with `Cache-Control: no-store` and one of:
+
+| `state` | Body | Then |
+|---|---|---|
+| `pending` | `{"state": "pending"}` | Poll again after `poll_interval_s` |
+| `complete` | `{"state": "complete", "access_token", "token_type", "expires_in"}`, as §4.1 | The flow is gone |
+| `failed` | `{"state": "failed", "error": {"code", "detail"}}` | The flow is gone |
+
+A completed flow's token is returned exactly once, and a failed flow's error once: from
+then on, and after `expires_at`, the flow is `404` with code `flow_not_found`. A wrong
+poll secret gets the same `404 flow_not_found` as a flow that does not exist, so ids
+cannot be probed; a body without a `poll_secret` string is `400 bad_request`. `GET` and
+other methods are `405`. The server MUST compare poll secrets in constant time (or
+compare digests of them). Clients SHOULD poll no more often than `poll_interval_s`.
+
+The `error.code` of a failed flow:
+
+| `code` | When |
+|---|---|
+| `access_denied` | The person or the identity provider refused the sign-in (the provider's `error`) |
+| `invalid_credentials` | The identity provider's answer did not verify, or names no principal allowed to sign in (as §4.1: the detail MAY say who signed in, never why a credential was wrong) |
+| `identity_provider_error` | The server could not complete the sign-in with the identity provider (unreachable, refused the code) |
+
+A server that requires identity match (§4.4) applies it when the token is collected: a
+poll on a connection whose client certificate maps to another identity gets `401` with
+code `certificate_identity_mismatch`, and the flow stays complete for the right client.
+The token is not bound to a certificate (§4.4); a server MAY also refuse to complete a
+browser sign-in for a principal that may sign in only with its certificate.
+
+#### 4.3.3 Clients in a browser: `return_to`
+
+A web page (a server's own web UI, say) creates the flow with `return_to`, keeps
+`flow_id` and `poll_secret` in memory or `sessionStorage`, and sends the browser to
+`authorize_url`. After the callback, the server sends the browser to `return_to` with the
+flow id in the URL's **fragment**:
+
+```http
+HTTP/1.1 303 See Other
+Location: /ui/#warp_oauth_flow=f_q3Xv…
+```
+
+The page reads the fragment, removes it from the address bar, polls the flow once with the
+poll secret it kept and so receives the token, without the token ever being in a URL. The
+server redirects to `return_to` whether the sign-in succeeded or failed; the poll says
+which. A page that finds no poll secret for the flow named in its fragment did not start it
+and MUST ignore it.
+
+`return_to` MUST be a path on the server's own origin. A server MUST refuse
+(`invalid_return_to`), and never redirect to, a `return_to` that is not a string of at most
+2048 characters that:
+
+- starts with `/` and not with `//`;
+- contains no `\`, no `#`, no whitespace or control character and no character outside
+  printable ASCII (`%`-encode the rest), so no browser can read it as another host;
+- is not an absolute URL (no `scheme:` before the first `/`).
+
+A server MAY restrict it further (to its web UI's paths, say). It MAY send the redirect as
+an absolute URL on its configured public origin (for example when the identity provider's
+redirect reaches it through a proxy on another origin). Without `return_to`, the callback
+answers with a page saying that the sign-in is done and the tab can be closed, or why it
+failed.
+
+#### 4.3.4 The callback and the identity provider
+
+The callback is where the identity provider sends the browser: an endpoint of the server
+under its base path, `GET /warp/v1/auth/oauth/callback` unless the server documents
+another. Clients never call it; it appears to them only as the `redirect_uri` inside
+`authorize_url`. Operators register the callback's public URL with the identity provider
+as the client's redirect URI.
+
+The server's request to the identity provider MUST use the authorization code flow
+([RFC 6749](https://www.rfc-editor.org/rfc/rfc6749) §4.1) with:
+
+- `state`: a value of at least 128 bits of randomness per flow, which is neither the flow
+  id nor the poll secret; the callback finds its flow by `state` only;
+- PKCE ([RFC 7636](https://www.rfc-editor.org/rfc/rfc7636)) with `code_challenge_method=S256`:
+  the server keeps the verifier and sends it with the code;
+- for OpenID Connect, a `nonce` per flow, which the server checks in the ID token.
+
+The callback for a `state` it does not know, or for a flow that is no longer pending (a
+second callback, an expired flow), changes nothing. A callback that the identity provider
+answered with `error` fails the flow (`access_denied`). Otherwise the server exchanges the
+code at the identity provider's token endpoint, verifies what it receives (for an ID token:
+issuer, audience, expiry, nonce, and its signature unless it came straight from the token
+endpoint over verified TLS), maps it to a principal under the same rules as its
+`token_exchange` grant, and completes the flow, or fails it.
+
+Every callback answer carries `Cache-Control: no-store`, `Referrer-Policy: no-referrer`
+and `X-Frame-Options: DENY`. A page it serves carries a Content-Security-Policy that allows
+no script (`default-src 'none'`, plus at most inline styles), escapes everything it shows
+(the provider's error text is attacker-chosen), and has no links or resources that would
+carry the callback's URL, which holds the code, elsewhere.
+
+**Phishing.** Anyone can create a flow and send its `authorize_url` to someone else; if
+that person signs in, the flow's creator collects their token. This is inherent to sign-in
+by polling (as for [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628) §5.4). Clients SHOULD
+open the URL themselves rather than ask the person to copy one, servers SHOULD keep flows
+short-lived and SHOULD say on the completion page which server was signed in to and as whom,
+and people should complete only sign-ins they started.
 
 ### 4.4 Client certificate sign-in (optional capability `mtls_identity`)
 
@@ -960,7 +1123,26 @@ same rules, so a client can't read around them.
   presents another user's certificate, when a deployment wants the certificate to be a
   second factor rather than an alternative.
 
-### 9.7 Error messages
+### 9.7 Browser sign-in
+
+- **Flows are short-lived, bounded and single-use** (§4.3): each expires (5 to 15
+  minutes), the server holds a bounded number (in all, and SHOULD per client address), a
+  token is handed out once and a callback completes a flow once.
+- **Two secrets, kept apart.** The poll secret collects the token and travels only in the
+  creation answer and the poll body; the `state` sent to the identity provider finds the
+  flow at the callback. Neither is the flow id, and the poll secret is never in a URL or a
+  log. Servers compare poll secrets in constant time.
+- **No token in a URL.** Tokens are only in poll answers; `return_to` gets the flow id in
+  the fragment, which browsers do not send to servers or in `Referer`.
+- **No open redirect.** The callback redirects only to a `return_to` that §4.3.3 allows.
+- **PKCE and nonce** (§4.3.4) keep an authorization code that leaks from the callback's
+  URL useless to anyone else, and an ID token from being replayed into another flow.
+- **Responses are not stored.** Flow creation, polls and the callback carry
+  `Cache-Control: no-store`; the callback page runs no script and loads nothing.
+- **Phishing** (§4.3.4): a person who completes a sign-in someone else started gives that
+  person their token; flows should be opened by the client that created them.
+
+### 9.8 Error messages
 
 Errors SHOULD help the user fix the problem without revealing what they may not see:
 a denied query names the privilege missing on objects the user named, not the
@@ -1029,6 +1211,7 @@ modes meet (§8.1) and which clients map to "already exists" and "not found".
 |---|---|---|
 | `bad_request` | 400 | Malformed request |
 | `unknown_option`, `invalid_option_value` | 400 | A session option the server doesn't have, or a bad value (§5.3) |
+| `invalid_return_to` | 400 | A browser sign-in's `return_to` that is not a path on the server's own origin (§4.3.3) |
 | `sql_error` | 400 | The engine rejected the SQL (syntax, binding, missing object) |
 | `invalid_credentials` | 401 | §4.1 |
 | `invalid_token` | 401 | §4.2 |
@@ -1040,6 +1223,7 @@ modes meet (§8.1) and which clients map to "already exists" and "not found".
 | `permission_denied` | 403 | The principal lacks a privilege |
 | `read_only` | 403 | The server or session is read-only |
 | `session_not_found`, `statement_not_found`, `prepared_not_found`, `ingest_not_found` | 404 | No such handle, or not the caller's |
+| `flow_not_found` | 404 | No such browser sign-in flow, a wrong poll secret, or one already collected or expired (§4.3.2) |
 | `not_found` | 404 | No such endpoint |
 | `method_not_allowed` | 405 | The endpoint exists but not for this method |
 | `result_not_ready` | 409 | The statement has no result schema yet (§6.4) |
@@ -1056,7 +1240,8 @@ modes meet (§8.1) and which clients map to "already exists" and "not found".
 | `statement_timeout`, `statement_cancelled` | — | Errors inside a statement document (§6.2, §6.9) |
 | `execution_error` | 500 | The statement failed while running |
 | `server_draining` | 503 | The server is shutting down; with `Retry-After` |
-| `not_implemented` | 501 | The server does not implement this operation |
+| `not_implemented` | 501 | The server does not implement this operation (browser sign-in on a server without `oauth_browser`, §4.3) |
+| `access_denied`, `identity_provider_error` | — | A failed browser sign-in's `error.code`, in the poll answer (§4.3.2) |
 
 ### 11.1 Graceful shutdown
 

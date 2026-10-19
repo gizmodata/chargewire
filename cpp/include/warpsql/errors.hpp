@@ -50,6 +50,9 @@ enum class ErrorCode {
   kCertificateMismatch,
   kCertificateIdentityMismatch,
   kUnsupportedGrantType,
+  // Browser sign-in (spec §4.3).
+  kFlowNotFound,
+  kInvalidReturnTo,
 };
 
 // Why a session ended (spec §5.6) or a token stopped standing (spec §4.2): the `reason`

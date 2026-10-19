@@ -76,6 +76,12 @@ class Server::Impl {
     if (!state_.tokens) {
       state_.tokens = state_.in_memory_tokens;
     }
+    if (state_.options.browser_sign_in) {
+      state_.browser_flows = std::make_unique<BrowserFlows>(
+          BrowserFlows::Limits{.lifetime = state_.options.browser_sign_in_lifetime,
+                               .max_flows = state_.options.max_browser_sign_ins,
+                               .max_per_address = state_.options.max_browser_sign_ins_per_address});
+    }
   }
 
   // Stops (or waits for the stop already under way, e.g. a drain's), then joins the drain's

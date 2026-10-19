@@ -326,6 +326,18 @@ Task<Response> Api::Route(Request& request) {
     if (method != http::verb::post) throw wrong_method();
     co_return co_await IssueToken(request);
   }
+  if (rest.size() >= 3 && rest[0] == "auth" && rest[1] == "oauth") {  // browser sign-in (spec §4.3)
+    if (rest[2] == "flows" && rest.size() <= 4) {
+      if (method != http::verb::post) throw wrong_method();
+      if (rest.size() == 3) co_return co_await CreateBrowserFlow(request);
+      co_return co_await PollBrowserFlow(request, std::string(rest[3]));
+    }
+    if (rest[2] == "callback" && rest.size() == 3) {
+      if (method != http::verb::get) throw wrong_method();
+      co_return co_await BrowserCallback(request);
+    }
+    throw Error(ErrorCode::kNotFound, "no such endpoint");
+  }
   if (rest[0] != "sessions") {
     throw Error(ErrorCode::kNotFound, "no such endpoint");
   }
@@ -453,13 +465,20 @@ Task<Response> Api::Discovery(Request&) {
   if (OffersCertificateSignIn()) {
     capabilities.emplace_back("mtls_identity");
   }
+  json::object auth{{"grant_types", std::move(grants)}};
+  if (const auto& provider = state_.options.browser_sign_in) {
+    capabilities.emplace_back("oauth_browser");
+    json::object browser;
+    if (std::string name = provider->DisplayName(); !name.empty()) browser["provider"] = std::move(name);
+    auth["oauth_browser"] = std::move(browser);
+  }
   json::object doc{
       {"protocol", "warp-sql"},
       {"protocol_versions", json::array{"1"}},
       {"draft", "0.1.0"},
       {"server", {{"name", identity.name}, {"version", identity.version}}},
       {"capabilities", std::move(capabilities)},
-      {"auth", {{"grant_types", std::move(grants)}}},
+      {"auth", std::move(auth)},
   };
   co_return JsonResponse(http::status::ok, doc);
 }
@@ -586,6 +605,232 @@ Task<Response> Api::IssueToken(Request& request) {
                          json::object{{"access_token", issued.token},
                                       {"token_type", "Bearer"},
                                       {"expires_in", issued.expires_in.count()}});
+}
+
+// ---- Browser sign-in (spec §4.3) ----
+
+namespace {
+
+// The address of "address:port" or "[v6]:port", for the per-address bound on flows.
+std::string AddressOf(std::string_view peer) {
+  if (peer.starts_with('[')) {
+    const auto end = peer.find(']');
+    return std::string(peer.substr(0, end == std::string_view::npos ? peer.size() : end + 1));
+  }
+  const auto colon = peer.rfind(':');
+  return std::string(colon == std::string_view::npos ? peer : peer.substr(0, colon));
+}
+
+std::string EscapeHtml(std::string_view text) {
+  std::string out;
+  for (const char c : text) {
+    switch (c) {
+      case '&': out += "&amp;"; break;
+      case '<': out += "&lt;"; break;
+      case '>': out += "&gt;"; break;
+      case '"': out += "&quot;"; break;
+      case '\'': out += "&#39;"; break;
+      default: out += c;
+    }
+  }
+  return out;
+}
+
+// What every callback answer carries (spec §4.3.4): nothing stored, no Referer with the
+// code, never framed, and for a page, no script and nothing loaded.
+void CallbackHeaders(Response& response) {
+  response.headers.emplace_back("X-Content-Type-Options", "nosniff");
+  response.headers.emplace_back("Cache-Control", "no-store");
+  response.headers.emplace_back("Referrer-Policy", "no-referrer");
+  response.headers.emplace_back("X-Frame-Options", "DENY");
+  response.headers.emplace_back(
+      "Content-Security-Policy",
+      "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
+}
+
+// The page a browser lands on when the flow has no return_to, or the callback can't be
+// tied to a flow. Everything shown is escaped: the provider's error text is the visitor's.
+Response CallbackPage(http::status status, std::string_view title, std::string_view message) {
+  Response response;
+  response.status = status;
+  response.content_type = "text/html; charset=utf-8";
+  response.body = std::format(
+      "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+      "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{0}</title>"
+      "<style>body{{font-family:system-ui,sans-serif;display:flex;justify-content:center;margin:15vh 16px 0;"
+      "color:#222;background:#fff}}main{{max-width:34em;text-align:center}}"
+      "@media (prefers-color-scheme:dark){{body{{color:#eee;background:#111}}}}</style></head>"
+      "<body><main><h1>{0}</h1><p>{1}</p></main></body></html>",
+      EscapeHtml(title), EscapeHtml(message));
+  CallbackHeaders(response);
+  return response;
+}
+
+// A failed sign-in's detail, kept to a readable size.
+std::string Detail(std::string text) {
+  if (text.size() > 1000) text = text.substr(0, 1000) + "...";
+  return text;
+}
+
+}  // namespace
+
+Task<Response> Api::CreateBrowserFlow(Request& request) {
+  const auto& provider = state_.options.browser_sign_in;
+  if (!provider || !state_.browser_flows) {
+    throw Error(ErrorCode::kNotImplemented, "browser sign-in is not configured on this server");
+  }
+  const json::object body = ParseObject(request.body);
+  const std::optional<std::string> given = OptionalString(body, "return_to");
+  if (given && !ValidReturnTo(*given)) {  // "" included: present means a path
+    throw Error(ErrorCode::kInvalidReturnTo,
+                "return_to must be a path on this server (\"/...\"), not a URL, with no '//' at its start, "
+                "no backslash, fragment, whitespace or non-ASCII character");
+  }
+  const std::string return_to = given.value_or("");
+  BrowserFlows::Created created;
+  try {
+    created = state_.browser_flows->Create(AddressOf(request.peer), return_to, provider->StatePrefix());
+  } catch (const Error& e) {
+    if (e.code() != ErrorCode::kRateLimited) throw;
+    Response busy = ProblemResponse(e, request.request_id);
+    busy.headers.emplace_back("Retry-After", "5");
+    co_return busy;
+  }
+  const std::string authorize_url = provider->AuthorizeUrl(
+      {.state = created.state, .code_challenge = created.code_challenge, .nonce = created.nonce});
+  Response response = JsonResponse(
+      http::status::created,
+      json::object{{"flow_id", created.flow_id},
+                   {"poll_secret", created.poll_secret},
+                   {"authorize_url", authorize_url},
+                   {"poll_interval_s", state_.options.browser_sign_in_poll_interval.count()},
+                   {"expires_at", Rfc3339(created.expires_at)}});
+  response.headers.emplace_back("Location", "/warp/v1/auth/oauth/flows/" + created.flow_id);
+  co_return response;
+}
+
+Task<Response> Api::PollBrowserFlow(Request& request, const std::string& flow_id) {
+  if (!state_.browser_flows) {
+    throw Error(ErrorCode::kNotImplemented, "browser sign-in is not configured on this server");
+  }
+  const json::object body = ParseObject(request.body);
+  const std::string poll_secret = RequiredString(body, "poll_secret");
+  // Identity match (spec §4.4) applies when the token is collected: a connection whose
+  // client certificate maps to another identity doesn't get it, and the flow stays.
+  std::function<void(const Principal&)> accept;
+  const auto& tls = state_.options.tls;
+  if (request.client_certificate && tls && tls->require_identity_match) {
+    const std::string must_be = CertificateIdentity(*request.client_certificate, tls->client_identity_source);
+    accept = [must_be, &request](const Principal& principal) {
+      request.attempted_identity = principal.name;
+      if (!SameIdentityName(must_be, principal.name)) {
+        throw Error(ErrorCode::kCertificateIdentityMismatch,
+                    std::format("this connection's client certificate is for '{}', not '{}'", must_be,
+                                principal.name));
+      }
+    };
+  }
+  auto poll = state_.browser_flows->Collect(flow_id, poll_secret, accept);
+  switch (poll.state) {
+    case BrowserFlows::Poll::State::kPending:
+      co_return JsonResponse(http::status::ok, json::object{{"state", "pending"}});
+    case BrowserFlows::Poll::State::kFailed:
+      co_return JsonResponse(
+          http::status::ok,
+          json::object{{"state", "failed"},
+                       {"error", json::object{{"code", poll.error_code}, {"detail", poll.error_detail}}}});
+    case BrowserFlows::Poll::State::kComplete:
+      break;
+  }
+  Principal principal = std::move(poll.principal);
+  principal.auth_method = "oauth_browser";
+  principal.certificate_thumbprint.clear();  // never bound (spec §4.3.2)
+  const auto issued = state_.tokens->Issue(principal);
+  co_return JsonResponse(http::status::ok, json::object{{"state", "complete"},
+                                                        {"access_token", issued.token},
+                                                        {"token_type", "Bearer"},
+                                                        {"expires_in", issued.expires_in.count()}});
+}
+
+Task<Response> Api::BrowserCallback(Request& request) {
+  const auto provider = state_.options.browser_sign_in;
+  if (!provider || !state_.browser_flows) {
+    throw Error(ErrorCode::kNotImplemented, "browser sign-in is not configured on this server");
+  }
+  auto param = [&](const char* name) -> std::optional<std::string> {
+    auto it = request.query.find(name);
+    return it == request.query.end() ? std::nullopt : std::optional<std::string>(it->second);
+  };
+  BrowserFlows::Exchange exchange;
+  switch (state_.browser_flows->BeginCallback(param("state").value_or(""), &exchange)) {
+    case BrowserFlows::CallbackOutcome::kUnknown:
+      co_return CallbackPage(http::status::bad_request, "Sign-in expired",
+                             "This sign-in is unknown or has expired. Start again from your application.");
+    case BrowserFlows::CallbackOutcome::kNotPending:
+      co_return CallbackPage(http::status::conflict, "Sign-in already finished",
+                             "This sign-in has already been completed. Return to your application.");
+    case BrowserFlows::CallbackOutcome::kStarted:
+      break;
+  }
+
+  std::optional<std::pair<std::string, std::string>> failure;  // code, detail
+  std::string signed_in_as;
+  if (auto error = param("error")) {
+    const std::string description = param("error_description").value_or("");
+    failure.emplace("access_denied", Detail(description.empty() ? *error : *error + ": " + description));
+  } else if (auto code = param("code"); !code || code->empty()) {
+    failure.emplace("identity_provider_error", "the identity provider's redirect carried no authorization code");
+  } else {
+    BrowserSignInProvider::Callback callback{
+        .code = *code, .code_verifier = exchange.code_verifier, .nonce = exchange.nonce};
+    std::optional<Principal> principal;
+    std::optional<std::pair<std::string, std::string>> refused;
+    co_await net::co_spawn(
+        state_.engine_pool,
+        [provider, callback, &principal, &refused]() -> Task<void> {
+          try {
+            principal = provider->CompleteSignIn(callback);
+          } catch (const Error& e) {
+            refused.emplace(e.code() == ErrorCode::kInvalidCredentials ? "invalid_credentials"
+                                                                       : "identity_provider_error",
+                            Detail(e.what()));
+          } catch (const std::exception& e) {
+            refused.emplace("identity_provider_error", Detail(e.what()));
+          }
+          co_return;
+        },
+        net::use_awaitable);
+    if (refused) {
+      failure = std::move(refused);
+    } else if (!principal || principal->name.empty()) {
+      failure.emplace("invalid_credentials", "the identity provider's answer names no user");
+    } else {
+      signed_in_as = principal->name;
+      state_.browser_flows->Complete(exchange.flow_id, std::move(*principal));
+    }
+  }
+  if (failure) state_.browser_flows->Fail(exchange.flow_id, failure->first, failure->second);
+
+  if (!exchange.return_to.empty()) {
+    // The page that started the flow collects the outcome with its poll secret (spec
+    // §4.3.3); the URL carries only the flow id, in the fragment.
+    Response response;
+    response.status = http::status::see_other;
+    response.headers.emplace_back("Location", provider->PublicOrigin() + exchange.return_to + "#" +
+                                                  std::string(kReturnFragmentKey) + "=" + exchange.flow_id);
+    CallbackHeaders(response);
+    co_return response;
+  }
+  if (failure) {
+    co_return CallbackPage(http::status::ok, "Sign-in failed",
+                           failure->second + ". Close this tab and try again.");
+  }
+  const std::string server = state_.backend->Identity().name;
+  co_return CallbackPage(http::status::ok, "Signed in",
+                         std::format("You are signed in to {} as {}. You can close this tab and return to "
+                                     "your application. If you did not start this sign-in, tell your "
+                                     "administrator.",
+                                     server.empty() ? "the server" : server, signed_in_as));
 }
 
 void Api::ReportSecurityEvent(const Request& request, const Error& error) const {

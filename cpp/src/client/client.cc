@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <format>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
@@ -1519,6 +1520,83 @@ void Client::SignInWithClientCertificate() {
   core_->renew_grant = std::move(grant);
 }
 
+BrowserSignInFlow Client::StartBrowserSignIn(const std::string& return_to) {
+  auto request = core_->Request(http::verb::post, core_->V1("/auth/oauth/flows"), false);
+  json::object body;
+  if (!return_to.empty()) body["return_to"] = return_to;
+  ClientCore::SetJson(request, body);
+  std::lock_guard lock(core_->auth_mutex);
+  if (!core_->auth_transport) core_->auth_transport = core_->NewTransport();
+  Reply reply = core_->auth_transport->Exchange(std::move(request));
+  if (reply.status != 201) throw ProblemOf(reply);
+  auto object = ParseObject(reply.body);
+  BrowserSignInFlow flow;
+  if (object) {
+    flow.flow_id = String(*object, "flow_id");
+    flow.poll_secret = String(*object, "poll_secret");
+    flow.authorize_url = String(*object, "authorize_url");
+    flow.poll_interval_s = std::max<int64_t>(1, Integer(*object, "poll_interval_s").value_or(2));
+    flow.expires_at = String(*object, "expires_at");
+  }
+  if (flow.flow_id.empty() || flow.poll_secret.empty() || flow.authorize_url.empty()) {
+    throw Error(reply.status, "protocol_error", "the browser sign-in answer lacks flow_id, poll_secret or authorize_url");
+  }
+  return flow;
+}
+
+bool Client::PollBrowserSignIn(const BrowserSignInFlow& flow) {
+  auto request = core_->Request(http::verb::post, core_->V1("/auth/oauth/flows/" + flow.flow_id), false);
+  ClientCore::SetJson(request, json::object{{"poll_secret", flow.poll_secret}});
+  Reply reply;
+  {
+    std::lock_guard lock(core_->auth_mutex);
+    if (!core_->auth_transport) core_->auth_transport = core_->NewTransport();
+    reply = core_->auth_transport->Exchange(std::move(request));
+  }
+  if (reply.status != 200) throw ProblemOf(reply);
+  auto object = ParseObject(reply.body);
+  const std::string state = object ? String(*object, "state") : "";
+  if (state == "pending") return false;
+  if (state == "failed") {
+    const json::object* error = nullptr;
+    if (const auto* value = object->if_contains("error"); value != nullptr && value->is_object()) {
+      error = &value->as_object();
+    }
+    throw Error(401, error ? String(*error, "code") : "invalid_credentials",
+                error ? String(*error, "detail") : "the browser sign-in failed");
+  }
+  if (state != "complete" || String(*object, "access_token").empty()) {
+    throw Error(reply.status, "protocol_error", "unexpected browser sign-in state '" + state + "'");
+  }
+  std::lock_guard token_lock(core_->token_mutex);
+  core_->token = String(*object, "access_token");
+  const int64_t lifetime = Integer(*object, "expires_in").value_or(0);
+  core_->expires_at = lifetime > 0 ? std::chrono::steady_clock::now() + std::chrono::seconds(lifetime)
+                                   : std::chrono::steady_clock::time_point{};
+  core_->renew_grant.reset();  // a browser sign-in can't repeat by itself
+  return true;
+}
+
+void Client::SignInWithBrowser(const std::function<void(const std::string&)>& open, std::chrono::seconds timeout) {
+  const BrowserSignInFlow flow = StartBrowserSignIn();
+  open(flow.authorize_url);
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (!PollBrowserSignIn(flow)) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      throw Error(0, "timeout", "the browser sign-in was not completed within " + std::to_string(timeout.count()) + " s");
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(flow.poll_interval_s));
+  }
+}
+
+std::string Client::BrowserSignInProviderName(const Discovery& discovery) {
+  const auto* auth = discovery.document.if_contains("auth");
+  if (auth == nullptr || !auth->is_object()) return {};
+  const auto* browser = auth->as_object().if_contains("oauth_browser");
+  if (browser == nullptr || !browser->is_object()) return {};
+  return String(browser->as_object(), "provider");
+}
+
 void Client::SetAccessToken(const std::string& access_token) {
   std::lock_guard lock(core_->token_mutex);
   core_->token = access_token;
@@ -1550,9 +1628,12 @@ std::unique_ptr<Session> Client::CreateSession(const json::object& options) {
   return std::make_unique<Session>(std::move(core));
 }
 
-// ---- GetJson ----
+// ---- GetJson, PostForm ----
 
-std::pair<int, json::value> GetJson(const std::string& url, const TlsOptions& tls, std::chrono::milliseconds timeout) {
+namespace {
+
+std::pair<int, json::value> ExchangeJson(http::verb method, const std::string& url, std::string form_body,
+                                         const TlsOptions& tls, std::chrono::milliseconds timeout) {
   auto parsed = boost::urls::parse_uri(url);
   if (!parsed) throw Error(0, "bad_request", "not a URL: " + url);
   const std::string scheme(parsed->scheme());
@@ -1570,15 +1651,49 @@ std::pair<int, json::value> GetJson(const std::string& url, const TlsOptions& tl
     context = detail::MakeTlsContext(options);
   }
   Transport transport(host, port, context, timeout);
-  http::request<http::string_body> request(http::verb::get, target, 11);
+  http::request<http::string_body> request(method, target, 11);
   request.set(http::field::host, std::string(parsed->encoded_authority()));
   request.set(http::field::user_agent, "warpsql-client-cpp");
   request.set(http::field::accept, "application/json");
+  if (method == http::verb::post) {
+    request.set(http::field::content_type, "application/x-www-form-urlencoded");
+    request.body() = std::move(form_body);
+    request.prepare_payload();
+  }
   Reply reply = transport.Exchange(std::move(request), nullptr, timeout);
   boost::system::error_code ec;
   json::value body = json::parse(reply.body, ec);
   if (ec) body = nullptr;
   return {reply.status, std::move(body)};
+}
+
+}  // namespace
+
+std::pair<int, json::value> GetJson(const std::string& url, const TlsOptions& tls, std::chrono::milliseconds timeout) {
+  return ExchangeJson(http::verb::get, url, {}, tls, timeout);
+}
+
+std::pair<int, json::value> PostForm(const std::string& url,
+                                     const std::vector<std::pair<std::string, std::string>>& fields,
+                                     const TlsOptions& tls, std::chrono::milliseconds timeout) {
+  // Every byte but the unreserved ones percent-encoded, so '+' never reads as a space.
+  auto encode = [](std::string_view text) {
+    std::string out;
+    for (const unsigned char c : text) {
+      if (std::isalnum(c) || c == '-' || c == '.' || c == '_' || c == '~') {
+        out.push_back(static_cast<char>(c));
+      } else {
+        out += std::format("%{:02X}", c);
+      }
+    }
+    return out;
+  };
+  std::string body;
+  for (const auto& [name, value] : fields) {
+    if (!body.empty()) body.push_back('&');
+    body += encode(name) + "=" + encode(value);
+  }
+  return ExchangeJson(http::verb::post, url, std::move(body), tls, timeout);
 }
 
 }  // namespace warpsql::client

@@ -113,6 +113,7 @@ endif()
 add_library(warpsql
   src/sdk/api.cc
   src/sdk/auth.cc
+  src/sdk/browser_sign_in.cc
   src/sdk/errors.cc
   src/sdk/http.cc
   src/sdk/ids.cc
@@ -167,8 +168,8 @@ if(WIN32)
 endif()
 
 # The reference server.
-add_executable(warp-duckdb src/duckdb/main.cc)
-target_link_libraries(warp-duckdb PRIVATE warpsql_duckdb)
+add_executable(warp-duckdb src/duckdb/main.cc src/duckdb/oidc_sign_in.cc)
+target_link_libraries(warp-duckdb PRIVATE warpsql_duckdb warpsql_client)
 set_target_properties(warp-duckdb PROPERTIES BUILD_RPATH "${WARPSQL_DUCKDB_PREFIX}/lib")
 target_compile_options(warp-duckdb PRIVATE ${WARPSQL_WARNINGS})
 
@@ -191,7 +192,7 @@ if(WARPSQL_BUILD_TESTS)
   # The SDK's own tests: the security-event limiter, session lifetime, retained results'
   # expiry, and the plain handler against a server started in the test process.
   add_executable(warpsql-sdk-tests tests/security_events_test.cc tests/sessions_test.cc
-                 tests/statements_test.cc tests/plain_handler_test.cc)
+                 tests/statements_test.cc tests/plain_handler_test.cc tests/browser_sign_in_test.cc)
   target_include_directories(warpsql-sdk-tests PRIVATE src/sdk)
-  target_link_libraries(warpsql-sdk-tests PRIVATE warpsql GTest::gtest_main)
+  target_link_libraries(warpsql-sdk-tests PRIVATE warpsql warpsql_client GTest::gtest_main)
 endif()

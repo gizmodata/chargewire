@@ -51,6 +51,8 @@ CodeInfo Info(ErrorCode code) {
     case ErrorCode::kCertificateMismatch: return {"certificate_mismatch", 401};
     case ErrorCode::kCertificateIdentityMismatch: return {"certificate_identity_mismatch", 401};
     case ErrorCode::kUnsupportedGrantType: return {"unsupported_grant_type", 400};
+    case ErrorCode::kFlowNotFound: return {"flow_not_found", 404};
+    case ErrorCode::kInvalidReturnTo: return {"invalid_return_to", 400};
   }
   return {"execution_error", 500};
 }

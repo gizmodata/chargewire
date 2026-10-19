@@ -7,6 +7,12 @@
 //       [--mtls-crl-allow-missing-ca-crls]
 //       [--cors-origin ORIGIN]... [--drain-seconds N] [--token-lifetime-seconds N]
 //       [--session-idle-timeout-seconds N] [--finished-statement-ttl-seconds N]
+//       [--oauth-issuer URL --oauth-client-id ID --oauth-identities A,B [--oauth-scopes S]
+//        [--oauth-base-url URL] [--oauth-redirect-uri URL] [--oauth-provider-name NAME] [--oauth-max-flows N]]
+//
+// --oauth-*: browser sign-in (spec §4.3) with an OpenID Connect provider; the client secret
+// comes from WARP_DUCKDB_OAUTH_CLIENT_SECRET. The identity provider's redirect URI is
+// <base url>/warp/v1/auth/oauth/callback (default base: http(s)://HOST:PORT).
 //
 // The password comes from the environment, never the command line, so it doesn't show
 // in process listings. The --mtls-* flags are named as Hardcharger's options are, so test
@@ -21,6 +27,7 @@
 #include <thread>
 
 #include "duckdb_backend.hpp"
+#include "oidc_sign_in.hpp"
 #include "warpsql/server.hpp"
 #include "warpsql/stop_signals.hpp"
 
@@ -33,6 +40,8 @@ struct Flags {
   std::vector<std::string> certificate_identities;
   bool certificate_sign_in = false;
   int drain_seconds = 30;
+  warpduckdb::OidcBrowserSignIn::Options oauth;
+  std::string oauth_base_url;
 };
 
 [[noreturn]] void Usage(const std::string& problem) {
@@ -45,7 +54,9 @@ struct Flags {
             << "       [--mtls-certificate-sign-in --mtls-admin-identities A,B]\n"
             << "       [--mtls-require-identity-match[=BOOL]] [--mtls-crl-allow-missing-ca-crls]\n"
             << "       [--cors-origin ORIGIN]... [--drain-seconds N] [--token-lifetime-seconds N]\n"
-            << "       [--session-idle-timeout-seconds N] [--finished-statement-ttl-seconds N]\n";
+            << "       [--session-idle-timeout-seconds N] [--finished-statement-ttl-seconds N]\n"
+            << "       [--oauth-issuer URL --oauth-client-id ID --oauth-identities A,B [--oauth-scopes S]\n"
+            << "        [--oauth-base-url URL] [--oauth-redirect-uri URL] [--oauth-provider-name NAME] [--oauth-max-flows N]]\n";
   std::exit(2);
 }
 
@@ -106,6 +117,19 @@ Flags ParseFlags(int argc, char** argv) {
       flags.server.session_idle_timeout = std::chrono::seconds(std::stoi(value()));
     else if (flag == "--finished-statement-ttl-seconds")
       flags.server.finished_statement_ttl = std::chrono::seconds(std::stoi(value()));
+    else if (flag == "--oauth-issuer") flags.oauth.issuer = value();
+    else if (flag == "--oauth-client-id") flags.oauth.client_id = value();
+    else if (flag == "--oauth-scopes") flags.oauth.scopes = value();
+    else if (flag == "--oauth-base-url") flags.oauth_base_url = value();
+    else if (flag == "--oauth-redirect-uri") flags.oauth.redirect_uri = value();
+    else if (flag == "--oauth-provider-name") flags.oauth.provider_name = value();
+    else if (flag == "--oauth-max-flows") flags.server.max_browser_sign_ins = static_cast<std::size_t>(std::stoul(value()));
+    else if (flag == "--oauth-identities") {
+      std::stringstream list(value());
+      for (std::string item; std::getline(list, item, ',');) {
+        if (!item.empty()) flags.oauth.identities.push_back(item);
+      }
+    }
     else Usage("unknown flag " + flag);
   }
   if (!tls.certificate_chain_file.empty() || !tls.private_key_file.empty()) {
@@ -120,6 +144,22 @@ Flags ParseFlags(int argc, char** argv) {
   // Certificate sign-in is opt-in: without it mutual TLS only admits connections.
   if (flags.certificate_sign_in != !flags.certificate_identities.empty()) {
     Usage("--mtls-certificate-sign-in and --mtls-admin-identities go together");
+  }
+  if (!flags.oauth.issuer.empty() || !flags.oauth.client_id.empty() || !flags.oauth.identities.empty()) {
+    if (flags.oauth.issuer.empty() || flags.oauth.client_id.empty() || flags.oauth.identities.empty()) {
+      Usage("--oauth-issuer, --oauth-client-id and --oauth-identities go together");
+    }
+    if (flags.oauth.redirect_uri.empty()) {
+      std::string base = flags.oauth_base_url;
+      if (base.empty()) {
+        if (flags.server.port == 0) Usage("--oauth-* with --port 0 needs --oauth-base-url or --oauth-redirect-uri");
+        base = std::string(flags.server.tls ? "https" : "http") + "://" + flags.server.host + ":" +
+               std::to_string(flags.server.port);
+      }
+      while (base.ends_with('/')) base.pop_back();
+      flags.oauth.redirect_uri = base + "/warp/v1/auth/oauth/callback";
+    }
+    if (const char* secret = std::getenv("WARP_DUCKDB_OAUTH_CLIENT_SECRET")) flags.oauth.client_secret = secret;
   }
   flags.server.on_security_event = [](const warpsql::SecurityEvent& event) {
     std::cerr << "warp-duckdb: SECURITY " << event.code << " user=" << event.user
@@ -156,6 +196,11 @@ int main(int argc, char** argv) {
     auto authenticator =
         std::make_shared<warpduckdb::StaticPasswordAuthenticator>(flags.username, password,
                                                                   flags.certificate_identities);
+    if (!flags.oauth.issuer.empty()) {
+      flags.server.browser_sign_in = std::make_shared<warpduckdb::OidcBrowserSignIn>(flags.oauth);
+      std::cout << "browser sign-in with " << flags.oauth.issuer << "; redirect URI "
+                << flags.oauth.redirect_uri << std::endl;
+    }
     warpsql::Server server(flags.server, backend, authenticator);
     server.Start();
     std::cout << "warp-duckdb listening on " << (flags.server.tls ? "https" : "http") << "://"

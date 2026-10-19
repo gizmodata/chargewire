@@ -84,10 +84,12 @@ def wait_until_up(base_url: str, timeout: float = 20, verify=True) -> None:
 
 
 def start_server(binary: str, extra_args: list[str] | None = None,
-                 scheme: str = "http", verify=True) -> ServerUnderTest:
-    """Starts a reference-compatible server on a free port with a fresh password.
-    `scheme` "https" (with `verify`, httpx's TLS setting) for a server started with TLS."""
-    port = free_port()
+                 scheme: str = "http", verify=True, port: int | None = None,
+                 env: dict[str, str] | None = None) -> ServerUnderTest:
+    """Starts a reference-compatible server on a free port (or `port`) with a fresh password.
+    `scheme` "https" (with `verify`, httpx's TLS setting) for a server started with TLS;
+    `env`: more environment variables for it."""
+    port = port or free_port()
     # A password with ':' and '@' in it: credentials travel as JSON fields, so nothing
     # may split them (spec §4.1).
     password = secrets.token_urlsafe(nbytes=12) + ":p@ss:word"
@@ -98,7 +100,7 @@ def start_server(binary: str, extra_args: list[str] | None = None,
     with log.open(mode="ab") as out:
         process = subprocess.Popen(
             args=[binary, "--host", "127.0.0.1", "--port", str(port), *(extra_args or [])],
-            env={**os.environ, password_env: password}, stdout=out, stderr=subprocess.STDOUT,
+            env={**os.environ, **(env or {}), password_env: password}, stdout=out, stderr=subprocess.STDOUT,
             **POPEN_FLAGS)
     server = ServerUnderTest(base_url=f"{scheme}://127.0.0.1:{port}", username=username,
                              password=password, process=process, log=log)
