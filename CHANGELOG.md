@@ -24,7 +24,7 @@ spec's version is the repository's version.
   ingest, cancel and close, errors mid-stream, graceful shutdown), each with sequence diagrams
   rendered at build time to light and dark SVG and `curl` commands that
   `site/scripts/verify_examples.py` runs against the reference server (60 examples); the
-  OpenAPI reference in Swagger UI 5.33.1, bundled, with "Try it out" against a server of the
+  OpenAPI reference in Swagger UI 5.33.3, bundled, with "Try it out" against a server of the
   reader's choosing; the endpoint list; the conformance page, generated from the suite; the
   implementations; and versioning. `.github/workflows/site.yml` checks the generated pages
   and diagrams, lints the OpenAPI document, builds (failing on broken internal links), checks
