@@ -37,6 +37,12 @@ spec's version is the repository's version.
   waiting. Before, every result of two batches or more got all the partitions asked for.
   Conformance: the empty-partitions test no longer assumes a server makes more
   partitions than batches.
+- SDK: accepted connections set TCP_NODELAY. Answers go out in more than one write, and
+  Nagle's algorithm held the later ones for the client's delayed ACK: every small request
+  (discovery, a status poll, `SELECT 1`) took 40 ms on Linux, over a LAN as on loopback.
+  It also made the drivers' `auto` compression see a 40 ms round trip on a LAN and pick
+  zstd. Conformance: `test_small_requests_answer_without_waiting_for_acks` (20 discovery
+  requests on one connection, median under 20 ms).
 - C++ client: `StatementOptions::ipc_compression` (the header's value) replaces
   `accept_zstd`, and every partition's request sends it (partitions 1 and up of a split
   result came back uncompressed before).

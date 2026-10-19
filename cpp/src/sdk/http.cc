@@ -478,6 +478,10 @@ class HttpServer::Impl {
       if (ec) {
         continue;
       }
+      // Answers go out in more than one write (headers, then the body), and with Nagle's
+      // algorithm the second waited for the client's delayed ACK of the first: every
+      // small request took 40 ms on Linux (GET /warp, a status poll, SELECT 1).
+      socket.set_option(tcp::no_delay(true), ec);
       auto executor = socket.get_executor();
       net::co_spawn(executor, Serve(std::move(socket)), net::detached);
     }
