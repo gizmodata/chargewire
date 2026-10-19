@@ -1,0 +1,9 @@
+# Redocly CLI's lint settings for spec/openapi.yaml:
+#   npx -y @redocly/cli@2.57.0 lint --config spec/redocly.yaml spec/openapi.yaml
+extends:
+  - recommended
+rules:
+  # The schemas make a field required only in some states (`if`/`then`: a cancelled
+  # statement's `cancel_reason`, say). The property is defined in the enclosing schema;
+  # this rule looks only inside the `then` and so reports every such requirement.
+  no-required-schema-properties-undefined: off

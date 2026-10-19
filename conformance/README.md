@@ -38,6 +38,36 @@ between servers; the defaults are `warp-duckdb`'s:
 and the `WARP_SQL_TEST_AUTHZ_*` variables its docstring describes; on a server without
 privileges (`warp-duckdb`) it skips, saying so.
 
+## Every response against the OpenAPI document
+
+[`openapi_check.py`](tests/openapi_check.py) holds every response the suite receives to
+[`spec/openapi.yaml`](../spec/openapi.yaml): `conftest.py` wraps `httpx.Client.send`, so each
+request of every test (fixtures included) is checked, and a response that disagrees fails
+the test that made it, saying what was wrong. For each response it finds the operation by
+method and path and checks:
+
+- the status is documented for the operation (exactly, or by its `4XX`/`5XX` range);
+- the content type is one the response documents;
+- the required headers are there, and every documented header's value fits its schema;
+- a JSON body validates against the response's schema (JSON Schema 2020-12, which OpenAPI
+  3.1 schemas are), and a problem document's `status` and `type` agree with the response;
+- an Arrow body begins like an Arrow IPC stream (the tests read the rest);
+- a path or method outside the document gets a `404` or `405` problem document.
+
+The end of a run says how many of the document's operations had responses checked (all 38
+against `warp-duckdb`). [`test_openapi.py`](tests/test_openapi.py) also checks that the
+document is valid OpenAPI 3.1, that it and the spec's Appendix B list the same 38 endpoints
+(and that every endpoint a section names is in Appendix B), which endpoints need no token,
+the served document (`GET /warp/v1/openapi.json`, spec §3.3: unauthenticated, cacheable, the
+published document apart from `servers` and `x-` fields), and that the check itself rejects
+a real response broken on purpose (a renamed or missing field, an unknown enumeration value,
+an undocumented status, content type or missing header, a problem document that disagrees
+with its status).
+
+`WARP_SQL_TEST_OPENAPI` names another copy of the document to check against. A test that
+must see a response the document doesn't describe takes `@pytest.mark.openapi_unchecked`
+(none does).
+
 ## MUSTs without a test
 
 Every MUST of the spec that a server can be tested for has a test, except these:

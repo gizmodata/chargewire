@@ -1,0 +1,2138 @@
+# The OpenAPI 3.1 description of Warp SQL version 1's HTTP endpoints.
+#
+# spec/warp-sql.md is the protocol's definition; this file describes the same endpoints for
+# tools (request and response schemas, headers, errors). Where they disagree, the
+# specification wins and this file has a bug. The conformance suite validates real server
+# responses against it (conformance/tests/openapi_check.py), and the SDK serves it as JSON at
+# GET /warp/v1/openapi.json (spec §3.3).
+#
+# The YAML is a strict subset, so the SDK's build converts it without a YAML library
+# (cpp/tools/openapi_json.cc): block mappings and sequences, flow collections of scalars,
+# `|` and `|-` block scalars, plain scalars that are unambiguous strings, integers, true,
+# false or null. No anchors, aliases, tags, `>` scalars or multi-line plain scalars, and
+# keys that would read as numbers (status codes) are quoted.
+openapi: 3.1.1
+info:
+  title: Warp SQL
+  version: 1.0.0
+  summary: SQL over HTTP, with Apache Arrow IPC streams for results, parameters and uploads.
+  description: |
+    Warp SQL is an open protocol for running SQL against a database server over plain HTTP.
+    Control messages are small JSON documents; query results, Arrow query parameters and bulk
+    uploads are Arrow IPC streams (`application/vnd.apache.arrow.stream`).
+
+    This document describes the endpoints of protocol version 1 (specification 1.0.0). The
+    specification is the definition: each operation names the section it comes from.
+
+    **Base path.** Endpoints live under `/warp`; a server may mount them under another
+    prefix (spec §2.1).
+
+    **Authentication.** Every operation except discovery, health, sign-in and this
+    document needs `Authorization: Bearer <access token>`, from `POST /warp/v1/auth/token`.
+
+    **Errors** are problem documents (`application/problem+json`, RFC 9457) with a stable
+    `code` (spec §11). Every response carries a `Warp-Request-Id` header.
+
+    **Additions.** Version 1 changes only by addition (spec §12): clients ignore fields,
+    headers and capabilities they don't know and accept values of enumerated fields that
+    this document doesn't list. A client generated from this document should be set up to
+    do the same.
+  license:
+    name: Apache 2.0
+    identifier: Apache-2.0
+servers:
+  - url: "{origin}"
+    description: A Warp SQL server
+    variables:
+      origin:
+        default: http://127.0.0.1:31337
+        description: The server's scheme, host and port (https in production)
+security:
+  - bearerAuth: []
+tags:
+  - name: Discovery
+    description: Discovery, health and this document (spec §3). No authentication.
+  - name: Authentication
+    description: Token sign-in (spec §4.1, §4.4).
+  - name: Browser sign-in
+    description: Sign-in through the server's identity provider in a web browser (spec §4.3).
+  - name: Sessions
+    description: Sessions and their options (spec §5).
+  - name: Transactions
+    description: Ending a transaction when autocommit is off (spec §5.5).
+  - name: Statements
+    description: Submitting statements, status, cancel and close (spec §6).
+  - name: Results
+    description: Reading results, partitions and resumption (spec §6.4, §6.5, §6.10).
+  - name: Prepared statements
+    description: Prepare once, execute with JSON or Arrow parameters (spec §7).
+  - name: Ingest
+    description: Bulk ingest in one request (spec §8.1).
+  - name: Partitioned ingest
+    description: One ingest uploaded over several connections, committed atomically (spec §8.3).
+  - name: Metadata
+    description: Driver metadata with Flight SQL's result schemas (spec §10).
+
+paths:
+  /warp:
+    get:
+      tags: [Discovery]
+      operationId: getDiscovery
+      summary: Describe the server
+      description: The protocol versions, capabilities and sign-in methods the server offers (spec §3.1).
+      security: []
+      responses:
+        "200":
+          description: The discovery document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Discovery"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/health:
+    get:
+      tags: [Discovery]
+      operationId: getHealth
+      summary: Health
+      description: Whether the server accepts new work (spec §3.2).
+      security: []
+      responses:
+        "200":
+          description: Serving
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "503":
+          description: Not serving (draining, starting, or the health check failed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/openapi.json:
+    get:
+      tags: [Discovery]
+      operationId: getOpenApi
+      summary: This OpenAPI document
+      description: |
+        The OpenAPI 3.1 description of the protocol version the server implements, as JSON
+        (spec §3.3). Optional: a server that offers it lists capability `openapi` and
+        `links.openapi` in discovery; one that doesn't answers `404`.
+      security: []
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          description: An `ETag` from an earlier answer
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The OpenAPI document
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlCacheable"
+            ETag:
+              $ref: "#/components/headers/ETag"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenApiDocument"
+        "304":
+          description: Not modified since the `ETag` in `If-None-Match`
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/auth/token:
+    post:
+      tags: [Authentication]
+      operationId: issueToken
+      summary: Sign in
+      description: |
+        Exchanges a credential for an access token (spec §4.1). The credential travels in the
+        JSON body, never in the URL. A failed sign-in is `401 invalid_credentials`, and never
+        says which part was wrong.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TokenRequest"
+            examples:
+              password:
+                summary: Password
+                value:
+                  grant_type: password
+                  username: joe
+                  password: "s3:cret"
+              token_exchange:
+                summary: Token exchange (an identity provider's token)
+                value:
+                  grant_type: token_exchange
+                  subject_token: eyJhbGciOi...
+              client_certificate:
+                summary: The TLS client certificate (capability mtls_identity)
+                value:
+                  grant_type: client_certificate
+      responses:
+        "200":
+          description: An access token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Token"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/auth/oauth/flows:
+    post:
+      tags: [Browser sign-in]
+      operationId: createBrowserFlow
+      summary: Start a browser sign-in
+      description: |
+        Creates a flow (spec §4.3.1, capability `oauth_browser`). Open `authorize_url` in a
+        browser, then poll the flow with the poll secret. The poll secret appears in this
+        answer only. A server without the capability answers `501 not_implemented`.
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BrowserFlowRequest"
+      responses:
+        "201":
+          description: The flow
+          headers:
+            Location:
+              $ref: "#/components/headers/Location"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserFlow"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/auth/oauth/flows/{flow_id}:
+    parameters:
+      - $ref: "#/components/parameters/FlowId"
+    post:
+      tags: [Browser sign-in]
+      operationId: pollBrowserFlow
+      summary: Poll a browser sign-in
+      description: |
+        Polls the flow with its poll secret, in the body (spec §4.3.2). A completed flow's
+        token, or a failed flow's error, is returned once; from then on, after it expires and
+        for a wrong poll secret, the flow is `404 flow_not_found`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BrowserFlowPollRequest"
+      responses:
+        "200":
+          description: The flow's state
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BrowserFlowPoll"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/auth/oauth/callback:
+    get:
+      tags: [Browser sign-in]
+      operationId: browserSignInCallback
+      summary: Identity provider callback
+      description: |
+        Where the identity provider sends the browser (spec §4.3.4). Clients never call it;
+        it appears to them only as the `redirect_uri` inside `authorize_url`. It answers with a
+        page, or with a redirect to the flow's `return_to` carrying the flow id in the
+        fragment (spec §4.3.3).
+      security: []
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: code
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: error
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: error_description
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A page saying the sign-in is done, or why it failed
+          content:
+            text/html:
+              schema:
+                type: string
+        "303":
+          description: Back to the flow's `return_to`, as `return_to#warp_oauth_flow=<flow_id>`
+          headers:
+            Location:
+              $ref: "#/components/headers/Location"
+        "4XX":
+          $ref: "#/components/responses/CallbackError"
+        "5XX":
+          $ref: "#/components/responses/CallbackError"
+
+  /warp/v1/sessions:
+    post:
+      tags: [Sessions]
+      operationId: createSession
+      summary: Open a session
+      description: |
+        Opens a session, optionally setting options (spec §5.1). An option the server doesn't
+        have, or a bad value, fails the request (`400 unknown_option` or
+        `invalid_option_value`) and no session is created.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionRequest"
+            example:
+              options:
+                catalog: memory
+                autocommit: true
+      responses:
+        "201":
+          description: The session
+          headers:
+            Location:
+              $ref: "#/components/headers/Location"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      tags: [Sessions]
+      operationId: getSession
+      summary: Read a session
+      description: |
+        The session's current options and transaction state (spec §5.2). Also a cheap liveness
+        probe: a session the server ended answers `401 session_ended` with its `reason`.
+      responses:
+        "200":
+          description: The session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+    patch:
+      tags: [Sessions]
+      operationId: updateSession
+      summary: Set session options
+      description: Applies each option on its own and reports the ones that failed (spec §5.3).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionRequest"
+            example:
+              options:
+                schema: main
+      responses:
+        "200":
+          description: Every option the session has, and the failures by option name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionOptionsResult"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+    delete:
+      tags: [Sessions]
+      operationId: closeSession
+      summary: Close a session
+      description: Ends the session, cancels its running statements and frees its retained results (spec §5.4).
+      responses:
+        "204":
+          description: Closed
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/commit:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      tags: [Transactions]
+      operationId: commitTransaction
+      summary: Commit
+      description: Commits the current transaction; the next statement starts a new one (spec §5.5, capability `transactions`).
+      responses:
+        "204":
+          description: Committed
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/rollback:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      tags: [Transactions]
+      operationId: rollbackTransaction
+      summary: Roll back
+      description: Rolls back the current transaction; the next statement starts a new one (spec §5.5, capability `transactions`).
+      responses:
+        "204":
+          description: Rolled back
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      tags: [Statements]
+      operationId: cancelSessionStatements
+      summary: Cancel everything the session runs
+      description: |
+        Cancels every statement of the session that is queued or running when the request
+        arrives (spec §6.8), for a client that has no statement id yet.
+      responses:
+        "202":
+          description: The statements cancelled (possibly none)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionCancelResult"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/statements:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      tags: [Statements]
+      operationId: submitStatement
+      summary: Submit a statement
+      description: |
+        Runs a statement (spec §6.1). With `Accept: application/vnd.apache.arrow.stream` and
+        no `Prefer: respond-async`, a query's result streams in the response (`200`, Arrow);
+        a statement that returns no rows answers `200` with its statement document. Otherwise
+        the answer is `201` with the statement document, after waiting up to `Prefer: wait=N`.
+        Clients must check `Content-Type`.
+
+        An error found before execution, and a statement that has failed or been cancelled by
+        the time the server answers, is an error response with `Warp-Statement-Id`.
+      parameters:
+        - $ref: "#/components/parameters/Accept"
+        - $ref: "#/components/parameters/Prefer"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/StatementTimeout"
+        - $ref: "#/components/parameters/RetainResult"
+        - $ref: "#/components/parameters/QueryTag"
+        - $ref: "#/components/parameters/IpcCompressionRequest"
+        - $ref: "#/components/parameters/ResultPartitionsRequest"
+        - $ref: "#/components/parameters/ResultOrderRequest"
+        - $ref: "#/components/parameters/ResultLocations"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StatementRequest"
+            examples:
+              plain:
+                summary: A query
+                value:
+                  sql: SELECT 42 AS answer
+              positional:
+                summary: Positional parameters
+                value:
+                  sql: SELECT ? + 1 AS next, ? AS greeting
+                  parameters: [41, hello]
+              named:
+                summary: Named parameters
+                value:
+                  sql: SELECT $greeting AS greeting
+                  parameters:
+                    greeting: hello
+      responses:
+        "200":
+          $ref: "#/components/responses/StatementStreamed"
+        "201":
+          description: The statement document (the status-document path)
+          headers:
+            Location:
+              $ref: "#/components/headers/Location"
+            Warp-Statement-Id:
+              $ref: "#/components/headers/StatementId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Statement"
+        "4XX":
+          $ref: "#/components/responses/StatementProblem"
+        "5XX":
+          $ref: "#/components/responses/StatementProblem"
+
+  /warp/v1/sessions/{session_id}/statements/{statement_id}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/StatementId"
+    get:
+      tags: [Statements]
+      operationId: getStatement
+      summary: Statement status
+      description: |
+        The statement document (spec §6.3). With `Prefer: wait=N` (capability `long_poll`)
+        the server may hold the answer until the state changes or N seconds pass; a finished
+        statement is answered at once.
+      parameters:
+        - $ref: "#/components/parameters/Prefer"
+      responses:
+        "200":
+          description: The statement document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Statement"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+    delete:
+      tags: [Statements]
+      operationId: closeStatement
+      summary: Close a statement
+      description: |
+        The client is done with the statement: its result is freed and its id forgotten
+        (spec §6.8). A query still running is cancelled; a statement that changes data runs to
+        the end with its rows discarded.
+      responses:
+        "204":
+          description: Closed
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/statements/{statement_id}/result:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/StatementId"
+    get:
+      tags: [Results]
+      operationId: getResult
+      summary: Read a result
+      description: |
+        One partition of the result as an Arrow stream, from batch `from_batch` (spec §6.4).
+        A retained result can be read again and resumed until it expires (spec §6.5); an
+        unretained one once, from batch 0. A stream that ends without the Arrow end-of-stream
+        marker is incomplete: the result failed (spec §6.6).
+      parameters:
+        - $ref: "#/components/parameters/Partition"
+        - $ref: "#/components/parameters/FromBatch"
+        - $ref: "#/components/parameters/IpcCompressionRequest"
+      responses:
+        "200":
+          description: The partition's record batches
+          headers:
+            Warp-IPC-Compression:
+              $ref: "#/components/headers/IpcCompression"
+            Cache-Control:
+              $ref: "#/components/headers/CacheControlNoStore"
+          content:
+            application/vnd.apache.arrow.stream:
+              schema:
+                $ref: "#/components/schemas/ArrowStream"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/statements/{statement_id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/StatementId"
+    post:
+      tags: [Statements]
+      operationId: cancelStatement
+      summary: Cancel a statement
+      description: |
+        Cancels the statement (spec §6.8). A queued statement never starts; cancelling a
+        finished statement changes nothing. The answer is `202` either way.
+      responses:
+        "202":
+          description: Accepted, with the statement document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Statement"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/prepared:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      tags: [Prepared statements]
+      operationId: prepareStatement
+      summary: Prepare a statement
+      description: Prepares without running it (spec §7.1, capability `prepared_statements`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PrepareRequest"
+            example:
+              sql: SELECT CAST(? AS INTEGER) * 2 AS doubled
+      responses:
+        "201":
+          description: The prepared statement
+          headers:
+            Location:
+              $ref: "#/components/headers/Location"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreparedStatement"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/prepared/{prepared_id}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/PreparedId"
+    delete:
+      tags: [Prepared statements]
+      operationId: closePrepared
+      summary: Close a prepared statement
+      description: Spec §7.3.
+      responses:
+        "204":
+          description: Closed
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/prepared/{prepared_id}/execute:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/PreparedId"
+    post:
+      tags: [Prepared statements]
+      operationId: executePrepared
+      summary: Execute a prepared statement
+      description: |
+        Runs the prepared statement (spec §7.2) with JSON parameters, or with an Arrow stream
+        whose schema matches `parameter_schema`: each row of the Arrow body is one execution.
+        The answer is exactly as for submitting a statement, with the same headers.
+      parameters:
+        - $ref: "#/components/parameters/Accept"
+        - $ref: "#/components/parameters/Prefer"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/StatementTimeout"
+        - $ref: "#/components/parameters/RetainResult"
+        - $ref: "#/components/parameters/QueryTag"
+        - $ref: "#/components/parameters/IpcCompressionRequest"
+        - $ref: "#/components/parameters/ResultPartitionsRequest"
+        - $ref: "#/components/parameters/ResultOrderRequest"
+        - $ref: "#/components/parameters/ResultLocations"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecuteRequest"
+            example:
+              parameters: [21]
+          application/vnd.apache.arrow.stream:
+            schema:
+              $ref: "#/components/schemas/ArrowStream"
+      responses:
+        "200":
+          $ref: "#/components/responses/StatementStreamed"
+        "201":
+          description: The statement document (the status-document path)
+          headers:
+            Location:
+              $ref: "#/components/headers/Location"
+            Warp-Statement-Id:
+              $ref: "#/components/headers/StatementId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Statement"
+        "4XX":
+          $ref: "#/components/responses/StatementProblem"
+        "5XX":
+          $ref: "#/components/responses/StatementProblem"
+
+  /warp/v1/sessions/{session_id}/ingest:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      tags: [Ingest]
+      operationId: ingest
+      summary: Bulk ingest
+      description: |
+        Writes an Arrow stream into a table, as one transaction where the engine supports it
+        (spec §8.1, capability `ingest`). A type the server can't preserve is
+        `415 unsupported_arrow_type`. Reverse proxies must not cap the body for this path.
+      parameters:
+        - name: table
+          in: query
+          required: true
+          description: Target table name
+          schema:
+            type: string
+        - name: catalog
+          in: query
+          required: false
+          description: Default, the session's current catalog
+          schema:
+            type: string
+        - name: schema
+          in: query
+          required: false
+          description: Default, the session's current schema
+          schema:
+            type: string
+        - name: mode
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/IngestMode"
+        - name: temporary
+          in: query
+          required: false
+          description: true to create a temporary table
+          schema:
+            type: boolean
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/QueryTag"
+      requestBody:
+        required: true
+        content:
+          application/vnd.apache.arrow.stream:
+            schema:
+              $ref: "#/components/schemas/ArrowStream"
+      responses:
+        "200":
+          description: Every row written
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IngestResult"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/ingests:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      tags: [Partitioned ingest]
+      operationId: openIngest
+      summary: Open a partitioned ingest
+      description: Opens an ingest whose parts are uploaded separately and committed together (spec §8.3, capability `partitioned_ingest`).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/QueryTag"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IngestTarget"
+            example:
+              table: events
+              mode: create
+      responses:
+        "200":
+          description: An idempotent replay of the open (spec §6.7)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ingest"
+        "201":
+          description: The open ingest
+          headers:
+            Location:
+              $ref: "#/components/headers/Location"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ingest"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/ingests/{ingest_id}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/IngestId"
+    get:
+      tags: [Partitioned ingest]
+      operationId: getIngest
+      summary: Read an ingest
+      description: Spec §8.3.
+      responses:
+        "200":
+          description: The ingest document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ingest"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+    delete:
+      tags: [Partitioned ingest]
+      operationId: abortIngest
+      summary: Abort an ingest
+      description: Nothing is written (spec §8.3). An abort that arrives while the server commits may be too late; the ingest document then says `committed`.
+      responses:
+        "204":
+          description: Aborted
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/ingests/{ingest_id}/parts/{part}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/IngestId"
+      - name: part
+        in: path
+        required: true
+        description: The part number, 0 to 255, chosen by the client
+        schema:
+          type: integer
+          minimum: 0
+          maximum: 255
+    post:
+      tags: [Partitioned ingest]
+      operationId: uploadIngestPart
+      summary: Upload a part
+      description: |
+        One part, an Arrow stream with the ingest's schema, each on its own connection
+        (spec §8.3). The rows are not visible until the commit. A part number that already
+        finished is `409 ingest_part_exists` unless the same `Idempotency-Key` replays it.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/vnd.apache.arrow.stream:
+            schema:
+              $ref: "#/components/schemas/ArrowStream"
+      responses:
+        "200":
+          description: The part has been read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IngestPart"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/ingests/{ingest_id}/commit:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/IngestId"
+    post:
+      tags: [Partitioned ingest]
+      operationId: commitIngest
+      summary: Commit an ingest
+      description: |
+        Writes parts 0 to `part_count - 1` in one transaction (spec §8.3). A part not yet
+        finished is `409 ingest_incomplete`, and the ingest stays open. A commit whose answer
+        was lost is safe to send again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IngestCommitRequest"
+      responses:
+        "200":
+          description: Every row of every part written and committed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IngestResult"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/metadata/server-info:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      tags: [Metadata]
+      operationId: getServerInfo
+      summary: Server facts
+      description: One object of facts about the server, keyed by Flight SQL's `SqlInfo` names in lower case (spec §10).
+      responses:
+        "200":
+          description: The server's facts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerInfo"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/metadata/catalogs:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      tags: [Metadata]
+      operationId: getCatalogs
+      summary: Catalogs
+      description: "Flight SQL `CommandGetCatalogs`'s schema: `catalog_name: utf8 not null` (spec §10)."
+      responses:
+        "200":
+          $ref: "#/components/responses/MetadataArrow"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/metadata/db-schemas:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      tags: [Metadata]
+      operationId: getDbSchemas
+      summary: Schemas
+      description: "Flight SQL `CommandGetDbSchemas`'s schema: `catalog_name: utf8, db_schema_name: utf8 not null` (spec §10)."
+      parameters:
+        - $ref: "#/components/parameters/CatalogFilter"
+        - $ref: "#/components/parameters/DbSchemaFilterPattern"
+      responses:
+        "200":
+          $ref: "#/components/responses/MetadataArrow"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/metadata/tables:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      tags: [Metadata]
+      operationId: getTables
+      summary: Tables
+      description: |
+        Flight SQL `CommandGetTables`'s schema: `catalog_name: utf8, db_schema_name: utf8,
+        table_name: utf8 not null, table_type: utf8 not null`, and `table_schema: binary not
+        null` with `include_schema=true` (spec §10).
+      parameters:
+        - $ref: "#/components/parameters/CatalogFilter"
+        - $ref: "#/components/parameters/DbSchemaFilterPattern"
+        - name: table_name_filter_pattern
+          in: query
+          required: false
+          description: A SQL `LIKE` pattern
+          schema:
+            type: string
+        - name: table_types
+          in: query
+          required: false
+          description: Comma-separated table types
+          schema:
+            type: string
+        - name: include_schema
+          in: query
+          required: false
+          description: Add each table's Arrow schema (`table_schema`)
+          schema:
+            type: boolean
+      responses:
+        "200":
+          $ref: "#/components/responses/MetadataArrow"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/metadata/table-types:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      tags: [Metadata]
+      operationId: getTableTypes
+      summary: Table types
+      description: "Flight SQL `CommandGetTableTypes`'s schema: `table_type: utf8 not null` (spec §10)."
+      responses:
+        "200":
+          $ref: "#/components/responses/MetadataArrow"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/metadata/primary-keys:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      tags: [Metadata]
+      operationId: getPrimaryKeys
+      summary: Primary keys
+      description: Flight SQL `CommandGetPrimaryKeys`'s schema (spec §10). Without `table`, every table's.
+      parameters:
+        - $ref: "#/components/parameters/KeyCatalog"
+        - $ref: "#/components/parameters/KeyDbSchema"
+        - $ref: "#/components/parameters/KeyTableOptional"
+      responses:
+        "200":
+          $ref: "#/components/responses/MetadataArrow"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/metadata/imported-keys:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      tags: [Metadata]
+      operationId: getImportedKeys
+      summary: Imported (foreign) keys
+      description: Flight SQL `CommandGetImportedKeys`'s 13 columns (spec §10). Without `table`, every table's.
+      parameters:
+        - $ref: "#/components/parameters/KeyCatalog"
+        - $ref: "#/components/parameters/KeyDbSchema"
+        - $ref: "#/components/parameters/KeyTableOptional"
+      responses:
+        "200":
+          $ref: "#/components/responses/MetadataArrow"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/metadata/exported-keys:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      tags: [Metadata]
+      operationId: getExportedKeys
+      summary: Exported keys
+      description: Flight SQL `CommandGetExportedKeys`'s columns (spec §10).
+      parameters:
+        - $ref: "#/components/parameters/KeyCatalog"
+        - $ref: "#/components/parameters/KeyDbSchema"
+        - name: table
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/MetadataArrow"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/metadata/cross-reference:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      tags: [Metadata]
+      operationId: getCrossReference
+      summary: Cross reference
+      description: Flight SQL `CommandGetCrossReference`'s columns (spec §10).
+      parameters:
+        - name: pk_catalog
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: pk_db_schema
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: pk_table
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: fk_catalog
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: fk_db_schema
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: fk_table
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/MetadataArrow"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+  /warp/v1/sessions/{session_id}/metadata/type-info:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    get:
+      tags: [Metadata]
+      operationId: getTypeInfo
+      summary: Type information
+      description: Flight SQL `CommandGetXdbcTypeInfo`'s schema (spec §10).
+      parameters:
+        - name: data_type
+          in: query
+          required: false
+          description: Only this XDBC data type
+          schema:
+            type: integer
+      responses:
+        "200":
+          $ref: "#/components/responses/MetadataArrow"
+        "4XX":
+          $ref: "#/components/responses/Problem"
+        "5XX":
+          $ref: "#/components/responses/Problem"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        The access token from `POST /warp/v1/auth/token` (spec §4.2). Opaque to clients.
+        Credentials never come from cookies.
+
+  parameters:
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/Id"
+    StatementId:
+      name: statement_id
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/Id"
+    PreparedId:
+      name: prepared_id
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/Id"
+    IngestId:
+      name: ingest_id
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/Id"
+    FlowId:
+      name: flow_id
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/Id"
+    Accept:
+      name: Accept
+      in: header
+      required: false
+      description: "`application/vnd.apache.arrow.stream` streams a query's result in the response (spec §6.1)"
+      schema:
+        type: string
+        examples:
+          - application/vnd.apache.arrow.stream
+          - application/json
+    Prefer:
+      name: Prefer
+      in: header
+      required: false
+      description: "`wait=<seconds>` or `respond-async` (RFC 7240; spec §6.1, §6.3)"
+      schema:
+        type: string
+        examples:
+          - wait=5
+          - respond-async
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Makes a retried request safe; the server runs it once (spec §6.7)
+      schema:
+        type: string
+        maxLength: 255
+    StatementTimeout:
+      name: Warp-Statement-Timeout
+      in: header
+      required: false
+      description: Milliseconds before the server cancels the statement (spec §6.9)
+      schema:
+        type: integer
+        minimum: 0
+    RetainResult:
+      name: Warp-Retain-Result
+      in: header
+      required: false
+      description: Keep the result for re-reading and resumption (spec §6.5)
+      schema:
+        type: boolean
+    QueryTag:
+      name: Warp-Query-Tag
+      in: header
+      required: false
+      description: A JSON object, in ASCII and at most 4096 bytes, that labels the statement or ingest (spec §2.5)
+      schema:
+        type: string
+        maxLength: 4096
+        examples:
+          - '{"job":"nightly-load"}'
+    IpcCompressionRequest:
+      name: Warp-IPC-Compression
+      in: header
+      required: false
+      description: Arrow buffer codecs the client accepts, in its order of preference (spec §8.2)
+      schema:
+        type: string
+        examples:
+          - lz4_frame, zstd
+          - zstd
+          - none
+    ResultPartitionsRequest:
+      name: Warp-Result-Partitions
+      in: header
+      required: false
+      description: The most partitions the client reads at once (spec §6.10, capability `result_partitions`)
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 256
+    ResultOrderRequest:
+      name: Warp-Result-Order
+      in: header
+      required: false
+      description: Whether the client needs rows in result order (spec §6.10)
+      schema:
+        type: string
+        enum: [preserve, any]
+        default: preserve
+    ResultLocations:
+      name: Warp-Result-Locations
+      in: header
+      required: false
+      description: The client can read partitions held by other servers (spec §6.2, capability `result_locations`)
+      schema:
+        type: string
+        enum: [remote]
+    Partition:
+      name: partition
+      in: query
+      required: false
+      description: The partition to read (spec §6.4)
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    FromBatch:
+      name: from_batch
+      in: query
+      required: false
+      description: The partition's batch to start at, counting from 0 (spec §6.4, §6.5)
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    CatalogFilter:
+      name: catalog
+      in: query
+      required: false
+      schema:
+        type: string
+    DbSchemaFilterPattern:
+      name: db_schema_filter_pattern
+      in: query
+      required: false
+      description: A SQL `LIKE` pattern
+      schema:
+        type: string
+    KeyCatalog:
+      name: catalog
+      in: query
+      required: false
+      schema:
+        type: string
+    KeyDbSchema:
+      name: db_schema
+      in: query
+      required: false
+      schema:
+        type: string
+    KeyTableOptional:
+      name: table
+      in: query
+      required: false
+      schema:
+        type: string
+
+  headers:
+    Location:
+      description: The created resource, or where a redirect goes
+      required: true
+      schema:
+        type: string
+    StatementId:
+      description: The statement the response belongs to (spec §2.6)
+      required: true
+      schema:
+        $ref: "#/components/schemas/Id"
+    StatementIdOptional:
+      description: The statement the response belongs to, on the error of a statement that failed or was cancelled (spec §6.1)
+      required: false
+      schema:
+        $ref: "#/components/schemas/Id"
+    IpcCompression:
+      description: The Arrow buffer compression used (spec §8.2)
+      required: false
+      schema:
+        type: string
+        enum: [lz4_frame, zstd, none]
+    ResultPartitions:
+      description: The number of partitions when more than one (spec §6.10)
+      required: false
+      schema:
+        type: integer
+        minimum: 2
+        maximum: 256
+    ResultOrder:
+      description: How a split result's rows are spread over its partitions (spec §6.10)
+      required: false
+      schema:
+        type: string
+        enum: [interleaved, any]
+    CacheControlNoStore:
+      description: "`no-store`"
+      required: true
+      schema:
+        type: string
+        pattern: no-store
+    CacheControlCacheable:
+      description: A lifetime for which caches may keep the document
+      required: true
+      schema:
+        type: string
+        pattern: max-age=[0-9]+
+    ETag:
+      description: The document's entity tag
+      required: false
+      schema:
+        type: string
+    RetryAfter:
+      description: Seconds to wait before retrying, as an integer (spec §2.6)
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+    WwwAuthenticate:
+      description: "`Bearer`, on `invalid_token`, `session_ended` and `certificate_mismatch` (spec §4.2)"
+      required: false
+      schema:
+        type: string
+
+  responses:
+    Problem:
+      description: An error (spec §11)
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+        WWW-Authenticate:
+          $ref: "#/components/headers/WwwAuthenticate"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    CallbackError:
+      description: |
+        A page saying why the callback was refused (an unknown or finished flow, say), for
+        the person in the browser; a problem document when no page fits (spec §4.3.4)
+      content:
+        text/html:
+          schema:
+            type: string
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    StatementProblem:
+      description: An error; for a statement that failed or was cancelled, with `Warp-Statement-Id` (spec §6.1, §11)
+      headers:
+        Warp-Statement-Id:
+          $ref: "#/components/headers/StatementIdOptional"
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+        WWW-Authenticate:
+          $ref: "#/components/headers/WwwAuthenticate"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    StatementStreamed:
+      description: |
+        The streamed path: a query's result (partition 0 when the result is split), or the
+        statement document of a statement that returns no rows. On an idempotent replay
+        (spec §6.7), the statement document in any state.
+      headers:
+        Warp-Statement-Id:
+          $ref: "#/components/headers/StatementId"
+        Warp-IPC-Compression:
+          $ref: "#/components/headers/IpcCompression"
+        Warp-Result-Partitions:
+          $ref: "#/components/headers/ResultPartitions"
+        Warp-Result-Order:
+          $ref: "#/components/headers/ResultOrder"
+      content:
+        application/vnd.apache.arrow.stream:
+          schema:
+            $ref: "#/components/schemas/ArrowStream"
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Statement"
+    MetadataArrow:
+      description: An Arrow stream with the matching Flight SQL command's result schema (spec §10)
+      content:
+        application/vnd.apache.arrow.stream:
+          schema:
+            $ref: "#/components/schemas/ArrowStream"
+
+  schemas:
+    Id:
+      description: An opaque id chosen by the server (spec §2.3)
+      type: string
+      pattern: "^[A-Za-z0-9._~-]{1,128}$"
+    Timestamp:
+      description: An RFC 3339 timestamp in UTC (spec §2.4)
+      type: string
+      format: date-time
+      pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?Z$"
+    ArrowStream:
+      description: |
+        One complete Arrow IPC stream: a schema message, record batches and the end-of-stream
+        marker (spec §2.2). Not JSON.
+      type: string
+      format: binary
+      contentMediaType: application/vnd.apache.arrow.stream
+    ArrowSchemaBase64:
+      description: An Arrow IPC stream holding only a schema and the end-of-stream marker, base64 with padding (spec §2.2)
+      type: string
+      contentEncoding: base64
+      contentMediaType: application/vnd.apache.arrow.stream
+      pattern: "^[A-Za-z0-9+/]*={0,2}$"
+    Name:
+      description: A protocol name, or an extension name with its implementation's prefix (spec §2.7)
+      type: string
+      pattern: "^[a-z0-9_]+$"
+
+    Discovery:
+      type: object
+      required: [protocol, protocol_versions, server, capabilities, auth]
+      properties:
+        protocol:
+          const: warp-sql
+        protocol_versions:
+          type: array
+          items:
+            type: string
+          contains:
+            const: "1"
+        server:
+          type: object
+          required: [name, version]
+          properties:
+            name:
+              type: string
+              minLength: 1
+            version:
+              type: string
+        capabilities:
+          description: |
+            The optional features the server supports (spec §3.1). Version 1's:
+            `prepared_statements`, `transactions`, `ingest`, `partitioned_ingest`, `long_poll`,
+            `ipc_compression_lz4_frame`, `ipc_compression_zstd`, `result_partitions`,
+            `result_locations`, `mtls_identity`, `oauth_browser`, `openapi`.
+          type: array
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/Name"
+        auth:
+          type: object
+          required: [grant_types]
+          properties:
+            grant_types:
+              description: "`password`, `token_exchange`, `client_certificate`, or an extension's"
+              type: array
+              items:
+                type: string
+            oauth_browser:
+              description: Browser sign-in (spec §4.3), when the server offers it
+              type: object
+              properties:
+                provider:
+                  description: The identity provider's name, for people to read
+                  type: string
+        links:
+          description: Where the server's optional documents are (spec §3.3)
+          type: object
+          properties:
+            openapi:
+              description: This OpenAPI document, with capability `openapi`
+              type: string
+      example:
+        protocol: warp-sql
+        protocol_versions: ["1"]
+        server:
+          name: warp-duckdb
+          version: 1.0.0
+        capabilities: [prepared_statements, transactions, ingest, partitioned_ingest, long_poll, ipc_compression_zstd, ipc_compression_lz4_frame, result_partitions, openapi]
+        auth:
+          grant_types: [password]
+        links:
+          openapi: /warp/v1/openapi.json
+
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [serving, not_serving]
+        reason:
+          type: string
+          enum: [draining, starting, check_failed]
+      allOf:
+        - if:
+            properties:
+              status:
+                const: not_serving
+          then:
+            required: [reason]
+
+    OpenApiDocument:
+      description: An OpenAPI 3.1 document (this one)
+      type: object
+      required: [openapi, info, paths]
+      properties:
+        openapi:
+          type: string
+          pattern: "^3[.]1[.][0-9]+$"
+        info:
+          type: object
+        paths:
+          type: object
+
+    TokenRequest:
+      oneOf:
+        - $ref: "#/components/schemas/PasswordGrant"
+        - $ref: "#/components/schemas/TokenExchangeGrant"
+        - $ref: "#/components/schemas/ClientCertificateGrant"
+      discriminator:
+        propertyName: grant_type
+        mapping:
+          password: "#/components/schemas/PasswordGrant"
+          token_exchange: "#/components/schemas/TokenExchangeGrant"
+          client_certificate: "#/components/schemas/ClientCertificateGrant"
+    PasswordGrant:
+      type: object
+      required: [grant_type, username, password]
+      properties:
+        grant_type:
+          const: password
+        username:
+          type: string
+        password:
+          description: Any characters, `:` included
+          type: string
+          format: password
+    TokenExchangeGrant:
+      type: object
+      required: [grant_type, subject_token]
+      properties:
+        grant_type:
+          const: token_exchange
+        subject_token:
+          description: A token from an identity provider the server trusts, such as an OpenID Connect ID token
+          type: string
+    ClientCertificateGrant:
+      description: The TLS connection's verified client certificate is the credential (spec §4.4, capability `mtls_identity`)
+      type: object
+      required: [grant_type]
+      properties:
+        grant_type:
+          const: client_certificate
+    Token:
+      type: object
+      required: [access_token, token_type, expires_in]
+      properties:
+        access_token:
+          description: Opaque to clients
+          type: string
+          minLength: 1
+        token_type:
+          const: Bearer
+        expires_in:
+          description: Seconds until the token expires
+          type: integer
+          minimum: 0
+
+    BrowserFlowRequest:
+      type: object
+      properties:
+        return_to:
+          description: A path on the server's own origin to send the browser back to (spec §4.3.3)
+          type: string
+          maxLength: 2048
+    BrowserFlow:
+      type: object
+      required: [flow_id, poll_secret, authorize_url, poll_interval_s, expires_at]
+      properties:
+        flow_id:
+          $ref: "#/components/schemas/Id"
+        poll_secret:
+          description: At least 128 bits of randomness; appears in this answer only
+          type: string
+          pattern: "^[A-Za-z0-9._~-]{16,128}$"
+        authorize_url:
+          description: The identity provider's authorization endpoint with the server's request
+          type: string
+          format: uri
+        poll_interval_s:
+          type: integer
+          minimum: 1
+        expires_at:
+          $ref: "#/components/schemas/Timestamp"
+    BrowserFlowPollRequest:
+      type: object
+      required: [poll_secret]
+      properties:
+        poll_secret:
+          type: string
+    BrowserFlowPoll:
+      oneOf:
+        - type: object
+          title: Pending
+          required: [state]
+          properties:
+            state:
+              const: pending
+        - type: object
+          title: Complete
+          required: [state, access_token, token_type, expires_in]
+          properties:
+            state:
+              const: complete
+            access_token:
+              type: string
+              minLength: 1
+            token_type:
+              const: Bearer
+            expires_in:
+              type: integer
+              minimum: 0
+        - type: object
+          title: Failed
+          required: [state, error]
+          properties:
+            state:
+              const: failed
+            error:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  description: "`access_denied`, `invalid_credentials` or `identity_provider_error` (spec §4.3.2)"
+                  type: string
+                detail:
+                  type: string
+
+    SessionOptions:
+      description: Session options (spec §5.3); a server may add its own, named as spec §2.7 says
+      type: object
+      properties:
+        catalog:
+          type: string
+        schema:
+          type: string
+        autocommit:
+          type: boolean
+        session_tag:
+          description: JSON recorded with the session for observability
+          type: object
+    SessionRequest:
+      type: object
+      properties:
+        options:
+          $ref: "#/components/schemas/SessionOptions"
+    Session:
+      type: object
+      required: [session_id, options, transaction, idle_timeout_s]
+      properties:
+        session_id:
+          $ref: "#/components/schemas/Id"
+        options:
+          $ref: "#/components/schemas/SessionOptions"
+        transaction:
+          description: "`none`, `open` or `aborted` (spec §5.1)"
+          type: string
+          enum: [none, open, aborted]
+        idle_timeout_s:
+          type: integer
+          minimum: 0
+    OptionError:
+      type: object
+      required: [code, detail]
+      properties:
+        code:
+          type: string
+        detail:
+          type: string
+    SessionOptionsResult:
+      type: object
+      required: [options, errors]
+      properties:
+        options:
+          $ref: "#/components/schemas/SessionOptions"
+        errors:
+          description: The options that failed, by name; `{}` when every option was set
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/OptionError"
+
+    ParameterValue:
+      description: A JSON scalar, typed as the engine infers for its parameter (spec §6.1)
+      type: [string, number, integer, boolean, "null"]
+    Parameters:
+      description: Bind parameters, never spliced into the SQL; an array binds positionally, an object by name (spec §6.1)
+      oneOf:
+        - type: array
+          items:
+            $ref: "#/components/schemas/ParameterValue"
+        - type: object
+          additionalProperties:
+            $ref: "#/components/schemas/ParameterValue"
+    StatementRequest:
+      type: object
+      required: [sql]
+      properties:
+        sql:
+          type: string
+        parameters:
+          $ref: "#/components/schemas/Parameters"
+    StatementState:
+      description: "`succeeded`, `failed` and `cancelled` are terminal (spec §6.2)"
+      type: string
+      enum: [queued, running, succeeded, failed, cancelled]
+    CancelReason:
+      type: string
+      enum: [client, timeout, session_closed, killed, cancelled, privilege_revoked, server_shutdown]
+    Partition:
+      type: object
+      required: [index, location, batches, rows]
+      properties:
+        index:
+          type: integer
+          minimum: 0
+        location:
+          description: null for this server; another server's base URL with capability `result_locations` (spec §6.2)
+          type: [string, "null"]
+        batches:
+          description: Known once the partition is complete
+          type: [integer, "null"]
+          minimum: 0
+        rows:
+          description: Known once the partition is complete
+          type: [integer, "null"]
+          minimum: 0
+    RowsResult:
+      type: object
+      required: [kind, schema, partitions, retained]
+      properties:
+        kind:
+          const: rows
+        schema:
+          $ref: "#/components/schemas/ArrowSchemaBase64"
+        partitions:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/Partition"
+        partition_order:
+          description: How rows are spread over more than one partition (spec §6.10)
+          type: string
+          enum: [interleaved, any]
+        retained:
+          description: Whether the result is kept for re-reading (spec §6.5)
+          type: boolean
+        expires_at:
+          $ref: "#/components/schemas/Timestamp"
+    UpdateResult:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          const: update
+        rows_affected:
+          description: Present when the engine counts the rows a statement changed
+          type: integer
+          minimum: 0
+    Statement:
+      description: The statement document (spec §6.2)
+      type: object
+      required: [statement_id, state, submitted_at, result]
+      properties:
+        statement_id:
+          $ref: "#/components/schemas/Id"
+        state:
+          $ref: "#/components/schemas/StatementState"
+        submitted_at:
+          $ref: "#/components/schemas/Timestamp"
+        started_at:
+          $ref: "#/components/schemas/Timestamp"
+        finished_at:
+          $ref: "#/components/schemas/Timestamp"
+        progress:
+          type: object
+          properties:
+            fraction:
+              type: number
+              minimum: 0
+              maximum: 1
+            rows_produced:
+              type: integer
+              minimum: 0
+        result:
+          oneOf:
+            - $ref: "#/components/schemas/RowsResult"
+            - $ref: "#/components/schemas/UpdateResult"
+            - type: "null"
+        error:
+          $ref: "#/components/schemas/Problem"
+        cancel_reason:
+          $ref: "#/components/schemas/CancelReason"
+      allOf:
+        - if:
+            properties:
+              state:
+                enum: [succeeded, failed, cancelled]
+          then:
+            required: [finished_at]
+        - if:
+            properties:
+              state:
+                enum: [failed, cancelled]
+          then:
+            required: [error]
+            properties:
+              result:
+                type: "null"
+        - if:
+            properties:
+              state:
+                const: cancelled
+          then:
+            required: [cancel_reason]
+      example:
+        statement_id: q_19dd
+        state: succeeded
+        submitted_at: "2026-10-16T21:04:05.123Z"
+        started_at: "2026-10-16T21:04:05.130Z"
+        finished_at: "2026-10-16T21:04:05.200Z"
+        result:
+          kind: rows
+          schema: /////4AAAAAQAAAAAAAKAAwABgAFAAgACgAAAAABBAAMAAAACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUAAgABgAHAAwAAAAQABAAAAAAAAECEAAAACAAAAAEAAAAAAAAAAYAAABhbnN3ZXIAAAgADAAIAAcACAAAAAAAAAEgAAAAAAAAAP////8AAAAA
+          partitions:
+            - index: 0
+              location: null
+              batches: 12
+              rows: 98304
+          retained: true
+          expires_at: "2026-10-16T22:04:05Z"
+    SessionCancelResult:
+      type: object
+      required: [cancelled]
+      properties:
+        cancelled:
+          description: The ids of the statements cancelled
+          type: array
+          items:
+            $ref: "#/components/schemas/Id"
+
+    PrepareRequest:
+      type: object
+      required: [sql]
+      properties:
+        sql:
+          type: string
+    PreparedStatement:
+      type: object
+      required: [prepared_id, parameter_schema, result_schema, result_kind]
+      properties:
+        prepared_id:
+          $ref: "#/components/schemas/Id"
+        parameter_schema:
+          $ref: "#/components/schemas/ArrowSchemaBase64"
+        result_schema:
+          description: The rows' schema when the server can tell it before running; otherwise null
+          oneOf:
+            - $ref: "#/components/schemas/ArrowSchemaBase64"
+            - type: "null"
+        result_kind:
+          description: "`rows`, `update`, or null when the server can only tell at execution (spec §7.1)"
+          enum: [rows, update, null]
+    ExecuteRequest:
+      type: object
+      properties:
+        parameters:
+          $ref: "#/components/schemas/Parameters"
+
+    IngestMode:
+      description: "`create` fails if the table exists, `append` if it does not (spec §8.1)"
+      type: string
+      enum: [create, append, replace, create_append]
+      default: create_append
+    IngestResult:
+      type: object
+      required: [rows_ingested]
+      properties:
+        rows_ingested:
+          type: integer
+          minimum: 0
+    IngestTarget:
+      type: object
+      required: [table]
+      properties:
+        table:
+          type: string
+        catalog:
+          type: string
+        schema:
+          type: string
+        mode:
+          $ref: "#/components/schemas/IngestMode"
+        temporary:
+          type: boolean
+    IngestPart:
+      type: object
+      required: [part, rows_received]
+      properties:
+        part:
+          type: integer
+          minimum: 0
+          maximum: 255
+        rows_received:
+          type: integer
+          minimum: 0
+    IngestCommitRequest:
+      type: object
+      required: [part_count]
+      properties:
+        part_count:
+          description: The parts are 0 to part_count - 1
+          type: integer
+          minimum: 1
+          maximum: 256
+    Ingest:
+      description: A partitioned ingest's document (spec §8.3)
+      type: object
+      required: [ingest_id, state, parts]
+      properties:
+        ingest_id:
+          $ref: "#/components/schemas/Id"
+        state:
+          description: "`committed`, `failed` and `aborted` are terminal"
+          type: string
+          enum: [open, committing, committed, failed, aborted]
+        parts:
+          description: The parts whose upload has finished
+          type: array
+          items:
+            $ref: "#/components/schemas/IngestPart"
+        rows_ingested:
+          type: integer
+          minimum: 0
+        error:
+          $ref: "#/components/schemas/Problem"
+      allOf:
+        - if:
+            properties:
+              state:
+                const: committed
+          then:
+            required: [rows_ingested]
+        - if:
+            properties:
+              state:
+                const: failed
+          then:
+            required: [error]
+
+    ServerInfo:
+      description: |
+        Facts about the server, keyed by Flight SQL's `SqlInfo` names without `FLIGHT_SQL_`,
+        in lower case (spec §10). A missing key is unknown, not false. A server's own keys
+        carry its prefix (spec §2.7).
+      type: object
+      properties:
+        server_name:
+          type: string
+        server_version:
+          type: string
+        server_arrow_version:
+          type: string
+        server_read_only:
+          type: boolean
+        sql_identifier_quote_char:
+          type: string
+        sql_transactions_supported:
+          type: boolean
+
+    Problem:
+      description: |
+        A problem document (RFC 9457, spec §11). Clients decide on `code`, never on `title`
+        or `detail`. An error code the client doesn't know is treated by its HTTP status.
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type:
+          description: "`urn:warp-sql:error:` followed by `code`"
+          type: string
+          pattern: "^urn:warp-sql:error:[a-z0-9_]+$"
+        title:
+          description: A short summary of the code, for people
+          type: string
+          minLength: 1
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        code:
+          description: The stable, machine-readable error code (spec §11's table)
+          type: string
+          pattern: "^[a-z0-9_]+$"
+        detail:
+          description: What happened in this case, for people
+          type: string
+        sqlstate:
+          description: The SQL standard's five-character class and subclass
+          type: string
+          pattern: "^[0-9A-Z]{5}$"
+        request_id:
+          description: Also in the server's logs and the Warp-Request-Id header
+          type: string
+        reason:
+          description: Why a token or session stopped standing, on `invalid_token` (spec §4.2) and `session_ended` (spec §5.6)
+          type: string
+          enum: [token_expired, token_revoked, credentials_changed, principal_dropped, killed]
+        cancel_reason:
+          description: On `statement_cancelled` and `statement_timeout` (spec §6.2)
+          $ref: "#/components/schemas/CancelReason"
+      allOf:
+        - if:
+            properties:
+              code:
+                const: session_ended
+          then:
+            required: [reason]
+        - if:
+            properties:
+              code:
+                enum: [statement_cancelled, statement_timeout]
+          then:
+            required: [cancel_reason]
+      example:
+        type: "urn:warp-sql:error:permission_denied"
+        title: Permission denied
+        status: 403
+        code: permission_denied
+        detail: SELECT on table lake.raw.events requires a grant you do not have
+        sqlstate: "42501"
+        request_id: r_5d2
