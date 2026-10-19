@@ -150,6 +150,14 @@ struct MetadataFilter {
   std::optional<int32_t> data_type;
 };
 
+// A session's transaction (spec §5.2): none, open (from BEGIN, or while autocommit is
+// off, to its end), or aborted (a statement failed inside it and the engine refuses the
+// rest until a rollback).
+enum class TransactionState { kNone, kOpen, kAborted };
+
+// "none", "open" or "aborted", as the session document says it.
+std::string_view TransactionStateName(TransactionState state);
+
 enum class MetadataKind {
   kCatalogs,
   kDbSchemas,
@@ -217,6 +225,13 @@ class EngineSession {
 
   virtual void Commit();
   virtual void Rollback();
+
+  // The session's transaction (spec §5.2), as the engine has it now. Called on the
+  // session's engine thread after every call that runs work in it (a statement, an ingest,
+  // an option change, a commit or rollback), whether it succeeded or failed; the SDK keeps
+  // the answer for the session document. An engine without transactions keeps the
+  // default, kNone.
+  virtual TransactionState Transaction() { return TransactionState::kNone; }
 };
 
 struct ServerIdentity {

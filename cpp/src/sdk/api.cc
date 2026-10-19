@@ -148,7 +148,8 @@ bool RetainedQuota::Change(const std::string& principal, int64_t bytes) {
   return true;
 }
 
-// Runs `work` on the session's strand (an engine thread). A failure comes back by value:
+// Runs `work` on the session's strand (an engine thread), then reads the session's
+// transaction again (spec §5.2), whether the work succeeded or not. A failure comes back by value:
 // the engine thread copies it (OwnedError) and this coroutine throws a copy of its own,
 // never the exception object the engine thread caught (as co_spawn's own propagation
 // would), which that thread could free while this one still builds the response from it.
@@ -158,25 +159,29 @@ Task<std::invoke_result_t<Fn>> Api::OnEngine(Session& session, Fn work) {
   std::optional<Error> failure;
   if constexpr (std::is_void_v<Result>) {
     co_await net::co_spawn(
-        session.strand(), [work = std::move(work), &failure]() mutable -> Task<void> {
+        session.strand(), [work = std::move(work), &failure, &session]() mutable -> Task<void> {
           try {
             work();
           } catch (...) {
             failure.emplace(OwnedError(std::current_exception()));
           }
+          session.RefreshTransaction();
           co_return;
         },
         net::use_awaitable);
     if (failure) throw Error(*failure);
   } else {
     std::optional<Result> result = co_await net::co_spawn(
-        session.strand(), [work = std::move(work), &failure]() mutable -> Task<std::optional<Result>> {
+        session.strand(),
+        [work = std::move(work), &failure, &session]() mutable -> Task<std::optional<Result>> {
+          std::optional<Result> result;
           try {
-            co_return std::optional<Result>(work());
+            result.emplace(work());
           } catch (...) {
             failure.emplace(OwnedError(std::current_exception()));
           }
-          co_return std::nullopt;
+          session.RefreshTransaction();
+          co_return result;
         },
         net::use_awaitable);
     if (failure) throw Error(*failure);
@@ -665,6 +670,7 @@ json::object Api::SessionDocument(Session& session) const {
   return json::object{
       {"session_id", session.id()},
       {"options", session.options()},
+      {"transaction", TransactionStateName(session.transaction())},
       {"idle_timeout_s", state_.options.session_idle_timeout.count()},
   };
 }
@@ -691,6 +697,12 @@ Task<Response> Api::CreateSession(Request& request) {
   });
   session->SetEngine(std::move(opened.first));
   session->set_options(std::move(opened.second));
+  // The engine's first answer (a session opened with autocommit off starts in one), on its
+  // thread as every engine call is.
+  co_await net::co_spawn(session->strand(), [session]() -> Task<void> {
+    session->RefreshTransaction();
+    co_return;
+  }, net::use_awaitable);
   state_.sessions.Add(session);
 
   Response response = JsonResponse(http::status::created, SessionDocument(*session));
@@ -851,10 +863,15 @@ void Api::Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> state
           // the document keeps the options it had; the statement itself succeeded
         }
       }
+      // Before the statement ends, so a client that reads the session once its statement
+      // is over sees what the statement did to the transaction (spec §5.2).
+      session->RefreshTransaction();
       statement->Finish();
     } catch (const Error& error) {
+      session->RefreshTransaction();
       statement->Fail(error);
     } catch (const std::exception& error) {
+      session->RefreshTransaction();
       statement->Fail(Error(ErrorCode::kExecutionError, error.what()));
     }
   });
@@ -1230,6 +1247,7 @@ Task<Response> Api::IngestPart(Request& request, const std::string& session_id, 
       } catch (...) {
         error = std::current_exception();
       }
+      session->RefreshTransaction();
       ingest->EngineDone(rows, error);
     });
   }
@@ -1317,18 +1335,24 @@ Task<Response> Api::Ingest(Request& request, const std::string& session_id) {
   auto completion = std::make_shared<Completion<int64_t>>();
   net::post(session->strand(), [session, queue, completion, target] {
     std::shared_ptr<ValidatedReader> rows;
+    std::optional<int64_t> written;
+    std::exception_ptr failure;
     try {
       rows = OpenValidatedIpc(QueueInput(queue));
-      completion->Succeed(session->engine().Ingest(target, rows));
-    } catch (const Error& error) {
-      if (rows && rows->failure()) {
-        completion->Fail(std::make_exception_ptr(
-            Error(ErrorCode::kUnsupportedArrowType, *rows->failure())));
-      } else {
-        completion->Fail(std::current_exception());
-      }
+      written = session->engine().Ingest(target, rows);
+    } catch (const Error&) {
+      failure = rows && rows->failure() ? std::make_exception_ptr(Error(
+                                              ErrorCode::kUnsupportedArrowType, *rows->failure()))
+                                        : std::current_exception();
     } catch (...) {
-      completion->Fail(std::current_exception());
+      failure = std::current_exception();
+    }
+    // Before the answer, so the client's next look at the session sees it (spec §5.2).
+    session->RefreshTransaction();
+    if (failure) {
+      completion->Fail(failure);
+    } else {
+      completion->Succeed(*written);
     }
     queue->StopReading();
   });

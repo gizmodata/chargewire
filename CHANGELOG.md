@@ -9,6 +9,22 @@ spec's version is the repository's version.
 
 ### Added
 
+- The session's transaction (spec §5.2): the session document carries `transaction`,
+  `none`, `open` or `aborted`, so a client shows whether a transaction is open, and
+  whether a failed or cancelled statement has left it needing a rollback, without
+  tracking `BEGIN` and `COMMIT` itself (which it can't do for SQL it doesn't parse, nor for
+  errors an engine forgives). `aborted` is what the engine does: DuckDB keeps a
+  transaction usable after a syntax error, so the reference server reports `open` there.
+  The SDK's `EngineSession::Transaction()` (default `kNone`) is read on the engine thread
+  after every statement, ingest, option change, commit and rollback, before the statement
+  ends, so a client that reads the session once its result is done sees what it did. The
+  DuckDB backend follows `BEGIN`/`START` and `COMMIT`/`END`/`ROLLBACK`/`ABORT` by
+  statement type and first keyword, and asks DuckDB whether an open transaction is
+  aborted. Conformance: ten tests in `test_sessions.py` (each spelling of begin and end, a
+  multi-statement request, an abort until `ROLLBACK`, what the engine reports after a
+  syntax, catalog and conversion error and after a cancel, failures outside a
+  transaction, and `autocommit` off across commits).
+
 - Why a token stopped working (spec §4.2): when a server refuses a token it issued and
   verified (an expired one, or one it ended because the principal's credentials changed,
   the principal was dropped or disabled, or the token was revoked), the `invalid_token`
@@ -182,6 +198,10 @@ spec's version is the repository's version.
   server.
 
 ### Changed
+
+- With `autocommit` false, a SQL `COMMIT` or `ROLLBACK` now starts the next transaction,
+  as the commit and rollback calls do (spec §5.5). The reference server used to leave
+  manual-commit mode silently after one.
 
 - TLS servers refuse TLS 1.2 renegotiation (a connection's certificate is fixed at its
   handshake), send the client CA list in the certificate request, and set a session id

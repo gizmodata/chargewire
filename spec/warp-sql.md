@@ -341,17 +341,34 @@ session.
 {
   "session_id": "s_8f3k…",
   "options": {"catalog": "lake", "schema": "analytics", "autocommit": true},
+  "transaction": "none",
   "idle_timeout_s": 900
 }
 ```
+
+`transaction` is the session's transaction (§5.5), read-only:
+
+| Value | Meaning |
+|---|---|
+| `none` | No transaction is open: each statement commits as it runs |
+| `open` | A transaction is open, from SQL `BEGIN` (or `START TRANSACTION`) to its `COMMIT` or `ROLLBACK`, or for as long as `autocommit` is false |
+| `aborted` | A statement failed or was cancelled inside the transaction, and the engine refuses every statement until a rollback |
+
+`aborted` says what the engine does, not merely that a statement failed: an engine that
+keeps a transaction usable after some errors (DuckDB does after a syntax error) reports
+`open` then. With `autocommit` false, a commit or rollback, through §5.5's calls or in
+SQL, ends the transaction and starts the next, so the value stays `open` (and is `open`
+again once an `aborted` one is rolled back).
 
 The session belongs to the principal the access token identifies (§9.1), for its
 whole life.
 
 ### 5.2 `GET /warp/v1/sessions/{session_id}`
 
-Returns the session document above, with the session's current options: a change
-made through SQL (`USE other_schema`) shows here too. Clients MAY use it as a cheap
+Returns the session document above, with the session's current options and
+transaction: a change made through SQL (`USE other_schema`, `BEGIN`) shows here too, once
+the statement that made it has ended (its result read, or its failure reported). Clients
+SHOULD read `transaction` here rather than track `BEGIN` and `COMMIT` themselves. Clients MAY use it as a cheap
 liveness probe: for a session the server ended (§5.6) it answers `401` `session_ended`
 with the `reason`, as every other request naming the session does, and it does not wait
 for a statement the session is running.
@@ -387,7 +404,9 @@ Ends the session, cancels its running statements, and frees its retained results
 With `autocommit` false, `POST /warp/v1/sessions/{session_id}/commit` and
 `POST /warp/v1/sessions/{session_id}/rollback` end the current transaction (`204`)
 and the next statement starts a new one. SQL transaction statements (`BEGIN`,
-`COMMIT`, `ROLLBACK`) also work, as the engine allows. Capability: `transactions`.
+`COMMIT`, `ROLLBACK`) also work, as the engine allows; with `autocommit` false a SQL
+`COMMIT` or `ROLLBACK` starts the next transaction too, as the calls do. The session
+document's `transaction` (§5.2) says where the session stands. Capability: `transactions`.
 
 ### 5.6 Sessions that no longer exist
 

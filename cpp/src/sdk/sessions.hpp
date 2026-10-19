@@ -47,6 +47,12 @@ class Session {
   json::object options() const;
   void set_options(json::object options);
 
+  // The session's transaction as the engine last reported it (spec §5.2).
+  TransactionState transaction() const;
+  // Asks the engine for its transaction again. Call on strand(), after work ran in it
+  // (or failed); an engine that can't answer keeps the last value.
+  void RefreshTransaction();
+
   // Prepared statements (spec §7). Engine objects: destroy them on strand().
   std::string AddPrepared(std::shared_ptr<PreparedStatement> prepared);
   // Throws prepared_not_found.
@@ -103,6 +109,7 @@ class Session {
 
   mutable std::mutex mutex_;
   json::object options_;
+  TransactionState transaction_ = TransactionState::kNone;
   std::map<std::string, std::shared_ptr<Statement>> statements_;
   std::map<std::string, std::shared_ptr<PreparedStatement>> prepared_;
   std::map<std::string, std::shared_ptr<IngestOperation>> ingests_;

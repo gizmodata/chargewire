@@ -47,6 +47,18 @@ OptionErrors EngineSession::SetOptions(const boost::json::object& options) {
 
 boost::json::object EngineSession::Options() { return {}; }
 
+std::string_view TransactionStateName(TransactionState state) {
+  switch (state) {
+    case TransactionState::kOpen:
+      return "open";
+    case TransactionState::kAborted:
+      return "aborted";
+    case TransactionState::kNone:
+      break;
+  }
+  return "none";
+}
+
 void EngineSession::Commit() {
   throw Error(ErrorCode::kNotImplemented, "this server does not support transactions");
 }
@@ -135,6 +147,26 @@ json::object Session::options() const {
 void Session::set_options(json::object options) {
   std::lock_guard lock(mutex_);
   options_ = std::move(options);
+}
+
+TransactionState Session::transaction() const {
+  std::lock_guard lock(mutex_);
+  return transaction_;
+}
+
+void Session::RefreshTransaction() {
+  TransactionState now;
+  {
+    std::lock_guard lock(engine_mutex_);
+    if (!engine_) return;
+    try {
+      now = engine_->Transaction();
+    } catch (const std::exception&) {
+      return;  // the engine is going away, or can't tell: keep what it said last
+    }
+  }
+  std::lock_guard lock(mutex_);
+  transaction_ = now;
 }
 
 void Session::AddIngest(std::shared_ptr<IngestOperation> ingest) {

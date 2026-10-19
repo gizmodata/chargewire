@@ -36,6 +36,7 @@ class DuckDBSession : public warpsql::EngineSession {
   bool TakeOptionsChanged() override { return std::exchange(options_changed_, false); }
   void Commit() override;
   void Rollback() override;
+  warpsql::TransactionState Transaction() override;
 
  protected:
   duckdb_v2_connection_handle connection() const { return connection_.get(); }
@@ -51,6 +52,13 @@ class DuckDBSession : public warpsql::EngineSession {
 
  private:
   void EndTransaction(std::string_view sql);
+  // Notes a transaction statement (BEGIN, COMMIT, ...) that just ran. With autocommit off
+  // a SQL COMMIT or ROLLBACK starts the next transaction, as the commit and rollback
+  // calls do (spec §5.5), so the session never leaves manual-commit mode by accident.
+  void Ran(duckdb_v2_sql_statement_handle statement);
+  // Starts the transaction a SQL COMMIT or ROLLBACK left owed (Ran()), once the statement's
+  // result is gone: DuckDB runs one result at a time on a connection.
+  void BeginOwedTransaction();
   // The arrow_lossless_conversion value this session's results use (its own, else the
   // instance's).
   bool Lossless();
@@ -60,6 +68,10 @@ class DuckDBSession : public warpsql::EngineSession {
   duckdb_v2_factory_handle factory_ = nullptr;
   std::unique_ptr<ValueFactory> values_;
   bool autocommit_ = true;
+  // The transaction as the statements that ran left it (spec §5.2); Transaction() asks
+  // DuckDB whether an open one has been aborted.
+  warpsql::TransactionState transaction_ = warpsql::TransactionState::kNone;
+  bool transaction_owed_ = false;  // autocommit off, and a SQL COMMIT/ROLLBACK just ended one
   boost::json::value session_tag_ = nullptr;
   bool options_changed_ = false;  // a statement ran that can move the current catalog/schema
 };

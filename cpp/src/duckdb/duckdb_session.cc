@@ -182,6 +182,63 @@ Described Describe(duckdb_v2_connection_handle connection,
   }
 }
 
+// What a statement does to the session's transaction, from its type and its first
+// keyword (tokens, so a leading comment is no keyword): BEGIN and START open one;
+// COMMIT, END, ROLLBACK and ABORT end it.
+enum class TransactionEffect { kNone, kBegin, kEnd };
+
+TransactionEffect TransactionEffectOf(duckdb_v2_connection_handle connection,
+                                      duckdb_v2_sql_statement_handle statement) {
+  if (StatementType(statement) != DUCKDB_V2_STATEMENT_TYPE_TRANSACTION) {
+    return TransactionEffect::kNone;
+  }
+  duckdb_v2_str text{};
+  Call([&](auto* e) { return duckdb_v2_sql_statement_get_text(statement, &text, e); });
+  const std::string_view sql(text.ptr == nullptr ? "" : text.ptr, text.len);
+  TokenIterator tokens;
+  Call([&](auto* e) { return duckdb_v2_tokenize_sql(connection, &text, tokens.out(), e); });
+  for (;;) {
+    DUCKDB_V2_TOKEN_TYPE type = DUCKDB_V2_TOKEN_TYPE_INVALID;
+    idx_t start = 0;
+    idx_t length = 0;
+    Call([&](auto* e) {
+      return duckdb_v2_token_iterator_next(tokens.get(), &type, &start, &length, e);
+    });
+    if (type == DUCKDB_V2_TOKEN_TYPE_END_OF_INPUT) return TransactionEffect::kNone;
+    if (type == DUCKDB_V2_TOKEN_TYPE_COMMENT) continue;
+    std::string word(sql.substr(start, length));
+    std::transform(word.begin(), word.end(), word.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    if (word == "BEGIN" || word == "START") return TransactionEffect::kBegin;
+    if (word == "COMMIT" || word == "END" || word == "ROLLBACK" || word == "ABORT") {
+      return TransactionEffect::kEnd;
+    }
+    return TransactionEffect::kNone;
+  }
+}
+
+// Whether DuckDB has aborted the connection's open transaction. Most failed statements
+// abort it, but not all (a parser error leaves it usable), so DuckDB is asked: in an
+// aborted transaction even SELECT 1 is refused, with a transaction error.
+bool TransactionAborted(duckdb_v2_connection_handle connection) {
+  auto statements = Parse(connection, "SELECT 1");
+  Result result;
+  duckdb_v2_error_info_handle err = nullptr;
+  const DUCKDB_V2_ERROR code = duckdb_v2_statement_execute(
+      connection, statements.at(0).get(), nullptr, nullptr, 0, result.out(), &err);
+  if (code == DUCKDB_V2_ERROR_NONE) {
+    idx_t changed = 0;
+    Call([&](auto* e) { return duckdb_v2_result_drain(result.get(), &changed, e); });
+    return false;
+  }
+  DUCKDB_V2_ERROR detailed = code;
+  if (err != nullptr) {
+    duckdb_v2_error_info_get_code(err, &detailed);
+    duckdb_v2_error_info_destroy(&err);
+  }
+  return detailed == DUCKDB_V2_ERROR_DATABASE_TRANSACTION;
+}
+
 bool HasNull(const json::value& parameters) {
   if (parameters.is_array()) {
     for (const auto& item : parameters.as_array()) {
@@ -235,8 +292,11 @@ warpsql::StatementOutcome DuckDBSession::Execute(std::string_view sql,
     }
   }
   // Every statement but the last runs to completion; the last one's result is returned.
+  BeginOwedTransaction();
   for (std::size_t i = 0; i + 1 < statements.size(); i++) {
     RunToEnd(connection_.get(), statements[i].get());
+    Ran(statements[i].get());
+    BeginOwedTransaction();
   }
   auto last = std::make_shared<SqlStatement>(std::move(statements.back()));
 
@@ -252,6 +312,7 @@ warpsql::StatementOutcome DuckDBSession::Execute(std::string_view sql,
                                              handles.empty() ? nullptr : handles.data(),
                                              handles.size(), batch_rows_, result.out(), err);
   });
+  Ran(last->get());
   return Outcome(result, last);
 }
 
@@ -278,6 +339,7 @@ warpsql::StatementOutcome DuckDBSession::ExecutePrepared(warpsql::PreparedStatem
                                                          const warpsql::Parameters& parameters) {
   auto& prepared = static_cast<DuckDBPrepared&>(statement);
   auto run = [&](const BoundValues& bound) {
+    BeginOwedTransaction();
     const auto handles = bound.Handles();
     const auto names = bound.NameHandles();
     ArrowResult result;
@@ -286,6 +348,7 @@ warpsql::StatementOutcome DuckDBSession::ExecutePrepared(warpsql::PreparedStatem
           prepared.prepared(), names.empty() ? nullptr : names.data(),
           handles.empty() ? nullptr : handles.data(), handles.size(), batch_rows_, result.out(), err);
     });
+    Ran(prepared.statement());
     // The prepared statement outlives its executions: the SDK destroys it on the
     // session's strand, after any statement that uses it.
     return Outcome(result, nullptr);
@@ -340,6 +403,7 @@ warpsql::StatementOutcome DuckDBSession::ExecutePrepared(warpsql::PreparedStatem
 
 int64_t DuckDBSession::Ingest(const warpsql::IngestTarget& target,
                               std::shared_ptr<arrow::RecordBatchReader> rows) {
+  BeginOwedTransaction();
   return warpduckdb::Ingest(connection_.get(), target, std::move(rows));
 }
 
@@ -706,6 +770,7 @@ std::optional<double> DuckDBSession::Progress() {
 }
 
 warpsql::OptionErrors DuckDBSession::SetOptions(const json::object& options) {
+  BeginOwedTransaction();
   warpsql::OptionErrors errors;
   auto apply = [&](std::string_view key, auto&& fn) {
     const json::value* value = options.if_contains(key);
@@ -741,6 +806,7 @@ warpsql::OptionErrors DuckDBSession::SetOptions(const json::object& options) {
       RunSql(connection_.get(), "COMMIT");
     }
     autocommit_ = on;
+    transaction_ = on ? warpsql::TransactionState::kNone : warpsql::TransactionState::kOpen;
   });
   apply("session_tag", [&](const json::value& value) { session_tag_ = value; });
   apply("arrow_lossless_conversion", [&](const json::value& value) {
@@ -791,10 +857,41 @@ void DuckDBSession::Commit() { EndTransaction("COMMIT"); }
 void DuckDBSession::Rollback() { EndTransaction("ROLLBACK"); }
 
 void DuckDBSession::EndTransaction(std::string_view sql) {
+  BeginOwedTransaction();
   RunSql(connection_.get(), sql);
+  transaction_ = warpsql::TransactionState::kNone;
   if (!autocommit_) {
     RunSql(connection_.get(), "BEGIN TRANSACTION");  // the next statement starts a new one
+    transaction_ = warpsql::TransactionState::kOpen;
   }
+}
+
+void DuckDBSession::Ran(duckdb_v2_sql_statement_handle statement) {
+  switch (TransactionEffectOf(connection_.get(), statement)) {
+    case TransactionEffect::kBegin:
+      transaction_ = warpsql::TransactionState::kOpen;
+      break;
+    case TransactionEffect::kEnd:
+      transaction_ = warpsql::TransactionState::kNone;
+      transaction_owed_ = !autocommit_;
+      break;
+    case TransactionEffect::kNone:
+      break;
+  }
+}
+
+void DuckDBSession::BeginOwedTransaction() {
+  if (!std::exchange(transaction_owed_, false)) return;
+  RunSql(connection_.get(), "BEGIN TRANSACTION");
+  transaction_ = warpsql::TransactionState::kOpen;
+}
+
+warpsql::TransactionState DuckDBSession::Transaction() {
+  BeginOwedTransaction();
+  if (transaction_ == warpsql::TransactionState::kOpen && TransactionAborted(connection_.get())) {
+    transaction_ = warpsql::TransactionState::kAborted;
+  }
+  return transaction_;
 }
 
 }  // namespace warpduckdb

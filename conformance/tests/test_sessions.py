@@ -178,3 +178,143 @@ def test_an_expired_token_is_refused_until_the_client_signs_in_again():
         warp.close()
     finally:
         assert stop_server(server=server) == 0, server.log_tail()
+
+
+# ---- §5.2: the session's transaction ----------------------------------------------------
+
+def transaction_of(warp, session_id: str) -> str:
+    response = warp.http.get(url=warp.session_url(session_id), headers=warp.headers())
+    assert response.status_code == 200, response.text
+    return response.json()["transaction"]
+
+
+def outcome(warp, session_id: str, sql: str) -> str:
+    """The statement's end: "succeeded", or "failed" (a failure may come back as the submit's
+    own problem document, or as a failed statement)."""
+    response = warp.submit(session_id=session_id, sql=sql)
+    if response.status_code >= 400:
+        return "failed"
+    doc = response.json()
+    if doc["state"] not in ("succeeded", "failed", "cancelled"):
+        doc = warp.wait_done(session_id=session_id, statement_id=doc["statement_id"])
+    return doc["state"]
+
+
+def refused_as_aborted(warp, session_id: str) -> bool:
+    """Whether the engine refuses the next statement because the transaction is aborted."""
+    return outcome(warp=warp, session_id=session_id, sql="SELECT 1") == "failed"
+
+
+def test_a_new_session_has_no_transaction(warp):
+    response = warp.http.post(url="/warp/v1/sessions", headers=warp.headers(), json={})
+    assert response.status_code == 201, response.text
+    assert response.json()["transaction"] == "none"
+
+
+def test_a_session_opened_with_autocommit_off_is_in_a_transaction(warp):
+    response = warp.http.post(url="/warp/v1/sessions", headers=warp.headers(),
+                              json={"options": {"autocommit": False}})
+    assert response.status_code == 201, response.text
+    assert response.json()["transaction"] == "open"
+
+
+def test_sql_begin_opens_and_commit_ends_a_transaction(warp, session_id):
+    warp.execute(session_id=session_id, sql="CREATE TABLE tx_sql_commit (v INTEGER)")
+    assert transaction_of(warp=warp, session_id=session_id) == "none"
+    assert warp.execute(session_id=session_id, sql="BEGIN")["state"] == "succeeded"
+    assert transaction_of(warp=warp, session_id=session_id) == "open"
+    warp.execute(session_id=session_id, sql="INSERT INTO tx_sql_commit VALUES (1)")
+    assert transaction_of(warp=warp, session_id=session_id) == "open"
+    assert warp.execute(session_id=session_id, sql="COMMIT")["state"] == "succeeded"
+    assert transaction_of(warp=warp, session_id=session_id) == "none"
+
+
+def test_every_spelling_of_begin_and_end_is_followed(warp, session_id):
+    for begin, end in [("START TRANSACTION", "END"), ("BEGIN TRANSACTION", "ROLLBACK"),
+                       ("/* a comment first */ BEGIN", "ABORT"), ("begin", "commit")]:
+        assert warp.execute(session_id=session_id, sql=begin)["state"] == "succeeded", begin
+        assert transaction_of(warp=warp, session_id=session_id) == "open", begin
+        assert warp.execute(session_id=session_id, sql=end)["state"] == "succeeded", end
+        assert transaction_of(warp=warp, session_id=session_id) == "none", end
+
+
+def test_a_transaction_opened_in_a_multi_statement_request_is_open(warp, session_id):
+    warp.execute(session_id=session_id, sql="CREATE TABLE tx_multi (v INTEGER)")
+    doc = warp.execute(session_id=session_id, sql="BEGIN; INSERT INTO tx_multi VALUES (1)")
+    assert doc["state"] == "succeeded", doc
+    assert transaction_of(warp=warp, session_id=session_id) == "open"
+    warp.execute(session_id=session_id, sql="ROLLBACK")
+    assert transaction_of(warp=warp, session_id=session_id) == "none"
+
+
+def test_a_statement_that_aborts_the_transaction_says_so_until_rollback(warp, session_id):
+    warp.execute(session_id=session_id, sql="CREATE TABLE tx_abort (v INTEGER PRIMARY KEY)")
+    warp.execute(session_id=session_id, sql="BEGIN")
+    assert outcome(warp=warp, session_id=session_id, sql="INSERT INTO tx_abort VALUES (1), (1)") == "failed"
+    assert transaction_of(warp=warp, session_id=session_id) == "aborted"
+    assert refused_as_aborted(warp=warp, session_id=session_id)
+    assert transaction_of(warp=warp, session_id=session_id) == "aborted"
+    assert warp.execute(session_id=session_id, sql="ROLLBACK")["state"] == "succeeded"
+    assert transaction_of(warp=warp, session_id=session_id) == "none"
+    assert not refused_as_aborted(warp=warp, session_id=session_id)
+
+
+def test_the_transaction_reported_after_a_failure_is_the_one_the_engine_has(warp, session_id):
+    # Engines differ in which errors abort a transaction (DuckDB keeps it usable after a
+    # syntax error, not after a missing table): "aborted" must mean the next statement is
+    # refused, and "open" that it runs.
+    for bad in ["SELEC 1", "SELECT * FROM tx_no_such_table", "SELECT 'x'::INTEGER"]:
+        warp.execute(session_id=session_id, sql="BEGIN")
+        assert outcome(warp=warp, session_id=session_id, sql=bad) == "failed", bad
+        reported = transaction_of(warp=warp, session_id=session_id)
+        assert reported in ("open", "aborted"), (bad, reported)
+        assert refused_as_aborted(warp=warp, session_id=session_id) == (reported == "aborted"), (bad, reported)
+        warp.execute(session_id=session_id, sql="ROLLBACK")
+        assert transaction_of(warp=warp, session_id=session_id) == "none", bad
+
+
+def test_a_failure_outside_a_transaction_leaves_none(warp, session_id):
+    assert outcome(warp=warp, session_id=session_id, sql="SELECT * FROM tx_missing") == "failed"
+    assert transaction_of(warp=warp, session_id=session_id) == "none"
+    # ROLLBACK with nothing to roll back fails and changes nothing.
+    outcome(warp=warp, session_id=session_id, sql="ROLLBACK")
+    assert transaction_of(warp=warp, session_id=session_id) == "none"
+
+
+def test_a_cancelled_statement_reports_what_it_left(warp, session_id):
+    import time
+
+    from test_control import SLOW
+
+    warp.execute(session_id=session_id, sql="BEGIN")
+    response = warp.submit(session_id=session_id, sql=SLOW, headers={"Prefer": "respond-async"})
+    statement_id = response.json()["statement_id"]
+    time.sleep(0.5)
+    warp.http.post(url=f"{warp.statement_url(session_id, statement_id)}/cancel", headers=warp.headers())
+    doc = warp.wait_done(session_id=session_id, statement_id=statement_id, timeout=20)
+    assert doc["state"] == "cancelled", doc
+    reported = transaction_of(warp=warp, session_id=session_id)
+    assert reported in ("open", "aborted"), reported
+    assert refused_as_aborted(warp=warp, session_id=session_id) == (reported == "aborted"), reported
+    warp.execute(session_id=session_id, sql="ROLLBACK")
+    assert transaction_of(warp=warp, session_id=session_id) == "none"
+
+
+def test_autocommit_off_keeps_a_transaction_open_across_commits(warp, session_id):
+    warp.http.patch(url=warp.session_url(session_id), headers=warp.headers(),
+                    json={"options": {"autocommit": False}})
+    assert transaction_of(warp=warp, session_id=session_id) == "open"
+    assert warp.http.post(url=f"{warp.session_url(session_id)}/commit",
+                          headers=warp.headers()).status_code == 204
+    assert transaction_of(warp=warp, session_id=session_id) == "open"
+    # A SQL COMMIT ends it the same way: the next statement is in a new one.
+    assert warp.execute(session_id=session_id, sql="COMMIT")["state"] == "succeeded"
+    assert transaction_of(warp=warp, session_id=session_id) == "open"
+    assert outcome(warp=warp, session_id=session_id, sql="SELECT * FROM tx_missing_too") == "failed"
+    assert transaction_of(warp=warp, session_id=session_id) == "aborted"
+    assert warp.http.post(url=f"{warp.session_url(session_id)}/rollback",
+                          headers=warp.headers()).status_code == 204
+    assert transaction_of(warp=warp, session_id=session_id) == "open"
+    warp.http.patch(url=warp.session_url(session_id), headers=warp.headers(),
+                    json={"options": {"autocommit": True}})
+    assert transaction_of(warp=warp, session_id=session_id) == "none"
