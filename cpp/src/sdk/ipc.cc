@@ -5,7 +5,9 @@
 #include <arrow/ipc/writer.h>
 #include <arrow/util/compression.h>
 
+#include <cstring>
 #include <stdexcept>
+#include <vector>
 
 #include "ids.hpp"
 
@@ -117,13 +119,84 @@ class GatherStream : public arrow::io::OutputStream {
 // reader doesn't spend time decompressing it (random doubles, already-compact data).
 constexpr double kMinSpaceSavings = 0.1;
 
+// Compresses only the buffers worth it. A large buffer is judged by a sample first: one
+// whose sample shrinks by less than `min_sample_savings` is not compressed at all (the
+// codec answers that it didn't shrink, so Arrow's min_space_savings sends it as it is),
+// which spares the CPU a whole compression would cost.
+//
+// lz4_frame is the codec of fast links, where CPU, not bandwidth, limits a result: it
+// compresses a buffer only when the sample loses more than half its bytes, which keeps
+// the cheap wins (fixed-width columns with small values, repetitive strings) and skips
+// buffers that cost as much to compress as sending them does (free text, keys spread over
+// their range, dates). zstd is for scarce bandwidth and compresses whatever shrinks.
+class SelectiveCodec : public arrow::util::Codec {
+ public:
+  SelectiveCodec(std::unique_ptr<arrow::util::Codec> inner, double min_sample_savings)
+      : inner_(std::move(inner)), min_sample_savings_(min_sample_savings) {}
+
+  arrow::Result<int64_t> Compress(int64_t input_len, const uint8_t* input, int64_t output_buffer_len,
+                                  uint8_t* output_buffer) override {
+    if (input_len >= kSampleFrom && !Worthwhile(input_len, input)) {
+      return input_len;  // as large as the input: sent uncompressed
+    }
+    return inner_->Compress(input_len, input, output_buffer_len, output_buffer);
+  }
+  arrow::Result<int64_t> Decompress(int64_t input_len, const uint8_t* input, int64_t output_buffer_len,
+                                    uint8_t* output_buffer) override {
+    return inner_->Decompress(input_len, input, output_buffer_len, output_buffer);
+  }
+  int64_t MaxCompressedLen(int64_t input_len, const uint8_t* input) override {
+    return inner_->MaxCompressedLen(input_len, input);
+  }
+  arrow::Result<std::shared_ptr<arrow::util::Compressor>> MakeCompressor() override {
+    return inner_->MakeCompressor();
+  }
+  arrow::Result<std::shared_ptr<arrow::util::Decompressor>> MakeDecompressor() override {
+    return inner_->MakeDecompressor();
+  }
+  arrow::Compression::type compression_type() const override { return inner_->compression_type(); }
+  int minimum_compression_level() const override { return inner_->minimum_compression_level(); }
+  int maximum_compression_level() const override { return inner_->maximum_compression_level(); }
+  int default_compression_level() const override { return inner_->default_compression_level(); }
+  int compression_level() const override { return inner_->compression_level(); }
+
+ private:
+  // Buffers smaller than this are compressed without a sample.
+  static constexpr int64_t kSampleFrom = 256 * 1024;
+  // The sample: this much from the start, the middle and the end of the buffer.
+  static constexpr int64_t kSampleSlice = 16 * 1024;
+
+  bool Worthwhile(int64_t input_len, const uint8_t* input) {
+    thread_local std::vector<uint8_t> sample;
+    thread_local std::vector<uint8_t> packed;
+    sample.resize(3 * kSampleSlice);
+    for (int i = 0; i < 3; i++) {
+      const int64_t at = i == 0 ? 0 : i == 1 ? (input_len - kSampleSlice) / 2 : input_len - kSampleSlice;
+      std::memcpy(sample.data() + i * kSampleSlice, input + at, kSampleSlice);
+    }
+    const int64_t bound = inner_->MaxCompressedLen(static_cast<int64_t>(sample.size()), sample.data());
+    packed.resize(static_cast<std::size_t>(bound));
+    auto size = inner_->Compress(static_cast<int64_t>(sample.size()), sample.data(), bound, packed.data());
+    if (!size.ok()) return true;  // let the real compression report it
+    return 1.0 - static_cast<double>(*size) / static_cast<double>(sample.size()) >= min_sample_savings_;
+  }
+
+  std::unique_ptr<arrow::util::Codec> inner_;
+  double min_sample_savings_;
+};
+
+// What a sample must lose for its buffer to be compressed (see SelectiveCodec).
+constexpr double kLz4MinSampleSavings = 0.55;
+constexpr double kZstdMinSampleSavings = kMinSpaceSavings;
+
 arrow::ipc::IpcWriteOptions WriteOptions(IpcCompression compression) {
   auto options = arrow::ipc::IpcWriteOptions::Defaults();
   if (compression == IpcCompression::kNone) return options;
-  auto codec = arrow::util::Codec::Create(compression == IpcCompression::kZstd ? arrow::Compression::ZSTD
-                                                                               : arrow::Compression::LZ4_FRAME);
+  const bool zstd = compression == IpcCompression::kZstd;
+  auto codec = arrow::util::Codec::Create(zstd ? arrow::Compression::ZSTD : arrow::Compression::LZ4_FRAME);
   Check(codec.status());
-  options.codec = std::move(codec).ValueUnsafe();
+  options.codec = std::make_shared<SelectiveCodec>(std::move(codec).ValueUnsafe(),
+                                                   zstd ? kZstdMinSampleSavings : kLz4MinSampleSavings);
   options.min_space_savings = kMinSpaceSavings;
   return options;
 }

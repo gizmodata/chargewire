@@ -170,6 +170,11 @@ LZ4_FRAME_MAGIC = b"\x04\x22\x4d\x18"
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 
+# Rows every codec shrinks: a server may leave buffers that barely compress as they are
+# (spec §8.2), so the tests that look for a codec's frames use data that compresses well.
+COMPRESSIBLE = "SELECT i, i % 7 AS small, 'repeated text ' || (i % 3) AS s FROM range(1000000) t(i)"
+
+
 def compressed_result(warp, session_id, statement_id, accept: str):
     response = warp.result(session_id=session_id, statement_id=statement_id,
                            headers={"Warp-IPC-Compression": accept})
@@ -184,7 +189,7 @@ def test_discovery_lists_both_codecs(warp):
 
 
 def test_lz4_frame_compressed_results(warp, session_id):
-    doc = submit_async(warp=warp, session_id=session_id, sql=BIG)
+    doc = submit_async(warp=warp, session_id=session_id, sql=COMPRESSIBLE)
     warp.wait_done(session_id=session_id, statement_id=doc["statement_id"])
     plain = warp.result(session_id=session_id, statement_id=doc["statement_id"])
     packed = compressed_result(warp=warp, session_id=session_id, statement_id=doc["statement_id"],
@@ -196,7 +201,7 @@ def test_lz4_frame_compressed_results(warp, session_id):
 
 
 def test_compression_follows_the_clients_preference(warp, session_id):
-    doc = submit_async(warp=warp, session_id=session_id, sql=BIG)
+    doc = submit_async(warp=warp, session_id=session_id, sql=COMPRESSIBLE)
     warp.wait_done(session_id=session_id, statement_id=doc["statement_id"])
     plain = read_table(content=warp.result(session_id=session_id, statement_id=doc["statement_id"]).content)
     # The first codec the server supports wins; names it doesn't know are skipped, and
