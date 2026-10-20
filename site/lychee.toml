@@ -7,10 +7,8 @@ timeout = 30
 accept = ["200..=299", "403", "429"]   # some sites refuse bots (403) or rate-limit (429)
 
 exclude = [
-  # gizmodata's repositories are internal until the public launch: an anonymous check gets
-  # 404. Remove this line at launch (README: launch checklist).
-  '^https://github\.com/gizmodata/',
-  # The site's own future address.
+  # gizmodata's repositories are excluded by site.yml while they are internal (DOCS_GA unset).
+  # The site's own address.
   '^https://warpsql\.gizmodata\.com',
   # Example hosts in prose and examples.
   '^https?://(localhost|127\.0\.0\.1)',

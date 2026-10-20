@@ -32,6 +32,15 @@ DuckDB 2.0.0 under the reference server. Protocol version 1 is unchanged; a clie
 
 ### Added
 
+- Site: ready for the public launch at `warpsql.gizmodata.com`. One switch, `DOCS_GA`
+  (`site/README.md`, "Private preview and GA"), chooses between the private preview and the
+  public site: with it there is no preview banner or `noindex`, the build sits at the custom
+  domain, and lychee checks `github.com/gizmodata/` links. `site/public/CNAME` names the domain,
+  whose DNS points at GitHub Pages. `site.yml` reads the repository variable `DOCS_GA`
+  (`DOCS_INDEXABLE` is gone), takes it as the `ga` input of a run started by hand, builds the
+  public site on every run and fails if anything of the preview is left in it
+  (`site/scripts/check_ga_build.py`). The README's GA checklist has the flip-day steps.
+
 - **C++ SDK: `ServerOptions::trusted_proxies`**, the reverse proxies whose forwarding headers
   name the client (`IpNetwork` blocks, from `ParseIpNetwork("10.0.0.0/8")`, `"fd00::/8"` or a
   bare address; it throws `std::invalid_argument` naming a bad one). When a request's TCP peer
