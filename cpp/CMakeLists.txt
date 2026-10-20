@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(warpsql VERSION 1.0.0 LANGUAGES C CXX)
+project(warpsql VERSION 1.0.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -177,6 +177,10 @@ add_library(warpsql_duckdb
   src/duckdb/duckdb_upload.cc
   src/duckdb/duckdb_values.cc)
 target_include_directories(warpsql_duckdb PUBLIC src/duckdb "${WARPSQL_DUCKDB_PREFIX}/include")
+# DuckDB 2.0.0 ships its whole v2 C API as "unstable" (duckdb_v2.h compiles none of it
+# unless asked to), so every user of the header opts in. The API can change in a DuckDB
+# release; the DuckDB pin (scripts/build-duckdb.sh) decides which one this builds against.
+target_compile_definitions(warpsql_duckdb PUBLIC DUCKDB_V2_API_ALLOW_UNSTABLE=1)
 target_link_libraries(warpsql_duckdb PUBLIC warpsql ${DUCKDB_LIBRARY})
 target_compile_options(warpsql_duckdb PRIVATE ${WARPSQL_WARNINGS})
 if(WIN32)

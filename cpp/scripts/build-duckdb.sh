@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Builds libduckdb from the exact commit the pinned DuckDB Python wheel was built
-# from, so the C tool and the Python reference run the same engine.
+# Builds libduckdb from DuckDB 2.0.0's release commit: the tip of DuckDB's release branch
+# (v2.0-cyanoptera) that DuckDB's own v2.0.0 release build (its Main workflow, run 49137)
+# was made from, so the extensions DuckDB publishes for v2.0.0 load into it.
 set -euo pipefail
 
-DUCKDB_COMMIT=ffe0b8b7a222114f15577ea05434d14357906416
-# The version DuckDB's own builds of this commit report. Extensions are fetched by this
-# string, so INSTALL finds the published ones (a source build would say "-devN").
-DUCKDB_VERSION_NAME=v2.0.0-alpha48624
+DUCKDB_COMMIT=d54cbbe3df17e8e5ce68312f483b4155836112aa
+# The version DuckDB's own builds of this commit report (PRAGMA version). Extensions are
+# fetched by this string (extensions.duckdb.org/v2.0.0/<platform>/), so INSTALL finds the
+# published ones; a source build without it would say "v2.0.0-devN" and look for them
+# under the commit's hash, where DuckDB publishes none.
+DUCKDB_VERSION_NAME=v2.0.0
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # WARPSQL_DEPS_DIR lets another project build these into its own directory.
@@ -42,7 +45,7 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
   "${EXTENSION_ARGS[@]}"
 cmake --build "$BUILD"
 cmake --install "$BUILD"
-# The v2 C API header isn't installed by DuckDB's install rules yet (alpha). Copy
+# The v2 C API header isn't installed by DuckDB's install rules (2.0.0). Copy
 # just that header, so nothing here can include DuckDB's internal headers.
 cp "$SRC/src/include/duckdb_v2.h" "$PREFIX/include/"
 
