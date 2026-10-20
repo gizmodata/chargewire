@@ -22,6 +22,22 @@ def test_unknown_session_is_not_found(warp):
     assert_problem(response=response, status=404, code="session_not_found")
 
 
+def test_a_new_sign_in_of_the_same_principal_reaches_its_session(warp):
+    """§9.2: a principal is its identity and its authority, and what changes with every
+    sign-in (the token itself) is neither. A server that binds sessions to a token's
+    authority must still let the same user's next token, with the same authority, reach
+    them. (A token of the same name with another authority getting session_not_found is
+    a server's own matter: the protocol has no generic way to ask for one.)"""
+    session_id = warp.new_session()
+    first = warp.token
+    warp.token = warp.login()
+    assert warp.token != first
+    response = warp.submit(session_id=session_id, sql="SELECT 1", arrow=True)
+    assert response.status_code == 200, response.text
+    assert warp.http.get(url=warp.session_url(session_id), headers=warp.headers()).status_code == 200
+    assert warp.http.delete(url=warp.session_url(session_id), headers=warp.headers()).status_code == 204
+
+
 def test_closed_session_is_never_recreated(warp):
     session_id = warp.new_session()
     assert warp.http.delete(url=warp.session_url(session_id), headers=warp.headers()).status_code == 204

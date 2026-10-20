@@ -94,6 +94,7 @@ class Session {
   // Where a request came from, for Server::Sessions().
   struct Client {
     std::string_view address;
+    std::string_view proxy;  // the connection's address when `address` was forwarded; else empty
     std::string_view user_agent;
     std::string_view tls_version;  // empty without TLS
     std::shared_ptr<const ClientCertificate> certificate;
@@ -105,6 +106,7 @@ class Session {
   // The latest request's client, and when it came.
   struct LastRequest {
     std::string address;
+    std::string proxy;
     std::string user_agent;
     std::string tls_version;
     std::shared_ptr<const ClientCertificate> certificate;

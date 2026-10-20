@@ -7,6 +7,54 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Security
+
+- **Handles belong to a principal's authority, not only its name** (§9.2). The C++ SDK
+  bound a session (and its statements, prepared statements, ingests and retained results)
+  to its owner's user name, so any token of that name (a readonly or scoped token of the
+  user, one with catalog limits, one from another identity provider) could use a session a
+  stronger token of the user had opened, with that token's privileges, by naming its id.
+  `Principal` has a new `authority_key`, an opaque value the backend computes from what
+  decides the principal's authority, and `Principal::SameIdentity` compares the name and
+  it: a token of the same name with another authority gets `404` `session_not_found` on
+  every route, like any other principal. Idempotency keys (§6.7) are scoped the same way.
+  A backend that leaves `authority_key` empty keeps handles by name, as before; one whose
+  credentials can carry different authority for one name must set it (see
+  `backend.hpp`). §9.2 now says that a principal is its identity and its authority. Tests:
+  `cpp/tests/session_authority_test.cc` (every route, the same authority's new token, an
+  unset key, idempotency) and `cpp/tests/sessions_test.cc`.
+
+### Added
+
+- **C++ SDK: `ServerOptions::trusted_proxies`**, the reverse proxies whose forwarding headers
+  name the client (`IpNetwork` blocks, from `ParseIpNetwork("10.0.0.0/8")`, `"fd00::/8"` or a
+  bare address; it throws `std::invalid_argument` naming a bad one). When a request's TCP peer
+  is in one, its client address is the rightmost `X-Forwarded-For` hop that is not itself a
+  trusted proxy (all trusted: the leftmost), or, without `X-Forwarded-For`, the same walk
+  over RFC 7239 `Forwarded: for=` (quoted values, `"[v6]:port"`). `X-Forwarded-For` wins
+  because the common proxies append to it and pass a client's `Forwarded` on. An unknown,
+  obfuscated or malformed hop leaves the TCP peer. Resolved per request (a proxy's
+  connection carries many clients). The address feeds `SecurityEvent::peer`,
+  `SessionActivity::client_address` and the per-address bound on browser sign-ins, never
+  authentication or TLS; the connection's own address is in the new
+  `SecurityEvent::proxy` and `SessionActivity::proxy_address` when it differs. Default:
+  empty, no proxy trusted. Tests: `cpp/tests/forwarded_test.cc`.
+
+### Changed
+
+- **C++ SDK: an IPv6 peer is written `[2001:db8::7]:5000`** in `SecurityEvent::peer` and
+  `SessionActivity::client_address` (it was `2001:db8::7:5000`, ambiguous with an address
+  without a port). A forwarded address has no port: `203.0.113.9`, `[2001:db8::7]`.
+
+### Fixed
+
+- **A slow read no longer loses its session** (§5.7). The SDK's idle sweep evicted a
+  session whose statement had finished while the client was still reading its unretained
+  result (up to `unretained_buffer_bytes` of it goes out after the statement finishes), and
+  the stream ended without its end-of-stream marker. A read in progress now keeps its
+  session alive, retained or not, and §5.7 says a request in progress counts until its
+  response ends.
+
 ## [1.0.0] - 2026-10-19
 
 The first stable version of the protocol. From here on version 1 changes only by addition

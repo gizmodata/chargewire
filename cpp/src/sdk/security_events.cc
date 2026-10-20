@@ -2,11 +2,6 @@
 
 namespace warpsql::detail {
 
-std::string PeerHost(const std::string& peer) {
-  const auto colon = peer.rfind(':');
-  return colon == std::string::npos ? peer : peer.substr(0, colon);
-}
-
 std::string SourceKey(const SecurityEvent& event) {
   std::string host = PeerHost(event.peer);
   boost::system::error_code ec;
@@ -33,7 +28,7 @@ std::string Cap(std::string text) {
 
 SecurityEvent Capped(SecurityEvent event) {
   for (std::string* field : {&event.code, &event.detail, &event.user, &event.token_id, &event.presented_thumbprint,
-                             &event.certificate_subject, &event.peer, &event.request_id}) {
+                             &event.certificate_subject, &event.peer, &event.proxy, &event.request_id}) {
     *field = Cap(std::move(*field));
   }
   return event;

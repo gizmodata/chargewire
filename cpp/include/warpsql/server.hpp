@@ -1,6 +1,7 @@
 // A Warp SQL server: the protocol over HTTP/1.1 (and TLS), in front of a Backend.
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -24,6 +25,24 @@ enum class ClientIdentitySource {
 // "san_email", "san_uri" or "subject_cn"; throws std::invalid_argument for anything else.
 ClientIdentitySource ParseClientIdentitySource(std::string_view name);
 std::string_view ClientIdentitySourceName(ClientIdentitySource source);
+
+// A block of IP addresses, for ServerOptions::trusted_proxies.
+struct IpNetwork {
+  bool v6 = false;
+  std::array<uint8_t, 16> bytes{};  // the network address (IPv4: the first 4 bytes)
+  int prefix_length = 0;            // 0-32 (IPv4) or 0-128 (IPv6)
+
+  // "10.0.0.0/8", "2001:db8::/32".
+  std::string ToString() const;
+  // Whether `address` (an IP address in text, IPv4 or IPv6, no port) lies in the block.
+  // An IPv4-mapped IPv6 address (::ffff:10.1.2.3) counts as its IPv4 address.
+  bool Contains(std::string_view address) const;
+};
+// "10.0.0.0/8", "2001:db8::/32", or a bare address ("192.0.2.7", "::1"): that one address
+// (/32 or /128). An IPv4-mapped IPv6 block (::ffff:10.0.0.0/104) is the IPv4 one. Throws
+// std::invalid_argument naming `text` and what is wrong with it: not an address, a prefix
+// length out of range, or host bits set below the prefix ("10.1.2.3/8").
+IpNetwork ParseIpNetwork(std::string_view text);
 
 struct TlsOptions {
   std::string certificate_chain_file;  // PEM
@@ -68,7 +87,12 @@ struct SecurityEvent {
   std::string token_id;              // the token's id (Principal::claims "token_id"), if known
   std::string presented_thumbprint;  // the connection's client certificate (x5t#S256), or empty
   std::string certificate_subject;   // RFC 2253, or empty
-  std::string peer;                  // the client's address:port
+  // The client's address:port ("[v6]:port" for IPv6), or the address without a port that a
+  // trusted proxy forwarded (ServerOptions::trusted_proxies).
+  std::string peer;
+  // The connection's own address:port when `peer` came from a trusted proxy's forwarding
+  // header; else empty.
+  std::string proxy;
   std::string request_id;
   // Above 0: a summary, standing for this many refusals from the same source (client
   // address and certificate) that were not reported one by one. Each source gets its
@@ -139,13 +163,34 @@ struct ServerOptions {
 
   std::vector<std::string> cors_allowed_origins;  // empty: no cross-origin access
 
+  // Reverse proxies (load balancers, ingresses) whose forwarding headers are believed.
+  // When a request's TCP peer lies in one of these blocks, the client's address is taken
+  // from X-Forwarded-For, or, when a request has none, from Forwarded (RFC 7239 for=):
+  // the hops are read right to left, skipping each that is itself a trusted proxy, and
+  // the first that isn't is the client (all trusted: the leftmost). An unknown or
+  // obfuscated hop, or one that isn't an IP address, ends the search and the TCP peer
+  // stands. A forwarded address has no port ("203.0.113.9", "[2001:db8::7]"). Every
+  // instance of a header counts, in order. X-Forwarded-For wins because the common
+  // proxies append to it and pass a client's own Forwarded header on unchanged; behind a
+  // proxy that sets only Forwarded, have it drop X-Forwarded-For.
+  //
+  // The address only describes the client: Request peers, SecurityEvent::peer (and
+  // proxy), SessionActivity::client_address (and proxy_address) and the per-address bound
+  // on browser sign-ins. Nothing about authentication or TLS changes: client
+  // certificates and certificate-bound tokens stay tied to the connection. Empty: no
+  // proxy is trusted and the TCP peer is always the client (a proxy's headers are
+  // ignored). Trust only proxies that overwrite or append to these headers: one that
+  // passes a client's header on lets that client choose its address.
+  std::vector<IpNetwork> trusted_proxies;
+
   // Browser sign-in (spec §4.3, capability oauth_browser); null: not offered.
   std::shared_ptr<BrowserSignInProvider> browser_sign_in;
   // A flow is forgotten this long after it was created, finished or not.
   std::chrono::seconds browser_sign_in_lifetime{600};
   // Flows held at once (pending, or finished and not yet collected): in all, and per
   // client address (0: no per-address bound). Beyond either, rate_limited. Behind a proxy
-  // that hides client addresses, every client shares one address.
+  // that hides client addresses, every client shares one address, unless the proxy is in
+  // trusted_proxies.
   std::size_t max_browser_sign_ins = 10000;
   std::size_t max_browser_sign_ins_per_address = 100;
   std::chrono::seconds browser_sign_in_poll_interval{2};
@@ -166,7 +211,10 @@ struct SessionActivity {
   std::chrono::system_clock::time_point created_at;
   std::chrono::system_clock::time_point last_request_at;
   // The latest request's connection.
-  std::string client_address;  // address:port
+  std::string client_address;  // address:port, or a forwarded address (ServerOptions::trusted_proxies)
+  // The connection's own address:port when client_address came from a trusted proxy's
+  // forwarding header; else empty.
+  std::string proxy_address;
   std::string user_agent;      // its User-Agent header, or empty
   bool tls = false;
   std::string tls_version;     // e.g. "TLSv1.3"; empty without TLS

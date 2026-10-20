@@ -32,8 +32,9 @@ namespace warpsql {
 // like the protocol's.
 std::string NewId(std::string_view prefix);
 
-// The identity an access token establishes (spec §9.1). Handles belong to a principal
-// by name; the other fields are what the server's authorization reads.
+// The identity an access token establishes (spec §9.1). Handles belong to a principal:
+// its name and its authority_key (spec §9.2, SameIdentity); the other fields are what the
+// server's authorization reads.
 struct Principal {
   std::string name;
   std::string role;               // e.g. "admin", "user", "readonly"; empty if unused
@@ -44,8 +45,24 @@ struct Principal {
   // carry it from Issue() to Validate() (see TokenService::BindsCertificates); the SDK then
   // refuses every request with the token on a connection without that certificate.
   std::string certificate_thumbprint;
+  // What this principal may do, as an opaque value the backend computes (a hash of the
+  // role, the token's scope, its catalog limits, the tenant, the identity provider, ...;
+  // never a secret). Handles belong to a name AND its authority (spec §9.2): a token of the
+  // same name with another authority_key gets session_not_found on another's session,
+  // exactly as another user would, so a weaker credential (a readonly or scoped token of
+  // the user) can't act through a session a stronger one opened. A backend whose
+  // credentials can carry different authority for one name MUST set it, wherever its
+  // principals come from: its Authenticator (the default TokenService keeps the whole
+  // Principal) or its own TokenService's Validate(). Leave out what changes on every
+  // sign-in without changing authority (token id, issue time, expiry), or a client's new
+  // token can't reach its own sessions. Empty for every principal (the default): handles
+  // belong to a name, as before. The SDK compares certificate_thumbprint separately
+  // (certificate_mismatch), so it needn't be part of it.
+  std::string authority_key;
 
-  bool SameIdentity(const Principal& other) const { return name == other.name; }
+  bool SameIdentity(const Principal& other) const {
+    return name == other.name && authority_key == other.authority_key;
+  }
 };
 
 // A client certificate the TLS handshake verified against the server's client CAs (spec

@@ -13,6 +13,7 @@
 #include <arrow/table.h>
 #include <arrow/util/config.h>  // ARROW_VERSION_STRING
 
+#include "forwarded.hpp"
 #include "ids.hpp"
 #include "ipc.hpp"
 #include "json.hpp"
@@ -24,6 +25,12 @@
 namespace warpsql::detail {
 
 namespace {
+
+// Whose Idempotency-Key a request's is (spec §6.7: the same principal's): the owner's name
+// and authority (spec §9.2), length-prefixed so no two owners share a scope.
+std::string IdempotencyScope(const Principal& owner) {
+  return std::format("{}:{}{}", owner.name.size(), owner.name, owner.authority_key);
+}
 
 // How often a result stream waiting for its next batch checks that its client is still
 // there, so an abandoned query is cancelled rather than left running.
@@ -688,15 +695,9 @@ Task<Response> Api::IssueToken(Request& request) {
 
 namespace {
 
-// The address of "address:port" or "[v6]:port", for the per-address bound on flows.
-std::string AddressOf(std::string_view peer) {
-  if (peer.starts_with('[')) {
-    const auto end = peer.find(']');
-    return std::string(peer.substr(0, end == std::string_view::npos ? peer.size() : end + 1));
-  }
-  const auto colon = peer.rfind(':');
-  return std::string(colon == std::string_view::npos ? peer : peer.substr(0, colon));
-}
+// The address of "address:port", "[v6]:port" or a forwarded "address" / "[v6]", for the
+// per-address bound on flows.
+std::string AddressOf(std::string_view peer) { return PeerHost(peer); }
 
 std::string EscapeHtml(std::string_view text) {
   std::string out;
@@ -938,6 +939,7 @@ void Api::ReportSecurityEvent(const Request& request, const Error& error) const 
     event.certificate_subject = EscapeForDisplay(request.client_certificate->subject);
   }
   event.peer = request.peer;
+  event.proxy = request.proxy;
   event.request_id = request.request_id;
   Emit(event);
 }
@@ -1000,7 +1002,7 @@ std::shared_ptr<Session> Api::OwnSession(const Request& request, const std::stri
 }
 
 Session::Client Api::ClientOf(const Request& request) {
-  return {request.peer, request.Header("User-Agent"), request.tls_version, request.client_certificate};
+  return {request.peer, request.proxy, request.Header("User-Agent"), request.tls_version, request.client_certificate};
 }
 
 void Api::RejectIfDraining() const {
@@ -1264,7 +1266,7 @@ std::optional<IdempotencyStore::Entry> Api::ReserveIdempotencyKey(const Request&
   }
   const std::string hash = Sha256Hex(material);
   auto existing = state_.idempotency.Reserve(
-      session.owner().name, std::string(key),
+      IdempotencyScope(session.owner()), std::string(key),
       {hash, session.id(), statement_id, Clock::now() + state_.options.idempotency_window,
        std::make_shared<std::string>()});
   if (existing && existing->request_hash != hash) {
@@ -1650,7 +1652,7 @@ Task<Response> Api::IngestPart(Request& request, const std::string& session_id, 
 
   json::object answer{{"part", part}, {"rows_received", rows}};
   if (!key.empty()) {
-    if (auto entry = state_.idempotency.Reserve(session->owner().name, key, {})) {
+    if (auto entry = state_.idempotency.Reserve(IdempotencyScope(session->owner()), key, {})) {
       if (entry->response) *entry->response = json::serialize(answer);
     }
   }
@@ -1754,7 +1756,7 @@ Task<Response> Api::Ingest(Request& request, const std::string& session_id) {
 
   json::object answer{{"rows_ingested", rows}};
   if (!key.empty()) {
-    if (auto entry = state_.idempotency.Reserve(session->owner().name, key, {})) {
+    if (auto entry = state_.idempotency.Reserve(IdempotencyScope(session->owner()), key, {})) {
       if (entry->response) *entry->response = json::serialize(answer);
     }
   }
@@ -2188,6 +2190,7 @@ SessionActivity Api::Describe(Session& session) const {
   const Session::LastRequest last = session.last_request();
   out.last_request_at = last.at;
   out.client_address = last.address;
+  out.proxy_address = last.proxy;
   out.user_agent = last.user_agent;
   out.tls = !last.tls_version.empty();
   out.tls_version = last.tls_version;

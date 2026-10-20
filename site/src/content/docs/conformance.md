@@ -46,7 +46,7 @@ privileges (`warp-duckdb`) it skips, saying so.
 
 ## What each file covers
 
-246 test functions (some run several cases), in the suite's [`tests/`](https://github.com/gizmodata/warp-sql/tree/main/conformance/tests):
+247 test functions (some run several cases), in the suite's [`tests/`](https://github.com/gizmodata/warp-sql/tree/main/conformance/tests):
 
 | File | Tests | Covers |
 |---|---|---|
@@ -67,7 +67,7 @@ privileges (`warp-duckdb`) it skips, saying so.
 | [`test_prepared.py`](https://github.com/gizmodata/warp-sql/blob/main/conformance/tests/test_prepared.py) | 16 | [§7](/specification/#7-prepared-statements): prepared statements, with JSON and Arrow bind parameters. |
 | [`test_principals.py`](https://github.com/gizmodata/warp-sql/blob/main/conformance/tests/test_principals.py) | 2 | [§9.2](/specification/#92-handles-are-bound-to-their-principal) and [§9.3](/specification/#93-results-are-governed-data): every handle is bound to its principal, and [§4.4](/specification/#44-client-certificate-sign-in-optional-capability-mtls_identity): a forwarded certificate header is no certificate. |
 | [`test_results.py`](https://github.com/gizmodata/warp-sql/blob/main/conformance/tests/test_results.py) | 18 | [§6.3](/specification/#63-status-get-warpv1sessionssession_idstatementsstatement_id)–[§6.6](/specification/#66-errors-during-a-result-stream) and [§8.2](/specification/#82-compression): async results, retention, resumption, incomplete streams, compression. |
-| [`test_sessions.py`](https://github.com/gizmodata/warp-sql/blob/main/conformance/tests/test_sessions.py) | 23 | [§5](/specification/#5-sessions): sessions, options, transactions, and handles bound to their principal. |
+| [`test_sessions.py`](https://github.com/gizmodata/warp-sql/blob/main/conformance/tests/test_sessions.py) | 24 | [§5](/specification/#5-sessions): sessions, options, transactions, and handles bound to their principal. |
 | [`test_statements.py`](https://github.com/gizmodata/warp-sql/blob/main/conformance/tests/test_statements.py) | 18 | [§6](/specification/#6-statements): statements, the two response paths, and bind parameters. |
 
 ## Every response against the OpenAPI document

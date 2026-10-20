@@ -38,6 +38,22 @@ class SessionLifetime : public ::testing::Test {
   static std::shared_ptr<Statement> NewStatement(const std::string& id) {
     return std::make_shared<Statement>(id, Statement::Config{});
   }
+  // A statement that ran to its end with one batch of rows, its result kept or not.
+  static std::shared_ptr<Statement> FinishedWithRows(const std::string& id, bool retain) {
+    Statement::Config config;
+    config.retain = retain;
+    auto statement = std::make_shared<Statement>(id, config);
+    EXPECT_TRUE(statement->BeginRunning());
+    auto schema = arrow::schema({arrow::field("v", arrow::int64())});
+    statement->SetRows(schema);
+    arrow::Int64Builder builder;
+    EXPECT_TRUE(builder.AppendValues({1, 2, 3}).ok());
+    std::shared_ptr<arrow::Array> values;
+    EXPECT_TRUE(builder.Finish(&values).ok());
+    EXPECT_TRUE(statement->AddBatch(arrow::RecordBatch::Make(schema, 3, {values})));
+    statement->Finish();
+    return statement;
+  }
   static void ExpectNotFound(const std::function<void()>& call) {
     try {
       call();
@@ -89,6 +105,32 @@ TEST_F(SessionLifetime, ARunningStatementKeepsTheSessionOpen) {
   session->AddStatement(NewStatement("q_running"));
   EXPECT_FALSE(session->CloseIfIdle(Clock::now() + std::chrono::seconds(1), CancelReason::kSessionClosed));
   EXPECT_FALSE(session->closed());
+}
+
+// A finished statement whose result is still being read keeps the session open: an
+// unretained result's last batches (up to unretained_buffer_bytes) are sent after the
+// statement has finished, and a slow reader's stream was cut by the idle sweep. Once the
+// read ends, the session is idle again.
+TEST_F(SessionLifetime, AReadInProgressKeepsTheSessionOpen) {
+  auto session = NewSession();
+  auto statement = FinishedWithRows("q_read", /*retain=*/false);
+  session->AddStatement(statement);
+  statement->ClaimRead(0, 0);
+  EXPECT_FALSE(session->CloseIfIdle(Clock::now() + std::chrono::seconds(1), CancelReason::kSessionClosed));
+  EXPECT_FALSE(session->closed());
+  statement->EndRead(0);
+  EXPECT_TRUE(session->CloseIfIdle(Clock::now() + std::chrono::seconds(1), CancelReason::kSessionClosed));
+}
+
+// A retained result keeps an otherwise idle session open until it expires (§5.7, §6.5),
+// so it can be read again until its expires_at; then the session is idle.
+TEST_F(SessionLifetime, ARetainedResultKeepsTheSessionOpenUntilItExpires) {
+  auto session = NewSession();
+  auto statement = FinishedWithRows("q_kept", /*retain=*/true);
+  session->AddStatement(statement);
+  EXPECT_FALSE(session->CloseIfIdle(Clock::now() + std::chrono::seconds(1), CancelReason::kSessionClosed));
+  ASSERT_TRUE(statement->ExpireIfDue(*statement->finished_at() + std::chrono::hours(2)));
+  EXPECT_TRUE(session->CloseIfIdle(Clock::now() + std::chrono::seconds(1), CancelReason::kSessionClosed));
 }
 
 }  // namespace
@@ -145,6 +187,33 @@ TEST_F(SessionLifetime, ARetiredSessionAnswersItsOwnerWithItsError) {
   registry.Retire("s_old", session->owner(), why, Clock::now() - std::chrono::seconds(1));
   registry.SweepEnded(Clock::now());
   ExpectNotFound([&] { registry.Find("s_old", Principal{.name = "alice"}); });
+}
+
+// A session belongs to its owner's name and authority (spec §9.2): the same name with
+// another authority_key (a weaker token of the user) is told nothing, live or ended, and
+// can't forget it; the same name and authority can.
+TEST_F(SessionLifetime, ASessionBelongsToItsOwnersAuthorityToo) {
+  SessionRegistry registry;
+  auto session = std::make_shared<Session>("s_auth", Principal{.name = "alice", .authority_key = "full"},
+                                           boost::asio::make_strand(pool_.get_executor()));
+  registry.Add(session);
+  const Principal weaker{.name = "alice", .authority_key = "readonly"};
+  const Principal unset{.name = "alice"};
+  const Principal same{.name = "alice", .role = "other fields don't matter", .authority_key = "full"};
+  ExpectNotFound([&] { registry.Find(session->id(), weaker); });
+  ExpectNotFound([&] { registry.Find(session->id(), unset); });
+  EXPECT_EQ(registry.Find(session->id(), same), session);
+  registry.Retire(session->id(), session->owner(), Error::SessionEnded("killed", "killed"),
+                  Clock::now() + std::chrono::minutes(1));
+  ExpectNotFound([&] { registry.Find(session->id(), weaker); });
+  EXPECT_FALSE(registry.ForgetEnded(session->id(), weaker));
+  try {
+    registry.Find(session->id(), same);
+    FAIL() << "expected session_ended";
+  } catch (const Error& error) {
+    EXPECT_EQ(error.code(), ErrorCode::kSessionEnded);
+  }
+  EXPECT_TRUE(registry.ForgetEnded(session->id(), same));
 }
 
 // What Server::Sessions() reads of a statement.

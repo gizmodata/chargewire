@@ -558,6 +558,11 @@ bool Statement::WaitingForReader() const {
   return waiting_for_reader_ && !AnyReaderActive();
 }
 
+bool Statement::ReadInProgress() const {
+  std::lock_guard lock(mutex_);
+  return AnyReaderActive();
+}
+
 bool Statement::Forgettable(WallClock::time_point now, std::chrono::seconds keep) const {
   std::lock_guard lock(mutex_);
   if (!IsTerminalLocked() || AnyReaderActive() || !finished_at_ || now < *finished_at_ + keep) {

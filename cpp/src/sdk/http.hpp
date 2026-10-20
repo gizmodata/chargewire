@@ -36,7 +36,12 @@ struct Request {
   // Why that certificate no longer stands (revoked by a CRL loaded since the handshake,
   // expired), or empty. Checked before each request on the connection.
   std::string client_certificate_problem;
-  std::string peer;  // the client's address:port
+  // The client's address:port ("[v6]:port" for IPv6), or, when the connection's peer is a
+  // trusted proxy (ServerOptions::trusted_proxies), the address its forwarding headers
+  // give, without a port. Only for describing the client: never for authentication.
+  std::string peer;
+  // The connection's own address:port when `peer` is a forwarded address; else empty.
+  std::string proxy;
   std::string_view tls_version;  // the connection's TLS version ("TLSv1.3"), empty without TLS
   // Filled in as the request is authenticated, for SecurityEvents: the token's principal
   // once Validate() accepted it, and the identity a sign-in named.

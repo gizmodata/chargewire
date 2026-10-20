@@ -54,7 +54,10 @@ author cannot forget the ownership check, because there is nothing to forget.
   `warpsql::NewId(prefix)` makes ids of the same shape for an engine's own kinds.
 - **`Authenticator`** turns credentials into a `Principal`; **`TokenService`** issues and
   checks tokens (the default keeps random tokens in memory; a server with replicas supplies
-  signed ones).
+  signed ones). Sessions belong to a principal's `name` and `authority_key` (spec §9.2): a
+  backend whose credentials can give one user different authority (roles, scoped tokens,
+  catalog limits) sets `authority_key` to a value that differs between them, so a weaker
+  token of the user can't act through a stronger one's session.
 
 A backend reports a failure by throwing `warpsql::Error` with the code that describes it
 ([`errors.hpp`](../cpp/include/warpsql/errors.hpp)); the SDK turns it into a problem
@@ -65,6 +68,14 @@ answered as `internal_error`.
 limits, lifetimes) and `Server`, plus what an engine may ask about its own sessions
 (`Sessions()`, `CancelSession()`, `EndSession()`), for SQL such as a sessions table or
 a command that ends a session.
+
+Behind an HTTP reverse proxy every connection comes from the proxy. `ServerOptions::
+trusted_proxies` lists the proxies (CIDRs) whose `X-Forwarded-For` (or, without it, RFC 7239
+`Forwarded`) header is believed: the client is the rightmost hop that isn't itself a trusted
+proxy. That address goes to `SecurityEvent::peer`, `SessionActivity::client_address` and the
+per-address bound on browser sign-ins, with the proxy's own address beside it (`proxy`,
+`proxy_address`); authentication and TLS never see it. Empty (the default), no header is
+believed.
 
 `warp-duckdb` ([`cpp/src/duckdb/`](../cpp/src/duckdb/)) is a complete backend in about
 3,000 lines, and the one the conformance suite and the drivers test against.

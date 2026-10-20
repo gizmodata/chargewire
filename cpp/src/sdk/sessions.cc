@@ -327,6 +327,7 @@ void Session::Touch(const Client& client) {
   // Assigned only when they change: a session's requests mostly come over one connection.
   LastRequest& last = last_request_;
   if (last.address != client.address) last.address.assign(client.address);
+  if (last.proxy != client.proxy) last.proxy.assign(client.proxy);
   if (last.user_agent != client.user_agent) last.user_agent.assign(client.user_agent);
   if (last.tls_version != client.tls_version) last.tls_version.assign(client.tls_version);
   if (last.certificate != client.certificate) last.certificate = client.certificate;
@@ -347,9 +348,12 @@ bool Session::IdleLocked(Clock::time_point cutoff) const {
   }
   for (const auto& [id, statement] : statements_) {
     // A statement still running keeps the session alive, unless it is only waiting
-    // for someone to read an unretained result.
+    // for someone to read an unretained result. So does a retained result until it
+    // expires (spec §5.7), and a read of a result in progress, however slow: it is a
+    // request that hasn't ended, and evicting the session would cut its stream (a
+    // finished unretained result still has up to unretained_buffer_bytes to send).
     if ((!statement->IsTerminal() && !statement->WaitingForReader()) ||
-        statement->HoldsRetainedResult()) {
+        statement->HoldsRetainedResult() || statement->ReadInProgress()) {
       return false;
     }
   }
