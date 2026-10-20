@@ -55,7 +55,7 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: site/package-lock.json
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.0
       - run: npm ci
       - name: Generated pages and diagrams match their sources
         run: npm run check:generated
