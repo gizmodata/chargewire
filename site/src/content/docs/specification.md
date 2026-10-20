@@ -1215,6 +1215,18 @@ request naming another principal's session gets `404` with code `session_not_fou
 exactly as for a session that does not exist, whatever the rest of the URL names, so ids
 cannot be probed. Possessing an id grants nothing.
 
+A principal is its identity **and its authority**: everything that decides what it may do,
+such as its role, a scoped token's scope, catalog limits carried in the token, its tenant,
+or the identity provider and groups it signed in with. A user may hold several tokens of
+different authority at once (a full token and a readonly or scoped one, say), and a
+session runs with the authority of the token that created it. So a token with the same
+user name but a different authority is another principal here: on the session it gets
+`404` `session_not_found` like any other principal, and cannot act through a session
+that a stronger token of the same user opened. What changes with every sign-in without
+changing authority (a token's id, issue time or expiry) does not make another principal: a
+client that signs in again reaches its sessions with the new token. Idempotency keys
+([§6.7](#67-idempotent-submission)) are scoped to the principal in the same sense.
+
 Administrative actions on other principals' work (ending their session, cancelling
 their query) are done in SQL, under the server's own authorization rules, not
 through these endpoints.

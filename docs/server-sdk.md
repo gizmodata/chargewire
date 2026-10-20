@@ -54,7 +54,10 @@ author cannot forget the ownership check, because there is nothing to forget.
   `warpsql::NewId(prefix)` makes ids of the same shape for an engine's own kinds.
 - **`Authenticator`** turns credentials into a `Principal`; **`TokenService`** issues and
   checks tokens (the default keeps random tokens in memory; a server with replicas supplies
-  signed ones).
+  signed ones). Sessions belong to a principal's `name` and `authority_key` (spec §9.2): a
+  backend whose credentials can give one user different authority (roles, scoped tokens,
+  catalog limits) sets `authority_key` to a value that differs between them, so a weaker
+  token of the user can't act through a stronger one's session.
 
 A backend reports a failure by throwing `warpsql::Error` with the code that describes it
 ([`errors.hpp`](../cpp/include/warpsql/errors.hpp)); the SDK turns it into a problem

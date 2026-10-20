@@ -7,6 +7,23 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Security
+
+- **Handles belong to a principal's authority, not only its name** (§9.2). The C++ SDK
+  bound a session (and its statements, prepared statements, ingests and retained results)
+  to its owner's user name, so any token of that name (a readonly or scoped token of the
+  user, one with catalog limits, one from another identity provider) could use a session a
+  stronger token of the user had opened, with that token's privileges, by naming its id.
+  `Principal` has a new `authority_key`, an opaque value the backend computes from what
+  decides the principal's authority, and `Principal::SameIdentity` compares the name and
+  it: a token of the same name with another authority gets `404` `session_not_found` on
+  every route, like any other principal. Idempotency keys (§6.7) are scoped the same way.
+  A backend that leaves `authority_key` empty keeps handles by name, as before; one whose
+  credentials can carry different authority for one name must set it (see
+  `backend.hpp`). §9.2 now says that a principal is its identity and its authority. Tests:
+  `cpp/tests/session_authority_test.cc` (every route, the same authority's new token, an
+  unset key, idempotency) and `cpp/tests/sessions_test.cc`.
+
 ### Added
 
 - **C++ SDK: `ServerOptions::trusted_proxies`**, the reverse proxies whose forwarding headers

@@ -26,6 +26,12 @@ namespace warpsql::detail {
 
 namespace {
 
+// Whose Idempotency-Key a request's is (spec §6.7: the same principal's): the owner's name
+// and authority (spec §9.2), length-prefixed so no two owners share a scope.
+std::string IdempotencyScope(const Principal& owner) {
+  return std::format("{}:{}{}", owner.name.size(), owner.name, owner.authority_key);
+}
+
 // How often a result stream waiting for its next batch checks that its client is still
 // there, so an abandoned query is cancelled rather than left running.
 constexpr auto kClientCheck = std::chrono::seconds(1);
@@ -1260,7 +1266,7 @@ std::optional<IdempotencyStore::Entry> Api::ReserveIdempotencyKey(const Request&
   }
   const std::string hash = Sha256Hex(material);
   auto existing = state_.idempotency.Reserve(
-      session.owner().name, std::string(key),
+      IdempotencyScope(session.owner()), std::string(key),
       {hash, session.id(), statement_id, Clock::now() + state_.options.idempotency_window,
        std::make_shared<std::string>()});
   if (existing && existing->request_hash != hash) {
@@ -1646,7 +1652,7 @@ Task<Response> Api::IngestPart(Request& request, const std::string& session_id, 
 
   json::object answer{{"part", part}, {"rows_received", rows}};
   if (!key.empty()) {
-    if (auto entry = state_.idempotency.Reserve(session->owner().name, key, {})) {
+    if (auto entry = state_.idempotency.Reserve(IdempotencyScope(session->owner()), key, {})) {
       if (entry->response) *entry->response = json::serialize(answer);
     }
   }
@@ -1750,7 +1756,7 @@ Task<Response> Api::Ingest(Request& request, const std::string& session_id) {
 
   json::object answer{{"rows_ingested", rows}};
   if (!key.empty()) {
-    if (auto entry = state_.idempotency.Reserve(session->owner().name, key, {})) {
+    if (auto entry = state_.idempotency.Reserve(IdempotencyScope(session->owner()), key, {})) {
       if (entry->response) *entry->response = json::serialize(answer);
     }
   }

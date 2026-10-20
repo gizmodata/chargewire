@@ -189,6 +189,33 @@ TEST_F(SessionLifetime, ARetiredSessionAnswersItsOwnerWithItsError) {
   ExpectNotFound([&] { registry.Find("s_old", Principal{.name = "alice"}); });
 }
 
+// A session belongs to its owner's name and authority (spec §9.2): the same name with
+// another authority_key (a weaker token of the user) is told nothing, live or ended, and
+// can't forget it; the same name and authority can.
+TEST_F(SessionLifetime, ASessionBelongsToItsOwnersAuthorityToo) {
+  SessionRegistry registry;
+  auto session = std::make_shared<Session>("s_auth", Principal{.name = "alice", .authority_key = "full"},
+                                           boost::asio::make_strand(pool_.get_executor()));
+  registry.Add(session);
+  const Principal weaker{.name = "alice", .authority_key = "readonly"};
+  const Principal unset{.name = "alice"};
+  const Principal same{.name = "alice", .role = "other fields don't matter", .authority_key = "full"};
+  ExpectNotFound([&] { registry.Find(session->id(), weaker); });
+  ExpectNotFound([&] { registry.Find(session->id(), unset); });
+  EXPECT_EQ(registry.Find(session->id(), same), session);
+  registry.Retire(session->id(), session->owner(), Error::SessionEnded("killed", "killed"),
+                  Clock::now() + std::chrono::minutes(1));
+  ExpectNotFound([&] { registry.Find(session->id(), weaker); });
+  EXPECT_FALSE(registry.ForgetEnded(session->id(), weaker));
+  try {
+    registry.Find(session->id(), same);
+    FAIL() << "expected session_ended";
+  } catch (const Error& error) {
+    EXPECT_EQ(error.code(), ErrorCode::kSessionEnded);
+  }
+  EXPECT_TRUE(registry.ForgetEnded(session->id(), same));
+}
+
 // What Server::Sessions() reads of a statement.
 TEST(StatementDescribe, ItSaysStateRowsPartitionsReadersAndWhyItWasCancelled) {
   Statement::Config config;
