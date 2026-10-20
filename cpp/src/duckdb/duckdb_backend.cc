@@ -170,14 +170,14 @@ warpsql::Principal StaticPasswordAuthenticator::AuthenticatePassword(std::string
   if (!user_ok || !password_ok) {
     throw Error(ErrorCode::kInvalidCredentials, "the user name or password is not correct");
   }
-  return warpsql::Principal{std::string(username), "admin", "password", {}, {}};
+  return warpsql::Principal{std::string(username), "admin", "password", {}, {}, {}};
 }
 
 warpsql::Principal StaticPasswordAuthenticator::AuthenticateCertificate(
     std::string_view identity, const warpsql::ClientCertificate&) {
   for (const auto& allowed : certificate_identities_) {
     if (warpsql::CertificateIdentitiesMatch(allowed, identity)) {
-      return warpsql::Principal{allowed, "admin", "client_certificate", {}, {}};
+      return warpsql::Principal{allowed, "admin", "client_certificate", {}, {}, {}};
     }
   }
   // A URI identity (a SPIFFE ID) differing from an allowed one only in case is another
