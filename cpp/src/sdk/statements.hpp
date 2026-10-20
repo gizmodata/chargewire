@@ -124,6 +124,8 @@ class Statement {
   bool HoldsRetainedResult() const;
   // An unretained result nobody is reading, with its producer waiting for a reader.
   bool WaitingForReader() const;
+  // A read of the result (any partition) has started and not ended.
+  bool ReadInProgress() const;
   // True when the statement has finished at least `keep` ago, nobody is reading it,
   // and any retained result has expired: the session may forget it.
   bool Forgettable(WallClock::time_point now, std::chrono::seconds keep) const;
