@@ -3,15 +3,32 @@
 The protocol's documentation site: the specification, every flow with a sequence diagram and
 commands that run, the OpenAPI reference in Swagger UI, conformance and implementations. Built
 with [Astro Starlight](https://starlight.astro.build); static output, no script needed except
-for Swagger UI and search. Its future address is `https://warpsql.gizmodata.com`; until the
-public launch it is a private preview (every page says so and asks search engines not to index
-it).
+for Swagger UI and search.
 
 ```bash
 npm ci
-npm run build && npm run preview      # http://localhost:4321
+npm run build && npm run preview      # http://localhost:4321, the private preview
+DOCS_GA=true npm run build            # the public site, in dist/
 npm run dev                           # live reload while writing
 ```
+
+## Private preview and GA
+
+The same source builds two sites, chosen by **one switch, `DOCS_GA`**:
+
+| | Private preview (`DOCS_GA` unset) | Public site (`DOCS_GA=true`) |
+|---|---|---|
+| Address | <https://glowing-system-8l9q85e.pages.github.io/> (GitHub Pages, visible to the gizmodata organization only) | <https://warpsql.gizmodata.com/> (`public/CNAME`; DNS already points there) |
+| Banner, `noindex` | on every page | none |
+| External links | `github.com/gizmodata/` left out | checked |
+
+Every run of `site.yml` builds both variants and `scripts/check_ga_build.py` fails it if the
+public build still carries the banner or the `noindex` tag. A run started by hand with the **ga**
+input checks the public site without flipping anything.
+
+**The flip, when the repository is public:** set the repository variable `DOCS_GA` to `true`
+(`gh variable set DOCS_GA --body true --repo gizmodata/warp-sql`), set the Pages custom domain
+(the GA checklist below), and push to `main` (or run **site** by hand on `main`).
 
 ## What is generated
 
@@ -67,14 +84,21 @@ OpenAPI lint, the build (which fails on a broken internal link or anchor) and ly
 external links (`lychee.toml`). A push to `main` then deploys the site to GitHub Pages. The
 examples and browser checks run locally (above): they need a built server.
 
-## Launch checklist
+## GA checklist
 
-1. Repository visibility: GitHub Pages for a private repository is visible only to the
-   organization's members (the private preview). For the public site, the repository (or a
-   public mirror of `site/`) must allow public Pages.
-2. DNS: a `CNAME` record `warpsql.gizmodata.com` → `gizmodata.github.io`.
-3. Pages: set the custom domain `warpsql.gizmodata.com` in the repository's Pages settings and
-   enforce HTTPS once the certificate is issued.
-4. Build: set `DOCS_SITE=https://warpsql.gizmodata.com` and `DOCS_INDEXABLE=true` in the
-   `pages` job (drops the preview banner and the `noindex` tag).
-5. `lychee.toml`: remove the exclusion of `github.com/gizmodata/` once the repositories are public.
+Done, ready for the flip:
+
+- [x] DNS: `warpsql.gizmodata.com` is a `CNAME` to `gizmodata.github.io`
+      (gizmodata-infrastructure-terraform `aws/dns/gizmodata_com.tf`, applied 2026-10-20), and
+      gizmodata.com is a verified GitHub Pages domain of the organization.
+- [x] `public/CNAME`, the `DOCS_GA` switch, and the GA build checked on every run.
+
+At the flip (the repository public):
+
+- [ ] `gh variable set DOCS_GA --body true --repo gizmodata/warp-sql`.
+- [ ] Pages custom domain: `gh api -X PUT repos/gizmodata/warp-sql/pages -f cname=warpsql.gizmodata.com`
+      (Settings → Pages → Custom domain). Wait for the DNS check and the certificate
+      (`gh api repos/gizmodata/warp-sql/pages --jq '.https_certificate.state'` says `approved`),
+      then `gh api -X PUT repos/gizmodata/warp-sql/pages -F https_enforced=true`.
+- [ ] A push to `main` that touches the site (or **site** by hand on `main`) deploys the public
+      site; open every page on the live domain in Chromium and WebKit.

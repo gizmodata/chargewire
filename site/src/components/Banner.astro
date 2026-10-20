@@ -1,7 +1,8 @@
 ---
-// Every page says it is a private preview until the public launch (DOCS_INDEXABLE=true drops it).
+// Every page says it is a private preview until DOCS_GA=true, the one switch to the public
+// site (README, "Private preview and GA").
 import Default from '@astrojs/starlight/components/Banner.astro';
-const preview = import.meta.env.DOCS_INDEXABLE !== 'true' && process.env.DOCS_INDEXABLE !== 'true';
+const preview = import.meta.env.DOCS_GA !== 'true' && process.env.DOCS_GA !== 'true';
 ---
 
 {

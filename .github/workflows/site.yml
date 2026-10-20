@@ -6,8 +6,9 @@ name: site
 #     and every diagram is rendered from its current source; spec/openapi.yaml lints clean
 #     (Redocly CLI and openapi-spec-validator); the site builds, which fails on a broken
 #     internal link or anchor; lychee checks the external links of the built site.
-#   - pages, deploy: on a push to main only, the site is built for GitHub Pages and deployed
-#     (a private preview until the public launch; see site/README.md).
+#   - pages, deploy: on a push to main only, the site is built for GitHub Pages and deployed:
+#     the private preview, or, with the repository variable DOCS_GA set to true, the public
+#     site at warpsql.gizmodata.com (site/README.md, "Private preview and GA").
 #
 # The examples on the pages run against real servers with site/scripts/verify_examples.py,
 # and the browser checks with site/scripts/screenshots.mjs, locally: they need a built
@@ -30,6 +31,11 @@ on:
       - "conformance/tests/test_*.py"
       - ".github/workflows/site.yml"
   workflow_dispatch:
+    inputs:
+      ga:
+        description: "Check the public site (as if the repository variable DOCS_GA were true)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -41,6 +47,12 @@ concurrency:
 env:
   # swagger-ui-dist's install-time analytics, off (site/package.json says so too).
   SCARF_ANALYTICS: "false"
+  # The one switch between the private preview and the public site (site/README.md): the
+  # repository variable DOCS_GA, or the `ga` input of a run started by hand. With it the build
+  # has no preview banner or noindex, sits at the custom domain, and lychee checks
+  # github.com/gizmodata links (public at GA). The deploy reads the variable only.
+  DOCS_GA: ${{ (inputs.ga || vars.DOCS_GA == 'true') && 'true' || 'false' }}
+  GA_SITE: https://warpsql.gizmodata.com
 
 jobs:
   check:
@@ -63,11 +75,24 @@ jobs:
         run: ../spec/scripts/lint-openapi.sh
       - name: Build (fails on a broken internal link)
         run: npm run build
+      - name: The public site (DOCS_GA=true) has nothing of the preview left in it
+        run: |
+          # Proves the switch on every run, before it is flipped: a second build with it on
+          # (or this build, when it is on already), checked by scripts/check_ga_build.py.
+          if [ "$DOCS_GA" = true ]; then
+            out=dist
+          else
+            out=dist-ga
+            DOCS_GA=true DOCS_SITE="$GA_SITE" npm run build -- --outDir "$out"
+          fi
+          python3 scripts/check_ga_build.py "$out"
       - name: External links
         uses: lycheeverse/lychee-action@v2
         with:
+          # gizmodata's repositories are internal until GA: an anonymous check gets 404, so
+          # their links are left out until the switch is on.
           workingDirectory: site
-          args: --config lychee.toml --root-dir ${{ github.workspace }}/site/dist --no-progress "dist/**/*.html"
+          args: --config lychee.toml ${{ env.DOCS_GA != 'true' && '--exclude ^https://github.com/gizmodata/' || '' }} --root-dir ${{ github.workspace }}/site/dist --no-progress "dist/**/*.html"
           fail: true
 
   pages:
@@ -92,8 +117,10 @@ jobs:
       - run: npm ci
       - name: Build for GitHub Pages
         env:
-          # The preview's address until launch; at launch, the custom domain (site/README.md).
-          DOCS_SITE: ${{ steps.pages.outputs.origin }}
+          # The private preview's address, or the custom domain once DOCS_GA is true
+          # (site/README.md, "Private preview and GA"); never the manual input here.
+          DOCS_GA: ${{ vars.DOCS_GA == 'true' && 'true' || 'false' }}
+          DOCS_SITE: ${{ vars.DOCS_GA == 'true' && 'https://warpsql.gizmodata.com' || steps.pages.outputs.origin }}
           BASE_PATH: ${{ steps.pages.outputs.base_path }}
         run: |
           # The pages link to each other from the root (/specification/): the site must be

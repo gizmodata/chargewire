@@ -7,6 +7,17 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Added
+
+- Site: ready for the public launch at `warpsql.gizmodata.com`. One switch, `DOCS_GA`
+  (`site/README.md`, "Private preview and GA"), chooses between the private preview and the
+  public site: with it there is no preview banner or `noindex`, the build sits at the custom
+  domain, and lychee checks `github.com/gizmodata/` links. `site/public/CNAME` names the domain,
+  whose DNS points at GitHub Pages. `site.yml` reads the repository variable `DOCS_GA`
+  (`DOCS_INDEXABLE` is gone), takes it as the `ga` input of a run started by hand, builds the
+  public site on every run and fails if anything of the preview is left in it
+  (`site/scripts/check_ga_build.py`). The README's GA checklist has the flip-day steps.
+
 ## [1.0.1] - 2026-10-20
 
 A patch release: fixes and additions to the C++ SDK, a clarification of §9.2 and §5.7, and
