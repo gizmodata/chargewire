@@ -700,7 +700,9 @@ has.
 
 A session with no request and no running statement for `idle_timeout_s` MAY be
 evicted. A running statement, or a retained result not yet expired, keeps a session
-alive.
+alive. A request still in progress counts as a request until its response ends, so a read
+of one of the session's results that is under way, however slowly the client reads, keeps
+it alive too (an unretained result's last batches go out after its statement has finished).
 
 ## 6. Statements
 

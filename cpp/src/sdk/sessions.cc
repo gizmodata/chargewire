@@ -347,9 +347,12 @@ bool Session::IdleLocked(Clock::time_point cutoff) const {
   }
   for (const auto& [id, statement] : statements_) {
     // A statement still running keeps the session alive, unless it is only waiting
-    // for someone to read an unretained result.
+    // for someone to read an unretained result. So does a retained result until it
+    // expires (spec §5.7), and a read of a result in progress, however slow: it is a
+    // request that hasn't ended, and evicting the session would cut its stream (a
+    // finished unretained result still has up to unretained_buffer_bytes to send).
     if ((!statement->IsTerminal() && !statement->WaitingForReader()) ||
-        statement->HoldsRetainedResult()) {
+        statement->HoldsRetainedResult() || statement->ReadInProgress()) {
       return false;
     }
   }

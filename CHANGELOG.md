@@ -7,6 +7,15 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A slow read no longer loses its session** (§5.7). The SDK's idle sweep evicted a
+  session whose statement had finished while the client was still reading its unretained
+  result (up to `unretained_buffer_bytes` of it goes out after the statement finishes), and
+  the stream ended without its end-of-stream marker. A read in progress now keeps its
+  session alive, retained or not, and §5.7 says a request in progress counts until its
+  response ends.
+
 ## [1.0.0] - 2026-10-19
 
 The first stable version of the protocol. From here on version 1 changes only by addition
