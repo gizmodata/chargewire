@@ -42,7 +42,11 @@ struct Node {
   bool boolean = false;
   std::string text;  // kInt (its digits) and kString
   std::vector<Node> items;
-  std::vector<std::pair<std::string, Node>> entries;
+  // kMap, in order: keys[i] maps to values[i]. Two vectors, not one of std::pair<std::string,
+  // Node>: std::vector may hold an incomplete type (Node, inside its own definition) and
+  // std::pair may not, which libstdc++ 14 enforces with a static assert.
+  std::vector<std::string> keys;
+  std::vector<Node> values;
 };
 
 struct Line {
@@ -253,10 +257,11 @@ class InlineParser {
       SkipSpaces();
       if (pos_ >= text_.size() || text_[pos_] != ':') throw YamlError(line_, "a flow mapping entry needs ':'");
       pos_++;
-      for (const auto& entry : node.entries) {
-        if (entry.first == key.text) throw YamlError(line_, "duplicate key '" + key.text + "'");
+      for (const auto& existing : node.keys) {
+        if (existing == key.text) throw YamlError(line_, "duplicate key '" + key.text + "'");
       }
-      node.entries.emplace_back(key.text, ParseValue(/*in_flow=*/true));
+      node.keys.push_back(key.text);
+      node.values.push_back(ParseValue(/*in_flow=*/true));
       SkipSpaces();
       if (pos_ >= text_.size()) throw YamlError(line_, "a flow mapping must end on its line");
       if (text_[pos_] == ',') {
@@ -397,8 +402,8 @@ class BlockParser {
       InlineParser inline_parser(line.content, line.number);
       std::string key;
       if (!inline_parser.TryKey(key)) throw YamlError(line.number, "expected 'key: value'");
-      for (const auto& entry : node.entries) {
-        if (entry.first == key) throw YamlError(line.number, "duplicate key '" + key + "'");
+      for (const auto& existing : node.keys) {
+        if (existing == key) throw YamlError(line.number, "duplicate key '" + key + "'");
       }
       const std::string rest = inline_parser.Rest();
       const int number = line.number;
@@ -409,7 +414,8 @@ class BlockParser {
       } else {
         value = ParseValueText(rest, indent, number);
       }
-      node.entries.emplace_back(key, std::move(value));
+      node.keys.push_back(key);
+      node.values.push_back(std::move(value));
     }
   }
 
@@ -554,11 +560,11 @@ void WriteJson(std::string& out, const Node& node) {
       break;
     case Node::Kind::kMap:
       out += '{';
-      for (std::size_t i = 0; i < node.entries.size(); i++) {
+      for (std::size_t i = 0; i < node.keys.size(); i++) {
         if (i) out += ',';
-        WriteString(out, node.entries[i].first);
+        WriteString(out, node.keys[i]);
         out += ':';
-        WriteJson(out, node.entries[i].second);
+        WriteJson(out, node.values[i]);
       }
       out += '}';
       break;

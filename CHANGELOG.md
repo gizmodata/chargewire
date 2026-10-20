@@ -499,6 +499,11 @@ the drafts; nobody depended on the drafts, so none has a fallback.
 
 ### Fixed
 
+- The SDK builds with clang against libstdc++ 14: `cpp/tools/openapi_json.cc` (which turns
+  `spec/openapi.yaml` into the served JSON at build time) kept a mapping's entries as
+  `std::vector<std::pair<std::string, Node>>` inside `Node` itself, and libstdc++ 14 refuses a
+  `std::pair` of an incomplete type with a static assertion (GCC and libc++ accepted it). Keys
+  and values are now two vectors; the generated document is byte for byte the same.
 - A retained result is expired from its `expires_at` on (spec §6.5): the SDK refused new reads
   only after its next sweep, up to 5 seconds later, and served them in the meantime. Found
   by the site's examples; `test_a_result_is_expired_from_its_expires_at_on` reads two results
