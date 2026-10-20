@@ -1572,7 +1572,7 @@ components:
         protocol_versions: ["1"]
         server:
           name: warp-duckdb
-          version: 1.0.0
+          version: 1.0.1
         capabilities: [prepared_statements, transactions, ingest, partitioned_ingest, long_poll, ipc_compression_zstd, ipc_compression_lz4_frame, result_partitions, openapi]
         auth:
           grant_types: [password]
