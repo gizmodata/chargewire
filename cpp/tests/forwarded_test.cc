@@ -61,7 +61,8 @@ TEST(IpNetwork, ParsesBlocksAndBareAddresses) {
 TEST(IpNetwork, RefusesWhatIsNotANetworkWithAClearMessage) {
   for (const char* bad : {"", "10.0.0.0/", "10.0.0.0/33", "2001:db8::/129", "10.0.0.0/-1", "10.0.0.0/8/8",
                           "10.0.0/8", "example.com", "10.0.0.0 /8", "fe80::1%eth0", "10.0.0.0/+8", "1.2.3.4:80",
-                          "[::1]", "10.0.0.0/08x"}) {
+                          "[::1]", "10.0.0.0/08x", "127.1", "2130706433", "0x7f000001", "010.0.0.0/8",
+                          "256.0.0.1", "1.2.3.4.", "1..2.3", "::ffff:127.1", "::ffff:192.000.2.1"}) {
     EXPECT_THROW(ParseIpNetwork(bad), std::invalid_argument) << bad;
   }
   try {
@@ -127,7 +128,8 @@ TEST(XForwardedFor, MalformedOrUnknownLeavesTheTcpPeer) {
   for (const char* bad : {"", " ", "unknown", "203.0.113.9,", "203.0.113.9, garbage",
                           "example.com", "203.0.113.9:0", "203.0.113.9:99999", "203.0.113.9:http", "[2001:db8::7",
                           "[203.0.113.9]", "fe80::1%eth0", "203.0.113.9 198.51.100.7", "1.2.3", "_hidden",
-                          "203.0.113.9, 10.1.2.3, unknown"}) {
+                          "203.0.113.9, 10.1.2.3, unknown", "127.1", "2130706433", "010.0.0.1",
+                          "1.2.3:80", "::ffff:127.1", "::ffff:192.000.2.1"}) {
     EXPECT_EQ(Client({{"X-Forwarded-For", bad}}), "") << bad;
   }
   // Garbage to the left of the client is never read.

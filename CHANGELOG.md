@@ -63,6 +63,11 @@ DuckDB 2.0.0 under the reference server. Protocol version 1 is unchanged; a clie
 
 ### Fixed
 
+- **Trusted-proxy address parsing is identical on Windows and Unix.** IPv4 addresses
+  must be four decimal octets, including the suffix of an IPv4-mapped IPv6 address;
+  abbreviated, octal and hexadecimal forms are refused. A bare network address cannot
+  include a port. Windows' permissive system parser previously accepted some of these
+  malformed inputs in proxy configuration and forwarding headers.
 - **A slow read no longer loses its session** (§5.7). The SDK's idle sweep evicted a
   session whose statement had finished while the client was still reading its unretained
   result (up to `unretained_buffer_bytes` of it goes out after the statement finishes), and

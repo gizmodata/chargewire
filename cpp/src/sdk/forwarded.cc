@@ -24,7 +24,25 @@ bool EqualsIgnoringCase(std::string_view a, std::string_view b) {
          });
 }
 
-// An IP address in text, as the system parses it; nullopt for anything else. No
+// A dotted quad, independent of the system parser (Windows also accepts shortened
+// forms and an address followed by a port). No octal, hex or leading zeroes.
+std::optional<net::ip::address_v4> ParseV4(std::string_view text) {
+  net::ip::address_v4::bytes_type bytes{};
+  for (std::size_t i = 0; i < bytes.size(); ++i) {
+    const auto dot = text.find('.');
+    if ((i < bytes.size() - 1) != (dot != std::string_view::npos)) return std::nullopt;
+    const auto part = text.substr(0, dot);
+    if (part.empty() || part.size() > 3 || (part.size() > 1 && part.front() == '0')) return std::nullopt;
+    unsigned value = 0;
+    const auto [end, ec] = std::from_chars(part.data(), part.data() + part.size(), value);
+    if (ec != std::errc() || end != part.data() + part.size() || value > 255) return std::nullopt;
+    bytes[i] = static_cast<unsigned char>(value);
+    if (dot != std::string_view::npos) text.remove_prefix(dot + 1);
+  }
+  return net::ip::address_v4(bytes);
+}
+
+// An IP address in text; nullopt for anything else. No
 // normalization: an IPv4-mapped address stays IPv6.
 std::optional<net::ip::address> ParseRaw(std::string_view text) {
   if (text.empty() || text.size() > 64) return std::nullopt;
@@ -32,8 +50,17 @@ std::optional<net::ip::address> ParseRaw(std::string_view text) {
     // Hex digits, dots and colons only: no zone ("%eth0"), no spaces or signs.
     if (!std::isxdigit(static_cast<unsigned char>(c)) && c != '.' && c != ':') return std::nullopt;
   }
+  if (text.find(':') == std::string_view::npos) {
+    const auto address = ParseV4(text);
+    if (!address) return std::nullopt;
+    return *address;
+  }
+  // An embedded IPv4 suffix follows the same dotted-quad rules.
+  if (text.find('.') != std::string_view::npos && !ParseV4(text.substr(text.rfind(':') + 1))) {
+    return std::nullopt;
+  }
   boost::system::error_code ec;
-  auto address = net::ip::make_address(std::string(text), ec);
+  auto address = net::ip::make_address_v6(std::string(text), ec);
   if (ec) return std::nullopt;
   return address;
 }
