@@ -20,7 +20,7 @@ The same source builds two sites, chosen by **one switch, `DOCS_GA`**:
 |---|---|---|
 | Address | <https://glowing-system-8l9q85e.pages.github.io/> (GitHub Pages, visible to the gizmodata organization only) | <https://warpsql.gizmodata.com/> (`public/CNAME`; DNS already points there) |
 | Banner, `noindex` | on every page | none |
-| External links | `github.com/gizmodata/` left out | checked |
+| External links | `github.com/gizmodata/` left out (also in a dry run with the **ga** input: the repositories are private until the flip) | checked |
 
 Every run of `site.yml` builds both variants and `scripts/check_ga_build.py` fails it if the
 public build still carries the banner or the `noindex` tag. A run started by hand with the **ga**
