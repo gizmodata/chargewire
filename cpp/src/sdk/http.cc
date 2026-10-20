@@ -7,6 +7,7 @@
 #include <cstring>
 #include <optional>
 
+#include "forwarded.hpp"
 #include "ids.hpp"
 #include "platform.hpp"
 #include "tls_context.hpp"
@@ -320,20 +321,35 @@ class StreamingBodySource : public BodySource {
   bool stream_ready_ = false;
 };
 
+// The connection's peer: its address:port as Request::peer has it, and whether it is one
+// of the trusted proxies.
+struct ConnectionPeer {
+  std::string address;
+  bool trusted_proxy = false;
+};
+
+template <class Socket>
+ConnectionPeer PeerOf(Socket& socket, const std::vector<IpNetwork>& trusted_proxies) {
+  ConnectionPeer peer;
+  boost::system::error_code ec;
+  const auto remote = socket.remote_endpoint(ec);
+  if (ec) return peer;
+  peer.address = FormatPeer(remote.address(), remote.port());
+  peer.trusted_proxy = !trusted_proxies.empty() && InNetworks(trusted_proxies, remote.address());
+  return peer;
+}
+
 // `tls` and `peer`: the TLS configuration and the connection's client certificate, or null.
 // `tls_version`: the connection's (SSL_get_version), static; empty without TLS.
+// `trusted_proxies`: when the connection comes from one, each request's client address is
+// the one its forwarding headers give (a proxy's connection carries many clients' requests).
 template <class Stream>
 Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler& handler,
-                         TlsContext* tls = nullptr, PeerCertificate* peer = nullptr,
-                         std::string_view tls_version = {}) {
+                         const std::vector<IpNetwork>& trusted_proxies, TlsContext* tls = nullptr,
+                         PeerCertificate* peer = nullptr, std::string_view tls_version = {}) {
   beast::flat_buffer buffer;
   int auth_failures = 0;
-  std::string peer_address;
-  {
-    boost::system::error_code ec;
-    const auto remote = beast::get_lowest_layer(stream).socket().remote_endpoint(ec);
-    if (!ec) peer_address = remote.address().to_string() + ":" + std::to_string(remote.port());
-  }
+  const ConnectionPeer connection = PeerOf(beast::get_lowest_layer(stream).socket(), trusted_proxies);
   for (;;) {
     http::request_parser<http::buffer_body> parser;
     parser.header_limit(static_cast<std::uint32_t>(limits.max_header_bytes));
@@ -369,7 +385,13 @@ Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler
       request.method = message.method();
       request.headers = static_cast<const http::fields&>(message.base());
       request.request_id = NewId("r");
-      request.peer = peer_address;
+      request.peer = connection.address;
+      if (connection.trusted_proxy) {
+        if (auto forwarded = ForwardedClient(request.headers, trusted_proxies)) {
+          request.peer = std::move(*forwarded);
+          request.proxy = connection.address;
+        }
+      }
       request.tls_version = tls_version;
       request.connection_auth_failures = &auth_failures;
       if (peer != nullptr) {
@@ -494,7 +516,7 @@ class HttpServer::Impl {
     try {
       beast::tcp_stream stream(std::move(socket));
       if (!tls_) {
-        co_await ServeRequests(stream, limits_, handler_);
+        co_await ServeRequests(stream, limits_, handler_, options_.trusted_proxies);
         co_await EndConnection(stream);
         co_return;
       }
@@ -505,12 +527,8 @@ class HttpServer::Impl {
       // Why the handshake refused a client certificate, if it does (the verify callback).
       HandshakeRefusal refusal;
       SSL_set_ex_data(tls_stream.native_handle(), TlsContext::RefusalIndex(), &refusal);
-      std::string peer_address;
-      {
-        boost::system::error_code ec;
-        const auto remote = beast::get_lowest_layer(tls_stream).socket().remote_endpoint(ec);
-        if (!ec) peer_address = remote.address().to_string() + ":" + std::to_string(remote.port());
-      }
+      // The TCP peer: a handshake refusal comes before any request and its headers.
+      const std::string peer_address = PeerOf(beast::get_lowest_layer(tls_stream).socket(), {}).address;
       try {
         beast::get_lowest_layer(tls_stream).expires_after(kHandshakeTimeout);
         try {
@@ -523,7 +541,7 @@ class HttpServer::Impl {
         }
         SSL_set_ex_data(tls_stream.native_handle(), TlsContext::RefusalIndex(), nullptr);
         auto peer = tls_->PeerOf(tls_stream.native_handle(), context.generation);
-        co_await ServeRequests(tls_stream, limits_, handler_, tls_.get(), peer.get(),
+        co_await ServeRequests(tls_stream, limits_, handler_, options_.trusted_proxies, tls_.get(), peer.get(),
                                SSL_get_version(tls_stream.native_handle()));
       } catch (const std::exception&) {
         // the connection failed; it still ends below

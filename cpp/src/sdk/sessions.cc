@@ -327,6 +327,7 @@ void Session::Touch(const Client& client) {
   // Assigned only when they change: a session's requests mostly come over one connection.
   LastRequest& last = last_request_;
   if (last.address != client.address) last.address.assign(client.address);
+  if (last.proxy != client.proxy) last.proxy.assign(client.proxy);
   if (last.user_agent != client.user_agent) last.user_agent.assign(client.user_agent);
   if (last.tls_version != client.tls_version) last.tls_version.assign(client.tls_version);
   if (last.certificate != client.certificate) last.certificate = client.certificate;

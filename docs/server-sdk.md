@@ -66,6 +66,14 @@ limits, lifetimes) and `Server`, plus what an engine may ask about its own sessi
 (`Sessions()`, `CancelSession()`, `EndSession()`), for SQL such as a sessions table or
 a command that ends a session.
 
+Behind an HTTP reverse proxy every connection comes from the proxy. `ServerOptions::
+trusted_proxies` lists the proxies (CIDRs) whose `X-Forwarded-For` (or, without it, RFC 7239
+`Forwarded`) header is believed: the client is the rightmost hop that isn't itself a trusted
+proxy. That address goes to `SecurityEvent::peer`, `SessionActivity::client_address` and the
+per-address bound on browser sign-ins, with the proxy's own address beside it (`proxy`,
+`proxy_address`); authentication and TLS never see it. Empty (the default), no header is
+believed.
+
 `warp-duckdb` ([`cpp/src/duckdb/`](../cpp/src/duckdb/)) is a complete backend in about
 3,000 lines, and the one the conformance suite and the drivers test against.
 

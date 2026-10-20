@@ -13,6 +13,7 @@
 #include <arrow/table.h>
 #include <arrow/util/config.h>  // ARROW_VERSION_STRING
 
+#include "forwarded.hpp"
 #include "ids.hpp"
 #include "ipc.hpp"
 #include "json.hpp"
@@ -688,15 +689,9 @@ Task<Response> Api::IssueToken(Request& request) {
 
 namespace {
 
-// The address of "address:port" or "[v6]:port", for the per-address bound on flows.
-std::string AddressOf(std::string_view peer) {
-  if (peer.starts_with('[')) {
-    const auto end = peer.find(']');
-    return std::string(peer.substr(0, end == std::string_view::npos ? peer.size() : end + 1));
-  }
-  const auto colon = peer.rfind(':');
-  return std::string(colon == std::string_view::npos ? peer : peer.substr(0, colon));
-}
+// The address of "address:port", "[v6]:port" or a forwarded "address" / "[v6]", for the
+// per-address bound on flows.
+std::string AddressOf(std::string_view peer) { return PeerHost(peer); }
 
 std::string EscapeHtml(std::string_view text) {
   std::string out;
@@ -938,6 +933,7 @@ void Api::ReportSecurityEvent(const Request& request, const Error& error) const 
     event.certificate_subject = EscapeForDisplay(request.client_certificate->subject);
   }
   event.peer = request.peer;
+  event.proxy = request.proxy;
   event.request_id = request.request_id;
   Emit(event);
 }
@@ -1000,7 +996,7 @@ std::shared_ptr<Session> Api::OwnSession(const Request& request, const std::stri
 }
 
 Session::Client Api::ClientOf(const Request& request) {
-  return {request.peer, request.Header("User-Agent"), request.tls_version, request.client_certificate};
+  return {request.peer, request.proxy, request.Header("User-Agent"), request.tls_version, request.client_certificate};
 }
 
 void Api::RejectIfDraining() const {
@@ -2188,6 +2184,7 @@ SessionActivity Api::Describe(Session& session) const {
   const Session::LastRequest last = session.last_request();
   out.last_request_at = last.at;
   out.client_address = last.address;
+  out.proxy_address = last.proxy;
   out.user_agent = last.user_agent;
   out.tls = !last.tls_version.empty();
   out.tls_version = last.tls_version;

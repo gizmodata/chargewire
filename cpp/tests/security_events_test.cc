@@ -82,11 +82,11 @@ TEST(SecurityEventLimiter, AnIpv6HostIsOneSourceByItsSlash64) {
   const auto t = Clock::now();
   std::size_t full = 0;
   for (int i = 0; i < 40; i++) {
-    full += limiter.Admit(Event("2001:db8:1:2::" + std::to_string(i + 1) + ":443", "", "client_certificate_refused"),
+    full += limiter.Admit(Event("[2001:db8:1:2::" + std::to_string(i + 1) + "]:443", "", "client_certificate_refused"),
                           t).size();
   }
   EXPECT_EQ(full, 10u);
-  EXPECT_EQ(limiter.Admit(Event("2001:db8:1:3::1:443", "", "client_certificate_refused"), t).size(), 1u);
+  EXPECT_EQ(limiter.Admit(Event("[2001:db8:1:3::1]:443", "", "client_certificate_refused"), t).size(), 1u);
 }
 
 TEST(SecurityEventLimiter, ClientSuppliedFieldsAreCapped) {

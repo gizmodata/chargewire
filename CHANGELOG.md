@@ -7,6 +7,28 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Added
+
+- **C++ SDK: `ServerOptions::trusted_proxies`**, the reverse proxies whose forwarding headers
+  name the client (`IpNetwork` blocks, from `ParseIpNetwork("10.0.0.0/8")`, `"fd00::/8"` or a
+  bare address; it throws `std::invalid_argument` naming a bad one). When a request's TCP peer
+  is in one, its client address is the rightmost `X-Forwarded-For` hop that is not itself a
+  trusted proxy (all trusted: the leftmost), or, without `X-Forwarded-For`, the same walk
+  over RFC 7239 `Forwarded: for=` (quoted values, `"[v6]:port"`). `X-Forwarded-For` wins
+  because the common proxies append to it and pass a client's `Forwarded` on. An unknown,
+  obfuscated or malformed hop leaves the TCP peer. Resolved per request (a proxy's
+  connection carries many clients). The address feeds `SecurityEvent::peer`,
+  `SessionActivity::client_address` and the per-address bound on browser sign-ins, never
+  authentication or TLS; the connection's own address is in the new
+  `SecurityEvent::proxy` and `SessionActivity::proxy_address` when it differs. Default:
+  empty, no proxy trusted. Tests: `cpp/tests/forwarded_test.cc`.
+
+### Changed
+
+- **C++ SDK: an IPv6 peer is written `[2001:db8::7]:5000`** in `SecurityEvent::peer` and
+  `SessionActivity::client_address` (it was `2001:db8::7:5000`, ambiguous with an address
+  without a port). A forwarded address has no port: `203.0.113.9`, `[2001:db8::7]`.
+
 ## [1.0.0] - 2026-10-19
 
 The first stable version of the protocol. From here on version 1 changes only by addition
