@@ -1,6 +1,6 @@
 # Warp SQL Protocol, version 1
 
-**Status:** 1.0.0 (2026-10-19). Version 1 is stable: from here on it changes only by
+**Status:** 1.0.1 (2026-10-20). Version 1 is stable: from here on it changes only by
 addition (§12).
 
 Warp SQL is an open protocol for running SQL against a database server over plain

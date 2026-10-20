@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="spec/warp-sql.md"><img src="https://img.shields.io/badge/spec-1.0.0-31a8db.svg" alt="Spec: 1.0.0"></a>
+  <a href="spec/warp-sql.md"><img src="https://img.shields.io/badge/spec-1.0.1-31a8db.svg" alt="Spec: 1.0.1"></a>
   <a href="conformance/tests"><img src="https://img.shields.io/badge/conformance-282%20tests-brightgreen.svg" alt="Conformance: 282 tests"></a>
   <a href="spec/warp-sql.md#21-transport"><img src="https://img.shields.io/badge/transport-HTTP%2F1.1%20%2B%20TLS-f15a24.svg" alt="Transport: HTTP/1.1 + TLS"></a>
   <a href="https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format"><img src="https://img.shields.io/badge/wire%20format-Arrow%20IPC-f15a24.svg" alt="Wire format: Arrow IPC"></a>
@@ -73,7 +73,7 @@ Every server describes itself at `GET /warp`, so a client knows what it may use:
 {
   "protocol": "warp-sql",
   "protocol_versions": ["1"],
-  "server": {"name": "warp-duckdb", "version": "1.0.0 (DuckDB v2.0.0-alpha48624)"},
+  "server": {"name": "warp-duckdb", "version": "1.0.1 (DuckDB v2.0.0)"},
   "capabilities": ["prepared_statements", "transactions", "ingest", "partitioned_ingest",
                    "long_poll", "ipc_compression_zstd", "ipc_compression_lz4_frame",
                    "result_partitions", "openapi"],
@@ -203,7 +203,7 @@ See [cpp/README.md](cpp/README.md) for TLS, mTLS and the other options.
 
 ## 🗺️ Status and roadmap
 
-**1.0.0.** Version 1 is stable: it changes only by addition (new endpoints, fields,
+**1.0.1.** Version 1 is stable: it changes only by addition (new endpoints, fields,
 capabilities and error codes, [§12](spec/warp-sql.md#12-versioning)), so a client written
 for 1.0.0 keeps working.
 

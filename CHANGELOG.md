@@ -7,6 +7,12 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-20
+
+A patch release: fixes and additions to the C++ SDK, a clarification of §9.2 and §5.7, and
+DuckDB 2.0.0 under the reference server. Protocol version 1 is unchanged; a client written for
+1.0.0 works as before.
+
 ### Security
 
 - **Handles belong to a principal's authority, not only its name** (§9.2). The C++ SDK
@@ -45,6 +51,15 @@ spec's version is the repository's version.
 - **C++ SDK: an IPv6 peer is written `[2001:db8::7]:5000`** in `SecurityEvent::peer` and
   `SessionActivity::client_address` (it was `2001:db8::7:5000`, ambiguous with an address
   without a port). A forwarded address has no port: `203.0.113.9`, `[2001:db8::7]`.
+- **DuckDB 2.0.0.** The reference server and the SDK's DuckDB backend build against DuckDB's
+  2.0.0 release commit, `d54cbbe3df` on DuckDB's release branch `v2.0-cyanoptera`, which
+  DuckDB's own v2.0.0 build was made from (was `ffe0b8b7a2`, v2.0.0-alpha48624, 94 commits
+  earlier). It reports `v2.0.0` (`PRAGMA version`), so `INSTALL` fetches the extensions
+  DuckDB publishes for v2.0.0. Between the two, DuckDB marked its whole v2 C API (`duckdb_v2.h`)
+  unstable: the header compiles none of it unless `DUCKDB_V2_API_ALLOW_UNSTABLE` is 1. The
+  `warpsql_duckdb` CMake target now defines it for everything that links it; a project that
+  includes `duckdb_v2.h` without that target defines it itself. Nothing else in the API the
+  SDK uses changed shape (2.0.0 adds query-metrics functions).
 
 ### Fixed
 
@@ -679,5 +694,6 @@ the drafts; nobody depended on the drafts, so none has a fallback.
   is the administrator with all of DuckDB's file, network and extension access, and it has
   no users, access control or file guards. Production use is Hardcharger.
 
-[Unreleased]: https://github.com/gizmodata/warp-sql/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/gizmodata/warp-sql/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/gizmodata/warp-sql/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/gizmodata/warp-sql/releases/tag/v1.0.0

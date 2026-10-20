@@ -1,6 +1,6 @@
 ---
 title: Specification
-description: "The Warp SQL protocol, version 1 (specification 1.0.0): SQL over HTTP with Arrow IPC streams."
+description: "The Warp SQL protocol, version 1 (specification 1.0.1): SQL over HTTP with Arrow IPC streams."
 editUrl: https://github.com/gizmodata/warp-sql/edit/main/spec/warp-sql.md
 tableOfContents:
   maxHeadingLevel: 3
@@ -12,7 +12,7 @@ tableOfContents:
 This page is [`spec/warp-sql.md`](https://github.com/gizmodata/warp-sql/blob/main/spec/warp-sql.md), rendered as it is. Its endpoints are also described for tools in the [OpenAPI document](/reference/openapi/).
 :::
 
-**Status:** 1.0.0 (2026-10-19). Version 1 is stable: from here on it changes only by
+**Status:** 1.0.1 (2026-10-20). Version 1 is stable: from here on it changes only by
 addition ([§12](#12-versioning)).
 
 Warp SQL is an open protocol for running SQL against a database server over plain
