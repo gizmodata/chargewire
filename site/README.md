@@ -24,7 +24,8 @@ The same source builds two sites, chosen by **one switch, `DOCS_GA`**:
 
 Every run of `site.yml` builds both variants and `scripts/check_ga_build.py` fails it if the
 public build still carries the banner or the `noindex` tag. A run started by hand with the **ga**
-input checks the public site without flipping anything.
+input checks the public site. On `main`, a manual run also deploys using the repository
+variable (the input alone never switches the live site to GA).
 
 **The flip, when the repository is public:** set the repository variable `DOCS_GA` to `true`
 (`gh variable set DOCS_GA --body true --repo gizmodata/warp-sql`), set the Pages custom domain
@@ -81,7 +82,7 @@ node scripts/screenshots.mjs test-output/screenshots
 `.github/workflows/site.yml` runs on pull requests and pushes to `main` that touch the site, the
 spec or the conformance suite's README and tests: the generated-page and diagram check, the
 OpenAPI lint, the build (which fails on a broken internal link or anchor) and lychee on the
-external links (`lychee.toml`). A push to `main` then deploys the site to GitHub Pages. The
+external links (`lychee.toml`). A push or manual run on `main` then deploys the site to GitHub Pages. The
 examples and browser checks run locally (above): they need a built server.
 
 ## GA checklist

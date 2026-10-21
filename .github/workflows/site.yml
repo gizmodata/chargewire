@@ -6,7 +6,7 @@ name: site
 #     and every diagram is rendered from its current source; spec/openapi.yaml lints clean
 #     (Redocly CLI and openapi-spec-validator); the site builds, which fails on a broken
 #     internal link or anchor; lychee checks the external links of the built site.
-#   - pages, deploy: on a push to main only, the site is built for GitHub Pages and deployed:
+#   - pages, deploy: on a push or manual run on main, the site is built for GitHub Pages and deployed:
 #     the private preview, or, with the repository variable DOCS_GA set to true, the public
 #     site at warpsql.gizmodata.com (site/README.md, "Private preview and GA").
 #
@@ -33,7 +33,7 @@ on:
   workflow_dispatch:
     inputs:
       ga:
-        description: "Check the public site (as if the repository variable DOCS_GA were true)"
+        description: "Check the public site (deployment on main still uses the DOCS_GA repository variable)"
         type: boolean
         default: false
 
@@ -98,7 +98,7 @@ jobs:
 
   pages:
     needs: check
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     permissions:
       contents: read
