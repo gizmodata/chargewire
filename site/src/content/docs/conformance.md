@@ -46,7 +46,7 @@ privileges (`warp-duckdb`) it skips, saying so.
 
 ## What each file covers
 
-247 test functions (some run several cases), in the suite's [`tests/`](https://github.com/gizmodata/warp-sql/tree/main/conformance/tests):
+252 test functions (some run several cases), in the suite's [`tests/`](https://github.com/gizmodata/warp-sql/tree/main/conformance/tests):
 
 | File | Tests | Covers |
 |---|---|---|
@@ -55,7 +55,7 @@ privileges (`warp-duckdb`) it skips, saying so.
 | [`test_discovery_auth.py`](https://github.com/gizmodata/warp-sql/blob/main/conformance/tests/test_discovery_auth.py) | 7 | [§3](/specification/#3-discovery-and-health) (discovery, health) and [§4](/specification/#4-authentication) (authentication). |
 | [`test_extensibility.py`](https://github.com/gizmodata/warp-sql/blob/main/conformance/tests/test_extensibility.py) | 4 | [§2.3](/specification/#23-identifiers), [§2.4](/specification/#24-json), [§2.5](/specification/#25-request-headers-defined-by-this-protocol) and [§12](/specification/#12-versioning): what keeps version 1 open to additions. Servers ignore request fields they don't know, ids are long random strings, and Warp-Query-Tag labels a statement without changing it. |
 | [`test_http.py`](https://github.com/gizmodata/warp-sql/blob/main/conformance/tests/test_http.py) | 11 | [§2](/specification/#2-conventions) and [§9.5](/specification/#95-browsers): HTTP conventions, limits, browser rules. |
-| [`test_ingest.py`](https://github.com/gizmodata/warp-sql/blob/main/conformance/tests/test_ingest.py) | 18 | [§8](/specification/#8-bulk-ingest): bulk ingest. |
+| [`test_ingest.py`](https://github.com/gizmodata/warp-sql/blob/main/conformance/tests/test_ingest.py) | 23 | [§8](/specification/#8-bulk-ingest): bulk ingest. |
 | [`test_lifecycle.py`](https://github.com/gizmodata/warp-sql/blob/main/conformance/tests/test_lifecycle.py) | 4 | [§11.1](/specification/#111-graceful-shutdown) (graceful shutdown), [§3.2](/specification/#32-get-warpv1health) (health that answers when its query hangs) and [§6.5](/specification/#65-retention-and-resumption) (a read under way when its result expires). |
 | [`test_metadata.py`](https://github.com/gizmodata/warp-sql/blob/main/conformance/tests/test_metadata.py) | 11 | [§10](/specification/#10-metadata): metadata with Arrow Flight SQL's result schemas. |
 | [`test_mtls.py`](https://github.com/gizmodata/warp-sql/blob/main/conformance/tests/test_mtls.py) | 36 | [§2.1](/specification/#21-transport) and [§4.4](/specification/#44-client-certificate-sign-in-optional-capability-mtls_identity): mutual TLS that carries identity. The client_certificate grant, certificate-bound tokens, revocation, identity match. |

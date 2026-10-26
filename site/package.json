@@ -1,6 +1,6 @@
 {
   "name": "warp-sql-site",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "type": "module",
   "description": "The Warp SQL protocol's documentation site: the specification, flows, the OpenAPI reference, conformance and implementations",

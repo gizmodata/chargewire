@@ -1,6 +1,6 @@
 ---
 title: Specification
-description: "The Warp SQL protocol, version 1 (specification 1.0.1): SQL over HTTP with Arrow IPC streams."
+description: "The Warp SQL protocol, version 1 (specification 1.0.2): SQL over HTTP with Arrow IPC streams."
 editUrl: https://github.com/gizmodata/warp-sql/edit/main/spec/warp-sql.md
 tableOfContents:
   maxHeadingLevel: 3
@@ -12,7 +12,7 @@ tableOfContents:
 This page is [`spec/warp-sql.md`](https://github.com/gizmodata/warp-sql/blob/main/spec/warp-sql.md), rendered as it is. Its endpoints are also described for tools in the [OpenAPI document](/reference/openapi/).
 :::
 
-**Status:** 1.0.1 (2026-10-20). Version 1 is stable: from here on it changes only by
+**Status:** 1.0.2 (2026-10-26). Version 1 is stable: from here on it changes only by
 addition ([§12](#12-versioning)).
 
 Warp SQL is an open protocol for running SQL against a database server over plain
@@ -1089,6 +1089,16 @@ rows from the request remain.
 The server MUST map each Arrow type in the upload to a column type that preserves
 its values, and MUST refuse with `415` and code `unsupported_arrow_type` a type it
 cannot preserve. It MUST NOT fall back to storing values as text.
+
+An upload into an existing table (`append`, or `create_append` when the table exists)
+binds its columns to the table's columns by name, whatever their order in the
+stream: a column of the upload lands in the table column of the same name, a table
+column the upload omits takes its default (or NULL), and the server MUST refuse with
+`400` and code `sql_error`, writing nothing, an upload column the table lacks. A
+server MUST NOT bind by position: two columns of one type uploaded in the other order
+would then land crosswise without an error. A table the ingest creates (`create`,
+`replace`, or `create_append` when it does not exist) takes the upload's columns in
+the upload's order.
 
 `Idempotency-Key` ([§6.7](#67-idempotent-submission)) makes a retried upload safe.
 

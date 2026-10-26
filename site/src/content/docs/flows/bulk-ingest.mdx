@@ -48,6 +48,11 @@ curl -s "$WARP/warp/v1/sessions/$SESSION/ingest?table=trips&mode=create" -H "$AU
 {"rows_ingested":100000}
 ```
 
+An upload into a table that exists (`append`, or `create_append` when the table is there)
+binds its columns to the table's by name, in any order: a column the upload leaves out takes
+its default, and one the table lacks is refused with nothing written (<Spec s="8.1" />). A
+table the upload creates takes the upload's columns in the upload's order.
+
 `create` on a table that exists fails, with the SQL standard's `sqlstate` for "already exists"
 so a client can tell (<Spec s="11" />); `append` to a missing table gets `42P01`:
 

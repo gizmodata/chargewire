@@ -1,6 +1,6 @@
 [project]
 name = "warp-sql-conformance"
-version = "1.0.1"
+version = "1.0.2"
 description = "Black-box conformance tests for Warp SQL servers"
 requires-python = ">=3.12"
 dependencies = [

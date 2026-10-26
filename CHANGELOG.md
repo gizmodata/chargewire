@@ -7,6 +7,23 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-10-26
+
+A patch release: bulk ingest into an existing table binds columns by name. Protocol version 1
+is unchanged; a client written for 1.0.0 works as before.
+
+### Fixed
+
+- Bulk ingest (§8.1): an upload into an existing table (`append`, or `create_append` when the
+  table exists) binds its columns to the table's by name, whatever their order in the stream;
+  a column the upload omits takes its default, and a column the table lacks is refused with
+  `400` `sql_error`, nothing written. The reference server ran `INSERT INTO … SELECT * FROM
+  warp_upload()`, so DuckDB bound by position: two columns of one type uploaded the other way
+  round were stored crosswise with no error, differently typed ones failed on a cast, and a
+  table column could not be left out. Found by a Hardcharger customer whose uploads did not
+  follow table order. The spec now states the mapping; conformance has five tests for it
+  (`test_ingest.py`), four of which fail on a 1.0.1 server.
+
 ## [1.0.1] - 2026-10-20
 
 A patch release: fixes and additions to the C++ SDK, a clarification of §9.2 and §5.7, and

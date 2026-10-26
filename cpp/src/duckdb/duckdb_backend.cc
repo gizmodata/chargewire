@@ -85,7 +85,7 @@ DuckDBBackend::~DuckDBBackend() {
 }
 
 warpsql::ServerIdentity DuckDBBackend::Identity() {
-  return {"warp-duckdb", "1.0.1 (DuckDB " + version_ + ")"};
+  return {"warp-duckdb", "1.0.2 (DuckDB " + version_ + ")"};
 }
 
 std::unique_ptr<warpsql::EngineSession> DuckDBBackend::NewSession(const warpsql::Principal&, const std::string&) {
