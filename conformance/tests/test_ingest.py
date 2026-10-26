@@ -302,3 +302,63 @@ def test_a_bad_batch_in_the_middle_writes_nothing(warp, session_id):
     response = ingest(warp=warp, session_id=session_id, body=body, table="ing_bad_append", mode="append")
     assert_problem(response=response, status=415, code="unsupported_arrow_type")
     assert count(warp=warp, session_id=session_id, table="ing_bad_append") == 0
+
+
+# §8.1: an upload into an existing table binds its columns by name, never by position.
+
+
+def test_append_binds_columns_by_name(warp, session_id):
+    warp.execute(session_id=session_id,
+                 sql="CREATE TABLE ing_by_name (a INTEGER, b VARCHAR, c INTEGER DEFAULT 99)")
+    upload = pa.table({"c": pa.array([7, 8], type=pa.int32()), "b": ["x", "y"],
+                       "a": pa.array([1, 2], type=pa.int32())})
+    for mode in ("append", "create_append"):
+        response = ingest(warp=warp, session_id=session_id, body=ipc_bytes(table=upload), table="ing_by_name",
+                          mode=mode)
+        assert response.status_code == 200, (mode, response.text)
+    rows = warp.query(session_id=session_id, sql="SELECT a, b, c FROM ing_by_name ORDER BY a").to_pylist()
+    assert rows == [{"a": 1, "b": "x", "c": 7}, {"a": 1, "b": "x", "c": 7},
+                    {"a": 2, "b": "y", "c": 8}, {"a": 2, "b": "y", "c": 8}]
+
+
+def test_append_of_same_typed_columns_in_another_order_lands_by_name(warp, session_id):
+    # The case positional binding gets wrong without any error: both columns are
+    # INTEGER, so a server that bound by position would store a's values under b.
+    warp.execute(session_id=session_id, sql="CREATE TABLE ing_same_type (a INTEGER, b INTEGER)")
+    upload = pa.table({"b": pa.array([10, 20], type=pa.int32()), "a": pa.array([1, 2], type=pa.int32())})
+    response = ingest(warp=warp, session_id=session_id, body=ipc_bytes(table=upload), table="ing_same_type",
+                      mode="append")
+    assert response.status_code == 200, response.text
+    rows = warp.query(session_id=session_id, sql="SELECT a, b FROM ing_same_type ORDER BY a").to_pylist()
+    assert rows == [{"a": 1, "b": 10}, {"a": 2, "b": 20}]
+
+
+def test_append_omitting_columns_takes_their_defaults(warp, session_id):
+    warp.execute(session_id=session_id,
+                 sql="CREATE TABLE ing_defaults (a INTEGER, b VARCHAR, c INTEGER DEFAULT 99, d DATE)")
+    upload = pa.table({"b": ["only b"], "a": pa.array([1], type=pa.int32())})
+    response = ingest(warp=warp, session_id=session_id, body=ipc_bytes(table=upload), table="ing_defaults",
+                      mode="append")
+    assert response.status_code == 200, response.text
+    rows = warp.query(session_id=session_id, sql="SELECT a, b, c, d FROM ing_defaults").to_pylist()
+    assert rows == [{"a": 1, "b": "only b", "c": 99, "d": None}]
+
+
+def test_append_refuses_a_column_the_table_lacks(warp, session_id):
+    warp.execute(session_id=session_id, sql="CREATE TABLE ing_extra (a INTEGER, b INTEGER)")
+    upload = pa.table({"a": pa.array([1], type=pa.int32()), "b": pa.array([2], type=pa.int32()),
+                       "nope": pa.array([3], type=pa.int32())})
+    response = ingest(warp=warp, session_id=session_id, body=ipc_bytes(table=upload), table="ing_extra",
+                      mode="append")
+    problem = assert_problem(response=response, status=400, code="sql_error")
+    assert "nope" in problem["detail"], problem
+    assert count(warp=warp, session_id=session_id, table="ing_extra") == 0
+
+
+def test_create_keeps_the_upload_column_order(warp, session_id):
+    upload = pa.table({"b": pa.array([10], type=pa.int32()), "a": pa.array([1], type=pa.int32())})
+    for mode, table in (("create", "ing_created_order"), ("replace", "ing_replaced_order"),
+                        ("create_append", "ing_create_appended_order")):
+        response = ingest(warp=warp, session_id=session_id, body=ipc_bytes(table=upload), table=table, mode=mode)
+        assert response.status_code == 200, (mode, response.text)
+        assert warp.query(session_id=session_id, sql=f"SELECT * FROM {table}").column_names == ["b", "a"], mode

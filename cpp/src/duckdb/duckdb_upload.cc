@@ -512,7 +512,11 @@ int64_t Ingest(duckdb_v2_connection_handle connection, const warpsql::IngestTarg
       sql = (target.temporary ? "CREATE OR REPLACE TEMPORARY TABLE " : "CREATE OR REPLACE TABLE ") +
             name + " AS " + source;
       break;
-    case warpsql::IngestMode::kAppend: sql = "INSERT INTO " + name + " " + source; break;
+    // By name, as the spec says (§8.1): a column lands in the table's column of its
+    // name whatever its position, an omitted column takes its default, and a column
+    // the table lacks is refused. Positional binding would write two columns of the
+    // same type uploaded in the other order crosswise, without an error.
+    case warpsql::IngestMode::kAppend: sql = "INSERT INTO " + name + " BY NAME " + source; break;
     case warpsql::IngestMode::kCreateAppend: break;  // resolved above
   }
 

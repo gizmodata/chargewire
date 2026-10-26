@@ -1078,6 +1078,16 @@ The server MUST map each Arrow type in the upload to a column type that preserve
 its values, and MUST refuse with `415` and code `unsupported_arrow_type` a type it
 cannot preserve. It MUST NOT fall back to storing values as text.
 
+An upload into an existing table (`append`, or `create_append` when the table exists)
+binds its columns to the table's columns by name, whatever their order in the
+stream: a column of the upload lands in the table column of the same name, a table
+column the upload omits takes its default (or NULL), and the server MUST refuse with
+`400` and code `sql_error`, writing nothing, an upload column the table lacks. A
+server MUST NOT bind by position: two columns of one type uploaded in the other order
+would then land crosswise without an error. A table the ingest creates (`create`,
+`replace`, or `create_append` when it does not exist) takes the upload's columns in
+the upload's order.
+
 `Idempotency-Key` (§6.7) makes a retried upload safe.
 
 *Deployment note:* reverse proxies commonly cap request bodies (often at 1 MB) and
