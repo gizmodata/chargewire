@@ -7,6 +7,14 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Fixed
+
+- Bound Arrow ingest IPC messages and expanded compressed buffers before allocation.
+  `max_ingest_message_bytes` defaults to 64 MiB per message and applies to ordinary
+  ingest, every partitioned-ingest part, dictionaries and Arrow prepared parameters.
+  Oversized input returns HTTP 413 `payload_too_large`; later-part failures abort
+  the ingest without committing previously accepted parts.
+
 ## [1.0.2] - 2026-10-26
 
 A patch release: bulk ingest into an existing table binds columns by name. Protocol version 1

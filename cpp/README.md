@@ -104,3 +104,12 @@ cd ../conformance
 uv venv .venv && uv pip install --python .venv/bin/python -e .
 WARP_SQL_TEST_SERVER_BINARY=../cpp/build/warp-duckdb .venv/bin/python -m pytest -q
 ```
+
+### Ingest message limits
+
+`ServerOptions::max_ingest_message_bytes` defaults to 64 MiB. Each Arrow IPC message
+must fit on the wire, including framing and metadata, and its aggregate expanded
+buffers must fit before decompression. The limit covers ingest, partitioned ingest
+and Arrow prepared parameters, including dictionary messages. Oversized input is
+rejected with HTTP 413 `payload_too_large` before the declared allocation. Split
+larger uploads into smaller record batches; the limit is per message, not per upload.

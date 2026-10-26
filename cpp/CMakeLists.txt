@@ -217,7 +217,7 @@ if(WARPSQL_BUILD_TESTS)
   add_executable(warpsql-sdk-tests tests/security_events_test.cc tests/sessions_test.cc
                  tests/statements_test.cc tests/plain_handler_test.cc tests/browser_sign_in_test.cc
                  tests/statement_ids_test.cc tests/openapi_test.cc
-                 tests/forwarded_test.cc tests/session_authority_test.cc)
+                 tests/forwarded_test.cc tests/session_authority_test.cc tests/upload_limits_test.cc)
   target_include_directories(warpsql-sdk-tests PRIVATE src/sdk)
   target_link_libraries(warpsql-sdk-tests PRIVATE warpsql warpsql_client GTest::gtest_main)
 endif()
