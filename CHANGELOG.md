@@ -7,6 +7,22 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Added
+
+- C++ SDK `ServerOptions::max_ingest_message_bytes` (64 MiB default): refuse oversized
+  Arrow IPC messages before allocating their declared body or decompressing their
+  buffers. Applies to ordinary/partitioned ingest and Arrow prepared parameters;
+  dictionary messages and the sum of expanded buffers receive the same check. Returns
+  `payload_too_large` (HTTP 413); total upload length remains unlimited.
+- C++ SDK `ServerOptions::retained_bytes_total` (1 GiB default), shared atomically by all
+  principals alongside `retained_bytes_per_principal`. Quota exhaustion uses the existing
+  `result_quota_exceeded` error; cache disposal returns both reservations.
+
+### Fixed
+
+- Count nested child and dictionary Arrow buffers in retained-result reservations and
+  statement/encoding window accounting, using Arrow's recursive buffer-size utility.
+
 ## [1.0.1] - 2026-10-20
 
 A patch release: fixes and additions to the C++ SDK, a clarification of §9.2 and §5.7, and

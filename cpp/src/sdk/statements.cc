@@ -1,6 +1,7 @@
 #include "statements.hpp"
 
 #include <arrow/array.h>
+#include <arrow/util/byte_size.h>
 
 #include <format>
 
@@ -21,15 +22,7 @@ Error CancelError(CancelReason reason) {
 }
 
 int64_t BatchBytes(const arrow::RecordBatch& batch) {
-  int64_t bytes = 0;
-  for (const auto& column : batch.columns()) {
-    for (const auto& buffer : column->data()->buffers) {
-      if (buffer) {
-        bytes += buffer->size();
-      }
-    }
-  }
-  return bytes;
+  return arrow::util::TotalBufferSize(batch);
 }
 
 }  // namespace

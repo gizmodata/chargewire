@@ -51,7 +51,7 @@ class Server::Impl {
                tokens ? nullptr : std::make_shared<TokenStore>(options.token_lifetime),
                {},
                {},
-               RetainedQuota(options.retained_bytes_per_principal)},
+               RetainedQuota(options.retained_bytes_per_principal, options.retained_bytes_total)},
         api_(state_),
         limits_{state_.options.max_header_bytes, state_.options.max_json_body_bytes,
                 // Bulk ingest streams its body; everything else is read up front.

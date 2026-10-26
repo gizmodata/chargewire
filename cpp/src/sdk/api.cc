@@ -7,10 +7,12 @@
 #include <cstdlib>
 #include <deque>
 #include <format>
+#include <limits>
 #include <utility>
 
 #include <arrow/array.h>
 #include <arrow/table.h>
+#include <arrow/util/byte_size.h>
 #include <arrow/util/config.h>  // ARROW_VERSION_STRING
 
 #include "forwarded.hpp"
@@ -82,13 +84,7 @@ bool StreamStatsEnabled() {
 double Seconds(Clock::duration d) { return std::chrono::duration<double>(d).count(); }
 
 int64_t BatchBytes(const arrow::RecordBatch& batch) {
-  int64_t bytes = 0;
-  for (const auto& column : batch.columns()) {
-    for (const auto& buffer : column->data()->buffers) {
-      if (buffer) bytes += buffer->size();
-    }
-  }
-  return bytes;
+  return arrow::util::TotalBufferSize(batch);
 }
 
 std::vector<std::string_view> Segments(std::string_view path) {
@@ -209,13 +205,29 @@ json::object OptionErrorsDocument(const OptionErrors& errors) {
 
 }  // namespace
 
+RetainedQuota::RetainedQuota(std::size_t limit, std::size_t total_limit)
+    : limit_(static_cast<int64_t>(limit)), total_limit_(static_cast<int64_t>(total_limit)) {
+  if (limit > static_cast<std::size_t>(std::numeric_limits<int64_t>::max()) ||
+      total_limit > static_cast<std::size_t>(std::numeric_limits<int64_t>::max()))
+    throw std::invalid_argument("retained-result byte limits must fit a signed 64-bit integer");
+}
+
 bool RetainedQuota::Change(const std::string& principal, int64_t bytes) {
   std::lock_guard lock(mutex_);
-  int64_t& used = used_[principal];
-  if (bytes > 0 && used + bytes > limit_) {
-    return false;
+  auto found = used_.find(principal);
+  const int64_t used = found == used_.end() ? 0 : found->second;
+  if (bytes > 0) {
+    // Reserve both limits atomically, without overflowing or changing either on failure.
+    if (bytes > limit_ - used || bytes > total_limit_ - total_) return false;
+    used_[principal] = used + bytes;
+    total_ += bytes;
+  } else if (bytes < 0 && found != used_.end()) {
+    // Clamp an over-release, including INT64_MIN, without negating an overflowing value.
+    const int64_t released = bytes <= -used ? used : -bytes;
+    total_ -= released;
+    if (released == used) used_.erase(found);
+    else found->second -= released;
   }
-  used = std::max<int64_t>(0, used + bytes);
   return true;
 }
 
@@ -1469,7 +1481,7 @@ Task<Response> Api::ExecutePrepared(Request& request, const std::string& session
   Parameters parameters;
   std::shared_ptr<ValidatedReader> rows;
   if (request.Header("Content-Type").starts_with(kArrowStream)) {
-    rows = OpenValidatedIpc(request.body);  // one execution per row (spec §7.2)
+    rows = OpenValidatedIpc(request.body, state_.options.max_ingest_message_bytes);  // one execution per row
     parameters.rows = rows;
   } else {
     parameters.json = JsonParameters(ParseObject(request.body));
@@ -1477,7 +1489,8 @@ Task<Response> Api::ExecutePrepared(Request& request, const std::string& session
   StatementWork work = [prepared, parameters, rows](EngineSession& engine) {
     try {
       return engine.ExecutePrepared(*prepared, parameters);
-    } catch (const Error&) {
+    } catch (...) {
+      if (rows && rows->limit_exceeded()) throw rows->limit_error();
       if (rows && rows->failure()) {
         throw Error(ErrorCode::kUnsupportedArrowType, *rows->failure());
       }
@@ -1554,7 +1567,8 @@ Task<Response> Api::OpenIngest(Request& request, const std::string& session_id) 
     auto ingest = session->FindIngest(existing->statement_id);
     co_return JsonResponse(http::status::ok, ingest->Document());
   }
-  auto ingest = std::make_shared<IngestOperation>(id, std::move(target), std::move(tag));
+  auto ingest = std::make_shared<IngestOperation>(id, std::move(target), std::move(tag),
+                                                 state_.options.max_ingest_message_bytes);
   session->AddIngest(ingest);
   Response response = JsonResponse(http::status::created, ingest->Document());
   response.headers.emplace_back("Location", std::format("/warp/v1/sessions/{}/ingests/{}", session_id, id));
@@ -1619,11 +1633,12 @@ Task<Response> Api::IngestPart(Request& request, const std::string& session_id, 
   } uploading{ingest};
   if (first) {
     // The first part to arrive starts the engine's one statement, with its schema.
-    net::post(session->strand(), [session, ingest, queue, number = static_cast<int>(part)] {
+    net::post(session->strand(), [session, ingest, queue, number = static_cast<int>(part),
+                                  max_message_bytes = state_.options.max_ingest_message_bytes] {
       std::optional<int64_t> rows;
       std::exception_ptr error;
       try {
-        auto reader = OpenValidatedIpc(QueueInput(queue));
+        auto reader = OpenValidatedIpc(QueueInput(queue), max_message_bytes);
         rows = WithQueryTag(session->engine(), ingest->query_tag(),
                             [&] { return session->engine().Ingest(ingest->target(), ingest->Batches(number, reader)); });
       } catch (...) {
@@ -1717,19 +1732,19 @@ Task<Response> Api::Ingest(Request& request, const std::string& session_id) {
     ~ForgetUpload() { session.RemoveUpload(upload); }
   } forget_upload{*session, queue.get()};
   auto completion = std::make_shared<Completion<int64_t>>();
-  net::post(session->strand(), [session, queue, completion, target, tag] {
+  net::post(session->strand(), [session, queue, completion, target, tag,
+                                max_message_bytes = state_.options.max_ingest_message_bytes] {
     std::shared_ptr<ValidatedReader> rows;
     std::optional<int64_t> written;
     std::exception_ptr failure;
     try {
-      rows = OpenValidatedIpc(QueueInput(queue));
+      rows = OpenValidatedIpc(QueueInput(queue), max_message_bytes);
       written = WithQueryTag(session->engine(), tag, [&] { return session->engine().Ingest(target, rows); });
-    } catch (const Error&) {
-      failure = rows && rows->failure() ? std::make_exception_ptr(Error(
+    } catch (...) {
+      failure = rows && rows->limit_exceeded() ? std::make_exception_ptr(rows->limit_error())
+                  : rows && rows->failure() ? std::make_exception_ptr(Error(
                                               ErrorCode::kUnsupportedArrowType, *rows->failure()))
                                         : std::current_exception();
-    } catch (...) {
-      failure = std::current_exception();
     }
     // Before the answer, so the client's next look at the session sees it (spec §5.2).
     session->RefreshTransaction();

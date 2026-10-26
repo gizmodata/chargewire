@@ -97,6 +97,24 @@ cmake -S . -B build -G Ninja -DWARPSQL_BUILD_TESTS=ON && cmake --build build
 ./build/warpsql-client-tests
 ```
 
+### Upload and retained-result limits
+
+`ServerOptions::max_ingest_message_bytes` defaults to 64 MiB. It caps each IPC message's
+wire size (framing, metadata and body) before allocating its declared body, and the sum
+of expanded buffers before decompression. All Arrow input routes, including dictionaries
+and prepared parameters, use it. Oversized messages return HTTP 413 `payload_too_large`.
+Total upload size may exceed the limit; send smaller record batches. A zero limit is
+invalid.
+
+`retained_bytes_per_principal` and `retained_bytes_total` default to 1 GiB each. A retained
+result must reserve against both; exhaustion fails with `result_quota_exceeded`. Zero
+disallows nonempty retained results. Cached Arrow buffers, including nested children and
+dictionaries, count; shared buffers in different batches may be counted conservatively
+more than once. Cache disposal returns reservations; expiry keeps them until an existing
+reader finishes. These budgets do not bound engine memory or temporary encoder/socket
+references, and do not add a global budget for unretained streams. Backpressure still
+uses blocking production/input waits; this limits patch does not change their scheduling.
+
 The conformance suite:
 
 ```bash

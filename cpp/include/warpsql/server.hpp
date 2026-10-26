@@ -138,6 +138,9 @@ struct ServerOptions {
   // Bodies read whole: JSON, and Arrow parameters for prepared statements. Ingest
   // streams and has no limit.
   std::size_t max_json_body_bytes = 64 * 1024 * 1024;
+  // Each ingest IPC message's wire bytes and aggregate expanded buffers. Applies
+  // to ordinary/partitioned ingest and Arrow prepared-statement parameters.
+  std::size_t max_ingest_message_bytes = 64 * 1024 * 1024;
 
   std::chrono::seconds token_lifetime{3600};
   std::chrono::seconds session_idle_timeout{900};
@@ -157,6 +160,9 @@ struct ServerOptions {
   // Applies when a request sets no Warp-Statement-Timeout. 0: none.
   std::chrono::milliseconds default_statement_timeout{0};
   std::size_t retained_bytes_per_principal = std::size_t{1} << 30;
+  // Shared by every principal/session. 0 refuses nonempty retained results.
+  // Counts retained Arrow buffers, not the engine or in-flight encoding buffers.
+  std::size_t retained_bytes_total = std::size_t{1} << 30;
   // Partitioned results (spec §6.10): the most partitions one result is split into when
   // a client asks (Warp-Result-Partitions). 1: never split.
   std::size_t max_result_partitions = 32;

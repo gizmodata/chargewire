@@ -18,15 +18,17 @@
 
 namespace warpsql::detail {
 
-// Bytes of retained results each principal holds (spec §6.5).
+// Bytes of retained results each principal holds and the shared server ceiling.
 class RetainedQuota {
  public:
-  explicit RetainedQuota(std::size_t limit) : limit_(static_cast<int64_t>(limit)) {}
+  explicit RetainedQuota(std::size_t limit, std::size_t total_limit = std::size_t{1} << 30);
   // Positive: reserve, false if it doesn't fit. Negative: release.
   bool Change(const std::string& principal, int64_t bytes);
 
  private:
   int64_t limit_;
+  int64_t total_limit_;
+  int64_t total_ = 0;
   std::mutex mutex_;
   std::map<std::string, int64_t> used_;
 };
