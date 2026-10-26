@@ -6,10 +6,29 @@
 #include <arrow/ipc/message.h>
 
 #include <cstring>
+#include <atomic>
+#include <bit>
+#include <limits>
+#include <stdexcept>
+#include <string_view>
 
 #include "warpsql/errors.hpp"
 
 namespace warpsql::detail {
+
+struct IngestMessageLimit {
+  explicit IngestMessageLimit(std::size_t bytes) : bytes(static_cast<int64_t>(bytes)) {
+    if (bytes == 0 || bytes > static_cast<std::size_t>(std::numeric_limits<int64_t>::max()))
+      throw std::invalid_argument("max_ingest_message_bytes must be a positive signed 64-bit size");
+  }
+  arrow::Status Exceeded() {
+    exceeded = true;
+    return arrow::Status::CapacityError("Arrow IPC message exceeds max_ingest_message_bytes (", bytes, " bytes)");
+  }
+  const int64_t bytes;
+  int64_t read = 0;  // one input reader, serialized by ValidatedReader::read_mutex_
+  std::atomic<bool> exceeded = false;
+};
 
 Task<bool> ByteQueue::Push(std::string chunk) {
   for (;;) {
@@ -81,6 +100,130 @@ arrow::Result<int64_t> ByteQueue::Read(int64_t nbytes, void* out) {
 
 namespace {
 
+// Arrow asks the input for a declared metadata/body size before validating that
+// body. Refuse the request BEFORE QueueInputStream can allocate it. A MessageReader
+// resets the budget once per message, so total upload length remains unlimited.
+class LimitedInput : public arrow::io::InputStream {
+ public:
+  LimitedInput(std::shared_ptr<arrow::io::InputStream> input, std::shared_ptr<IngestMessageLimit> limit)
+      : input_(std::move(input)), limit_(std::move(limit)) {}
+  arrow::Status Check(int64_t bytes) {
+    if (bytes < 0) return arrow::Status::Invalid("negative IPC read size");
+    if (bytes > limit_->bytes - limit_->read) return limit_->Exceeded();
+    return arrow::Status::OK();
+  }
+  arrow::Result<int64_t> Read(int64_t bytes, void* out) override {
+    ARROW_RETURN_NOT_OK(Check(bytes));
+    ARROW_ASSIGN_OR_RAISE(auto got, input_->Read(bytes, out));
+    limit_->read += got;
+    return got;
+  }
+  arrow::Result<std::shared_ptr<arrow::Buffer>> Read(int64_t bytes) override {
+    ARROW_RETURN_NOT_OK(Check(bytes));
+    ARROW_ASSIGN_OR_RAISE(auto buffer, input_->Read(bytes));
+    limit_->read += buffer->size();
+    return buffer;
+  }
+  arrow::Status Close() override { return input_->Close(); }
+  bool closed() const override { return input_->closed(); }
+  arrow::Result<int64_t> Tell() const override { return input_->Tell(); }
+ private:
+  std::shared_ptr<arrow::io::InputStream> input_;
+  std::shared_ptr<IngestMessageLimit> limit_;
+};
+
+// Read only the standard FlatBuffer offsets needed to inspect compression sizes.
+// Arrow has verified the metadata already; bounds are checked here independently.
+class IpcMetadata {
+ public:
+  explicit IpcMetadata(const arrow::Buffer& bytes)
+      : bytes_(reinterpret_cast<const char*>(bytes.data()), static_cast<std::size_t>(bytes.size())) {}
+  template <typename T> T At(std::size_t at) const {
+    static_assert(std::endian::native == std::endian::little);
+    if (at > bytes_.size() || sizeof(T) > bytes_.size() - at)
+      throw std::invalid_argument("truncated IPC compression metadata");
+    T value;
+    std::memcpy(&value, bytes_.data() + at, sizeof(T));
+    return value;
+  }
+  std::size_t Indirect(std::size_t at) const {
+    const auto distance = At<uint32_t>(at);
+    if (at > bytes_.size() || distance > bytes_.size() - at)
+      throw std::invalid_argument("invalid IPC metadata offset");
+    return at + distance;
+  }
+  std::size_t Field(std::size_t table, std::size_t index) const {
+    const int64_t vtable = static_cast<int64_t>(table) - At<int32_t>(table);
+    if (vtable < 0 || static_cast<uint64_t>(vtable) > bytes_.size())
+      throw std::invalid_argument("invalid IPC metadata table");
+    const auto start = static_cast<std::size_t>(vtable);
+    const auto size = At<uint16_t>(start);
+    const auto entry = 4 + 2 * index;
+    if (entry + 2 > size) return 0;
+    const auto offset = At<uint16_t>(start + entry);
+    if (offset > bytes_.size() - table) throw std::invalid_argument("invalid IPC metadata field");
+    return offset == 0 ? 0 : table + offset;
+  }
+ private:
+  std::string_view bytes_;
+};
+
+arrow::Status CheckExpanded(const arrow::ipc::Message& message, IngestMessageLimit& limit) {
+  if (message.type() != arrow::ipc::MessageType::RECORD_BATCH &&
+      message.type() != arrow::ipc::MessageType::DICTIONARY_BATCH) return arrow::Status::OK();
+  try {
+    IpcMetadata metadata(*message.metadata());
+    const auto header_at = metadata.Field(metadata.Indirect(0), 2);
+    if (!header_at) return arrow::Status::Invalid("IPC message has no header");
+    auto batch = metadata.Indirect(header_at);
+    if (message.type() == arrow::ipc::MessageType::DICTIONARY_BATCH) {
+      const auto data = metadata.Field(batch, 1);
+      if (!data) return arrow::Status::Invalid("IPC dictionary has no data");
+      batch = metadata.Indirect(data);
+    }
+    if (!metadata.Field(batch, 3)) return arrow::Status::OK(); // no compression
+    const auto buffers_at = metadata.Field(batch, 2);
+    if (!buffers_at) return arrow::Status::Invalid("compressed IPC batch has no buffers");
+    const auto buffers = metadata.Indirect(buffers_at);
+    const auto count = metadata.At<uint32_t>(buffers);
+    int64_t expanded = 0;
+    const auto body = message.body();
+    const int64_t body_size = body ? body->size() : 0;
+    for (uint32_t i = 0; i < count; ++i) {
+      const auto at = buffers + 4 + static_cast<std::size_t>(i) * 16;
+      const auto offset = metadata.At<int64_t>(at);
+      const auto length = metadata.At<int64_t>(at + 8);
+      if (length == 0) continue;
+      if (offset < 0 || length < 8 || offset > body_size || length > body_size - offset)
+        return arrow::Status::Invalid("invalid compressed IPC buffer range");
+      int64_t size;
+      std::memcpy(&size, body->data() + offset, sizeof(size));
+      if (size == -1) size = length - 8; // stored uncompressed
+      if (size < 0) return arrow::Status::Invalid("negative IPC decompressed buffer size");
+      if (size > limit.bytes - expanded) return limit.Exceeded();
+      expanded += size;
+    }
+  } catch (const std::exception& error) {
+    return arrow::Status::Invalid(error.what());
+  }
+  return arrow::Status::OK();
+}
+
+class LimitedMessages : public arrow::ipc::MessageReader {
+ public:
+  LimitedMessages(std::unique_ptr<arrow::ipc::MessageReader> input, std::shared_ptr<IngestMessageLimit> limit)
+      : input_(std::move(input)), limit_(std::move(limit)) {}
+  arrow::Result<std::unique_ptr<arrow::ipc::Message>> ReadNextMessage() override {
+    limit_->read = 0;
+    ARROW_ASSIGN_OR_RAISE(auto message, input_->ReadNextMessage());
+    if (message) ARROW_RETURN_NOT_OK(CheckExpanded(*message, *limit_));
+    return message;
+  }
+ private:
+  std::unique_ptr<arrow::ipc::MessageReader> input_;
+  std::shared_ptr<IngestMessageLimit> limit_;
+};
+
 class QueueInputStream : public arrow::io::InputStream {
  public:
   explicit QueueInputStream(std::shared_ptr<ByteQueue> queue) : queue_(std::move(queue)) {}
@@ -150,15 +293,19 @@ arrow::ipc::IpcReadOptions ReadOptions() {
 
 }  // namespace
 
-ValidatedReader::ValidatedReader(std::shared_ptr<arrow::io::InputStream> input)
-    : input_(std::move(input)),
-      messages_(arrow::ipc::MessageReader::Open(input_.get())),
+ValidatedReader::ValidatedReader(std::shared_ptr<arrow::io::InputStream> input, std::size_t max_message_bytes)
+    : limit_(std::make_shared<IngestMessageLimit>(max_message_bytes)),
+      input_(std::make_shared<LimitedInput>(std::move(input), limit_)),
+      messages_(std::make_unique<LimitedMessages>(arrow::ipc::MessageReader::Open(input_.get()), limit_)),
       dictionaries_(std::make_unique<arrow::ipc::DictionaryMemo>()) {
   auto not_ipc = [](const std::string& why) {
     return Error(ErrorCode::kBadRequest, "the body is not an Arrow IPC stream: " + why);
   };
   auto message = messages_->ReadNextMessage();
-  if (!message.ok()) throw not_ipc(message.status().message());
+  if (!message.ok()) {
+    if (limit_exceeded()) throw limit_error();
+    throw not_ipc(message.status().message());
+  }
   if (*message == nullptr) throw not_ipc("it is empty");
   if ((*message)->type() != arrow::ipc::MessageType::SCHEMA) {
     throw not_ipc("it does not start with a schema message");
@@ -222,13 +369,19 @@ std::optional<std::string> ValidatedReader::failure() const {
   return failure_;
 }
 
-std::shared_ptr<ValidatedReader> OpenValidatedIpc(std::shared_ptr<arrow::io::InputStream> input) {
-  return std::make_shared<ValidatedReader>(std::move(input));
+bool ValidatedReader::limit_exceeded() const { return limit_->exceeded.load(); }
+Error ValidatedReader::limit_error() const {
+  return Error(ErrorCode::kPayloadTooLarge, "Arrow IPC message exceeds max_ingest_message_bytes (" +
+               std::to_string(limit_->bytes) + " bytes, including expanded buffers)");
 }
 
-std::shared_ptr<ValidatedReader> OpenValidatedIpc(std::string bytes) {
+std::shared_ptr<ValidatedReader> OpenValidatedIpc(std::shared_ptr<arrow::io::InputStream> input, std::size_t max_message_bytes) {
+  return std::make_shared<ValidatedReader>(std::move(input), max_message_bytes);
+}
+
+std::shared_ptr<ValidatedReader> OpenValidatedIpc(std::string bytes, std::size_t max_message_bytes) {
   return OpenValidatedIpc(
-      std::make_shared<arrow::io::BufferReader>(arrow::Buffer::FromString(std::move(bytes))));
+      std::make_shared<arrow::io::BufferReader>(arrow::Buffer::FromString(std::move(bytes))), max_message_bytes);
 }
 
 }  // namespace warpsql::detail

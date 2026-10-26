@@ -22,6 +22,9 @@
 
 namespace warpsql::detail {
 
+struct IngestMessageLimit;
+inline constexpr std::size_t kDefaultMaxIngestMessageBytes = 64 * 1024 * 1024;
+
 class ByteQueue {
  public:
   explicit ByteQueue(std::size_t max_chunks) : max_chunks_(max_chunks) {}
@@ -60,14 +63,18 @@ std::shared_ptr<arrow::io::InputStream> QueueInput(std::shared_ptr<ByteQueue> qu
 class ValidatedReader : public warpsql::IngestBatches {
  public:
   // Reads the schema message; throws bad_request if the input isn't an IPC stream.
-  explicit ValidatedReader(std::shared_ptr<arrow::io::InputStream> input);
+  explicit ValidatedReader(std::shared_ptr<arrow::io::InputStream> input,
+                           std::size_t max_message_bytes = kDefaultMaxIngestMessageBytes);
   std::shared_ptr<arrow::Schema> schema() const override { return schema_; }
   arrow::Status NextIndexed(std::shared_ptr<arrow::RecordBatch>* batch, int64_t* index) override;
   std::optional<std::string> failure() const;
+  bool limit_exceeded() const;
+  Error limit_error() const;
 
  private:
   arrow::Status Fail(const arrow::Status& status);
 
+  std::shared_ptr<IngestMessageLimit> limit_;
   std::shared_ptr<arrow::io::InputStream> input_;
   std::shared_ptr<arrow::Schema> schema_;
   std::mutex read_mutex_;  // the input, the messages and the dictionaries
@@ -82,9 +89,11 @@ class ValidatedReader : public warpsql::IngestBatches {
 };
 
 // An IPC stream from `input`, validated as it is read.
-std::shared_ptr<ValidatedReader> OpenValidatedIpc(std::shared_ptr<arrow::io::InputStream> input);
+std::shared_ptr<ValidatedReader> OpenValidatedIpc(std::shared_ptr<arrow::io::InputStream> input,
+                                               std::size_t max_message_bytes = kDefaultMaxIngestMessageBytes);
 // The same over bytes held in memory (small bodies: prepared-statement parameters).
-std::shared_ptr<ValidatedReader> OpenValidatedIpc(std::string bytes);
+std::shared_ptr<ValidatedReader> OpenValidatedIpc(std::string bytes,
+                                               std::size_t max_message_bytes = kDefaultMaxIngestMessageBytes);
 
 // The error `error` holds, as an Error of the caller's own: an Error is copied, anything
 // else is the internal error the API answers for it. Call it on the thread handling it.

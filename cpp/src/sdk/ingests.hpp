@@ -27,7 +27,8 @@ class IngestOperation : public std::enable_shared_from_this<IngestOperation> {
  public:
   enum class State { kOpen, kCommitting, kCommitted, kFailed, kAborted };
 
-  IngestOperation(std::string id, IngestTarget target, std::optional<boost::json::object> query_tag = std::nullopt);
+  IngestOperation(std::string id, IngestTarget target, std::optional<boost::json::object> query_tag = std::nullopt,
+                  std::size_t max_message_bytes = kDefaultMaxIngestMessageBytes);
 
   const std::string& id() const { return id_; }
   const IngestTarget& target() const { return target_; }
@@ -92,6 +93,7 @@ class IngestOperation : public std::enable_shared_from_this<IngestOperation> {
   const std::string id_;
   const IngestTarget target_;
   const std::optional<boost::json::object> query_tag_;
+  const std::size_t max_message_bytes_;
   mutable std::mutex mutex_;
   std::condition_variable work_;  // engine threads: a part to read, a seal, a failure
   Signal changed_;                // HTTP coroutines: a part ended, committed, failed

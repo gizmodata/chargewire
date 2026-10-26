@@ -67,7 +67,7 @@ class IngestOperation::Reader : public IngestBatches {
         std::optional<Error> failed;
         std::shared_ptr<ValidatedReader> opened;
         try {
-          opened = OpenValidatedIpc(QueueInput(queue));
+          opened = OpenValidatedIpc(QueueInput(queue), op.max_message_bytes_);
           if (!opened->schema()->Equals(*op.schema_)) {
             throw Error(ErrorCode::kBadRequest,
                         std::format("part {} has another schema than the ingest's first part", number));
@@ -91,7 +91,8 @@ class IngestOperation::Reader : public IngestBatches {
       std::shared_ptr<arrow::RecordBatch> next;
       int64_t ignored = 0;
       if (auto status = reader->NextIndexed(&next, &ignored); !status.ok()) {
-        failed = reader->failure() ? Error(ErrorCode::kUnsupportedArrowType, *reader->failure())
+        failed = reader->limit_exceeded() ? reader->limit_error()
+                 : reader->failure() ? Error(ErrorCode::kUnsupportedArrowType, *reader->failure())
                                    : Error(ErrorCode::kExecutionError,
                                            std::format("part {}: {}", number, status.message()));
       }
@@ -121,8 +122,10 @@ class IngestOperation::Reader : public IngestBatches {
   std::shared_ptr<IngestOperation> op_;
 };
 
-IngestOperation::IngestOperation(std::string id, IngestTarget target, std::optional<boost::json::object> query_tag)
-    : id_(std::move(id)), target_(std::move(target)), query_tag_(std::move(query_tag)), last_activity_(Clock::now()) {}
+IngestOperation::IngestOperation(std::string id, IngestTarget target, std::optional<boost::json::object> query_tag,
+                                  std::size_t max_message_bytes)
+    : id_(std::move(id)), target_(std::move(target)), query_tag_(std::move(query_tag)),
+      max_message_bytes_(max_message_bytes), last_activity_(Clock::now()) {}
 
 void IngestOperation::Touch() { last_activity_ = Clock::now(); }
 

@@ -1469,7 +1469,7 @@ Task<Response> Api::ExecutePrepared(Request& request, const std::string& session
   Parameters parameters;
   std::shared_ptr<ValidatedReader> rows;
   if (request.Header("Content-Type").starts_with(kArrowStream)) {
-    rows = OpenValidatedIpc(request.body);  // one execution per row (spec §7.2)
+    rows = OpenValidatedIpc(request.body, state_.options.max_ingest_message_bytes);  // one execution per row
     parameters.rows = rows;
   } else {
     parameters.json = JsonParameters(ParseObject(request.body));
@@ -1477,7 +1477,8 @@ Task<Response> Api::ExecutePrepared(Request& request, const std::string& session
   StatementWork work = [prepared, parameters, rows](EngineSession& engine) {
     try {
       return engine.ExecutePrepared(*prepared, parameters);
-    } catch (const Error&) {
+    } catch (...) {
+      if (rows && rows->limit_exceeded()) throw rows->limit_error();
       if (rows && rows->failure()) {
         throw Error(ErrorCode::kUnsupportedArrowType, *rows->failure());
       }
@@ -1554,7 +1555,8 @@ Task<Response> Api::OpenIngest(Request& request, const std::string& session_id) 
     auto ingest = session->FindIngest(existing->statement_id);
     co_return JsonResponse(http::status::ok, ingest->Document());
   }
-  auto ingest = std::make_shared<IngestOperation>(id, std::move(target), std::move(tag));
+  auto ingest = std::make_shared<IngestOperation>(id, std::move(target), std::move(tag),
+                                                 state_.options.max_ingest_message_bytes);
   session->AddIngest(ingest);
   Response response = JsonResponse(http::status::created, ingest->Document());
   response.headers.emplace_back("Location", std::format("/warp/v1/sessions/{}/ingests/{}", session_id, id));
@@ -1619,11 +1621,12 @@ Task<Response> Api::IngestPart(Request& request, const std::string& session_id, 
   } uploading{ingest};
   if (first) {
     // The first part to arrive starts the engine's one statement, with its schema.
-    net::post(session->strand(), [session, ingest, queue, number = static_cast<int>(part)] {
+    net::post(session->strand(), [session, ingest, queue, number = static_cast<int>(part),
+                                  max_message_bytes = state_.options.max_ingest_message_bytes] {
       std::optional<int64_t> rows;
       std::exception_ptr error;
       try {
-        auto reader = OpenValidatedIpc(QueueInput(queue));
+        auto reader = OpenValidatedIpc(QueueInput(queue), max_message_bytes);
         rows = WithQueryTag(session->engine(), ingest->query_tag(),
                             [&] { return session->engine().Ingest(ingest->target(), ingest->Batches(number, reader)); });
       } catch (...) {
@@ -1717,19 +1720,19 @@ Task<Response> Api::Ingest(Request& request, const std::string& session_id) {
     ~ForgetUpload() { session.RemoveUpload(upload); }
   } forget_upload{*session, queue.get()};
   auto completion = std::make_shared<Completion<int64_t>>();
-  net::post(session->strand(), [session, queue, completion, target, tag] {
+  net::post(session->strand(), [session, queue, completion, target, tag,
+                                max_message_bytes = state_.options.max_ingest_message_bytes] {
     std::shared_ptr<ValidatedReader> rows;
     std::optional<int64_t> written;
     std::exception_ptr failure;
     try {
-      rows = OpenValidatedIpc(QueueInput(queue));
+      rows = OpenValidatedIpc(QueueInput(queue), max_message_bytes);
       written = WithQueryTag(session->engine(), tag, [&] { return session->engine().Ingest(target, rows); });
-    } catch (const Error&) {
-      failure = rows && rows->failure() ? std::make_exception_ptr(Error(
+    } catch (...) {
+      failure = rows && rows->limit_exceeded() ? std::make_exception_ptr(rows->limit_error())
+                  : rows && rows->failure() ? std::make_exception_ptr(Error(
                                               ErrorCode::kUnsupportedArrowType, *rows->failure()))
                                         : std::current_exception();
-    } catch (...) {
-      failure = std::current_exception();
     }
     // Before the answer, so the client's next look at the session sees it (spec §5.2).
     session->RefreshTransaction();
