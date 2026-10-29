@@ -52,6 +52,8 @@ class Statement {
   ~Statement();
 
   const std::string& id() const { return id_; }
+  // When the server accepted the statement: what its timeout counts from.
+  Clock::time_point submitted() const { return submitted_; }
   bool retained() const { return config_.retain; }
   Signal& changed() { return changed_; }
 
@@ -176,6 +178,7 @@ class Statement {
   const std::string id_;
   const Config config_;
   const WallClock::time_point submitted_at_;
+  const Clock::time_point submitted_;
 
   mutable std::mutex mutex_;
   std::condition_variable room_;  // an unretained reader consumed a batch

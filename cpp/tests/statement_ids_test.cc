@@ -1,12 +1,17 @@
 // EngineSession::SetStatementId: the engine is told the id the client holds for what it
-// runs (a statement's q_..., a prepared statement's p_...), and untold after. A server
-// started in this process with an engine that records what it was told.
+// runs (a statement's q_..., a prepared statement's p_...), and untold after; and
+// SetStatementSubmitted: when the statement it runs was submitted. A server started in
+// this process with an engine that records what it was told.
 #include <gtest/gtest.h>
 
 #include <boost/json.hpp>
+#include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "chargewire/client.hpp"
@@ -19,12 +24,23 @@ namespace json = boost::json;
 using chargewire::Error;
 using chargewire::ErrorCode;
 using chargewire::Principal;
+using SteadyClock = std::chrono::steady_clock;
 
 // What the engine saw: each call with the id it had been told at the time.
 struct Seen {
   std::mutex mutex;
   std::vector<std::string> calls;  // "execute q_...", "prepare p_...", "execute_prepared q_..."
   std::string last_told = "(never)";
+  // Each call's submission time as told, and when the call came: by id.
+  struct Timing {
+    SteadyClock::time_point submitted;
+    SteadyClock::time_point called;
+  };
+  std::map<std::string, Timing> timings;
+  SteadyClock::time_point last_submitted = SteadyClock::time_point::max();  // max: never told
+  // "hold" waits for this.
+  std::condition_variable released_changed;
+  bool released = false;
   void Add(const std::string& call) {
     std::lock_guard lock(mutex);
     calls.push_back(call);
@@ -46,23 +62,40 @@ class RecordingSession : public chargewire::EngineSession {
     std::lock_guard lock(seen_->mutex);
     seen_->last_told = id_;
   }
+  void SetStatementSubmitted(SteadyClock::time_point submitted) override {
+    submitted_ = submitted;
+    std::lock_guard lock(seen_->mutex);
+    seen_->last_submitted = submitted;
+  }
   chargewire::StatementOutcome Execute(std::string_view sql, const json::value&) override {
+    Time();
     if (sql == "fail") throw Error(ErrorCode::kSqlError, "no such thing");
+    if (sql == "hold") {
+      std::unique_lock lock(seen_->mutex);
+      seen_->released_changed.wait_for(lock, std::chrono::seconds(30), [&] { return seen_->released; });
+    }
     seen_->Add("execute " + id_);
     return {.rows_affected = 0};
   }
   std::unique_ptr<chargewire::PreparedStatement> Prepare(std::string_view) override {
+    Time();
     seen_->Add("prepare " + id_);
     return std::make_unique<NoRows>();
   }
   chargewire::StatementOutcome ExecutePrepared(chargewire::PreparedStatement&, const chargewire::Parameters&) override {
+    Time();
     seen_->Add("execute_prepared " + id_);
     return {.rows_affected = 0};
   }
 
  private:
+  void Time() {
+    std::lock_guard lock(seen_->mutex);
+    seen_->timings[id_] = {submitted_, SteadyClock::now()};
+  }
   std::shared_ptr<Seen> seen_;
   std::string id_;
+  SteadyClock::time_point submitted_{};
 };
 
 class RecordingEngine : public chargewire::Backend {
@@ -113,6 +146,21 @@ class StatementIds : public ::testing::Test {
     std::lock_guard lock(seen_->mutex);
     return seen_->last_told;
   }
+  Seen::Timing TimingOf(const std::string& id) {
+    std::lock_guard lock(seen_->mutex);
+    return seen_->timings.at(id);
+  }
+  SteadyClock::time_point LastSubmittedTold() {
+    std::lock_guard lock(seen_->mutex);
+    return seen_->last_submitted;
+  }
+  void Release() {
+    {
+      std::lock_guard lock(seen_->mutex);
+      seen_->released = true;
+    }
+    seen_->released_changed.notify_all();
+  }
 
   std::shared_ptr<Seen> seen_ = std::make_shared<Seen>();
   std::unique_ptr<chargewire::Server> server_;
@@ -148,6 +196,39 @@ TEST_F(StatementIds, APreparedStatementIsPreparedUnderItsIdAndEachExecutionUnder
                                                "execute_prepared " + first.statement_id,
                                                "execute_prepared " + second.statement_id}));
   EXPECT_EQ(LastTold(), "");
+}
+
+// A statement's timeout counts from its submission, so the engine is told that instant,
+// not the one it was handed the statement: here the second statement waits behind the
+// first for the session's engine thread, and is told when it was submitted.
+TEST_F(StatementIds, AStatementIsToldWhenItWasSubmittedNotWhenTheEngineTookItUp) {
+  const auto first = session_->Submit("hold");
+  const auto before = SteadyClock::now();
+  const auto second = session_->Submit("two");
+  const auto after = SteadyClock::now();
+  const auto queued_for = std::chrono::milliseconds(300);
+  std::this_thread::sleep_for(queued_for);
+  Release();
+  EXPECT_EQ(session_->Wait(first.statement_id).state, "succeeded");
+  EXPECT_EQ(session_->Wait(second.statement_id).state, "succeeded");
+  const Seen::Timing timing = TimingOf(second.statement_id);
+  EXPECT_GE(timing.submitted, before);
+  EXPECT_LE(timing.submitted, after);
+  EXPECT_GE(timing.called - timing.submitted, queued_for);
+  EXPECT_EQ(LastSubmittedTold(), SteadyClock::time_point{});  // untold once it returned
+}
+
+TEST_F(StatementIds, EachExecutionOfAPreparedStatementIsToldItsOwnSubmissionAndThePrepareNone) {
+  auto prepared = session_->Prepare("three");
+  const auto before = SteadyClock::now();
+  const auto execution = prepared->Execute();
+  const auto after = SteadyClock::now();
+  EXPECT_EQ(TimingOf(prepared->id()).submitted, SteadyClock::time_point{});
+  const Seen::Timing timing = TimingOf(execution.statement_id);
+  EXPECT_GE(timing.submitted, before);
+  EXPECT_LE(timing.submitted, after);
+  EXPECT_LE(timing.submitted, timing.called);
+  EXPECT_EQ(LastSubmittedTold(), SteadyClock::time_point{});
 }
 
 TEST(NewId, HasThePrefixAndThirtyTwoBase32Characters) {

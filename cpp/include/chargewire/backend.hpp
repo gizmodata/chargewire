@@ -274,6 +274,15 @@ class EngineSession {
   // default ignores them.
   virtual void SetStatementId(std::string_view id) { (void)id; }
 
+  // When the server accepted the statement about to run in this session (spec §6.1), on
+  // std::chrono::steady_clock: the instant its timeout (Chargewire-Statement-Timeout, the
+  // session's or the server's default) counts from, before it waited for this session's
+  // engine thread. Called on that thread right before Execute() and ExecutePrepared(), and
+  // with a default-constructed time point right after they return. An engine that logs how
+  // long a statement ran measures from it, so a statement its timeout stopped shows at
+  // least the timeout; the default ignores it.
+  virtual void SetStatementSubmitted(std::chrono::steady_clock::time_point submitted) { (void)submitted; }
+
   // The session's transaction (spec §5.2), as the engine has it now. Called on the
   // session's engine thread after every call that runs work in it (a statement, an ingest,
   // an option change, a commit or rollback), whether it succeeded or failed; the SDK keeps

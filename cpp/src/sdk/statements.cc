@@ -61,7 +61,8 @@ std::string_view StateName(StatementState state) {
 Statement::Statement(std::string id, Config config)
     : id_(std::move(id)),
       config_(std::move(config)),
-      submitted_at_(WallClock::now()) {
+      submitted_at_(WallClock::now()),
+      submitted_(Clock::now()) {
   split_decided_ = config_.partitions <= 1;
 }
 

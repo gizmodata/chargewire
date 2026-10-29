@@ -200,6 +200,17 @@ auto WithStatementId(EngineSession& engine, const std::string& id, Fn run) {
   return run();
 }
 
+// Runs `run` with the engine told when its statement was submitted, and untold after.
+template <typename Fn>
+auto WithSubmitted(EngineSession& engine, Clock::time_point submitted, Fn run) {
+  struct Told {
+    EngineSession& engine;
+    ~Told() { engine.SetStatementSubmitted({}); }
+  } told{engine};
+  engine.SetStatementSubmitted(submitted);
+  return run();
+}
+
 json::object OptionErrorsDocument(const OptionErrors& errors) {
   json::object out;
   for (const auto& [name, error] : errors) {
@@ -1175,8 +1186,9 @@ void Api::Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> state
     }
     try {
       const auto started = Clock::now();
-      StatementOutcome outcome = WithStatementId(session->engine(), statement->id(),
-                                                 [&] { return work(session->engine()); });
+      StatementOutcome outcome = WithStatementId(session->engine(), statement->id(), [&] {
+        return WithSubmitted(session->engine(), statement->submitted(), [&] { return work(session->engine()); });
+      });
       if (outcome.rows) {
         statement->SetRows(outcome.rows->schema(), outcome.finish_if_abandoned);
         Clock::duration producing{}, handing_over{};

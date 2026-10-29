@@ -20,6 +20,13 @@ spec's version is the repository's version.
 
 ### Fixed
 
+- An engine can log how long a cancelled statement ran from the instant its timeout counts
+  from. `EngineSession::SetStatementSubmitted()` tells it when the server accepted the
+  statement, right before `Execute()` and `ExecutePrepared()`, as `SetStatementId()` tells
+  it the id. An engine that started its own clock only when it took the statement up
+  undercounted by the time the statement waited for the session's engine thread, so a
+  statement its 1 s timeout stopped could log less than 1 s. The method has a default
+  that ignores the time, so existing backends need no change.
 - Bound Arrow ingest IPC messages and expanded compressed buffers before allocation.
   `max_ingest_message_bytes` defaults to 64 MiB per message and applies to ordinary
   ingest, every partitioned-ingest part, dictionaries and Arrow prepared parameters.
