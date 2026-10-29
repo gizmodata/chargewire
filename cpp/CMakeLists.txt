@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(chargewire VERSION 2.0.0 LANGUAGES C CXX)
+project(chargewire VERSION 2.0.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -183,6 +183,7 @@ target_include_directories(chargewire_duckdb PUBLIC src/duckdb "${CHARGEWIRE_DUC
 # unless asked to), so every user of the header opts in. The API can change in a DuckDB
 # release; the DuckDB pin (scripts/build-duckdb.sh) decides which one this builds against.
 target_compile_definitions(chargewire_duckdb PUBLIC DUCKDB_V2_API_ALLOW_UNSTABLE=1)
+target_compile_definitions(chargewire_duckdb PRIVATE CHARGEWIRE_VERSION="${PROJECT_VERSION}")
 target_link_libraries(chargewire_duckdb PUBLIC chargewire ${DUCKDB_LIBRARY})
 target_compile_options(chargewire_duckdb PRIVATE ${CHARGEWIRE_WARNINGS})
 if(WIN32)

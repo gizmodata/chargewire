@@ -29,7 +29,7 @@ Flight SQL carries over.
 
 ## Status
 
-**Version 1, specification 1.0.2.** Version 1 is stable: it changes only by addition (new
+**Version 1, specification 2.0.1.** Version 1 is stable: it changes only by addition (new
 endpoints, fields, capabilities and error codes), so a client written for 1.0.0 keeps working
 with every later 1.x server. See [Versioning and compatibility](/versioning/).
 
@@ -100,7 +100,7 @@ curl -s http://127.0.0.1:31337/chargewire | jq .
   ],
   "server": {
     "name": "chargewire-duckdb",
-    "version": "1.0.2 (DuckDB …)"
+    "version": "2.0.1 (DuckDB …)"
   },
   "capabilities": [
     "prepared_statements",
@@ -134,7 +134,7 @@ you can run.
 ## Where to go
 
 <CardGrid>
-	<LinkCard title="The specification" href="/specification/" description="The protocol's definition: every endpoint, header, document and error code. Version 1, specification 1.0.2." />
+	<LinkCard title="The specification" href="/specification/" description="The protocol's definition: every endpoint, header, document and error code. Version 1, specification 2.0.1." />
 	<LinkCard title="OpenAPI reference" href="/reference/openapi/" description="Every JSON endpoint and schema as an OpenAPI 3.1 document, in Swagger UI. Servers also serve it at GET /chargewire/v1/openapi.json." />
 	<LinkCard title="Flows" href="/flows/sign-in/" description="Sign-in, sessions, queries, partitions, prepared statements, ingest, cancel, errors and shutdown, step by step." />
 	<LinkCard title="Conformance" href="/conformance/" description="A black-box test suite any server can run, and what it does not test yet." />

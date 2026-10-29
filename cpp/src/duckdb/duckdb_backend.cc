@@ -85,7 +85,7 @@ DuckDBBackend::~DuckDBBackend() {
 }
 
 chargewire::ServerIdentity DuckDBBackend::Identity() {
-  return {"chargewire-duckdb", "2.0.0 (DuckDB " + version_ + ")"};
+  return {"chargewire-duckdb", CHARGEWIRE_VERSION " (DuckDB " + version_ + ")"};
 }
 
 std::unique_ptr<chargewire::EngineSession> DuckDBBackend::NewSession(const chargewire::Principal&, const std::string&) {

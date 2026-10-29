@@ -1,6 +1,6 @@
 ---
 title: Specification
-description: "The Chargewire protocol, version 1 (specification 1.0.2): SQL over HTTP with Arrow IPC streams."
+description: "The Chargewire protocol, version 1 (specification 2.0.1): SQL over HTTP with Arrow IPC streams."
 editUrl: https://github.com/gizmodata/chargewire/edit/main/spec/chargewire.md
 tableOfContents:
   maxHeadingLevel: 3
@@ -12,7 +12,7 @@ tableOfContents:
 This page is [`spec/chargewire.md`](https://github.com/gizmodata/chargewire/blob/main/spec/chargewire.md), rendered as it is. Its endpoints are also described for tools in the [OpenAPI document](/reference/openapi/).
 :::
 
-**Status:** 1.0.2 (2026-10-26). Version 1 is stable: from here on it changes only by
+**Status:** specification 2.0.1 (2026-10-29), Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
 addition ([§12](#12-versioning)).
 
 Chargewire is an open protocol for running SQL against a database server over plain

@@ -7,7 +7,19 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
-## [2.0.0] - 2026-10-29
+## [2.0.1] - 2026-10-29
+
+### Fixed
+
+- One version number everywhere. The specification, its OpenAPI document (`info.version`), the
+  spec site and the reference server's discovery example still said 1.0.2 after the 2.0.0 release,
+  so servers that report the specification's version (Hardcharger's startup banner and
+  `versions.json`) showed Chargewire 1.0.2 next to Chargewire 2.0.0 releases. They now say 2.0.1,
+  as this changelog's rule has it: the specification's version is the repository's. Protocol
+  version 1, the `/chargewire/v1` in every path, is unchanged, and the versioning page now says how
+  the two relate.
+- The reference server reports the SDK's version from the build instead of a literal that a
+  release had to remember to change.
 
 The protocol is renamed Chargewire. Protocol version 1 is unchanged apart from the name: a server
 answers clients written for 1.x in their own spelling, and the C++ client talks to servers from

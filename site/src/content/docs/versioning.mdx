@@ -5,9 +5,9 @@ description: "How Chargewire changes: version 1 grows only by addition, optional
 
 import Spec from '../../components/Spec.astro';
 
-**Specification 1.0.0 defines protocol version 1.** The major version is in every path
+**Protocol version 1**, first defined by specification 1.0.0, is the major version in every path
 (`/chargewire/v1`). Within it, the protocol changes only by addition, so a client written for 1.0.0
-keeps working with every later 1.x server. A later client works with an earlier server by using
+keeps working with every later version 1 server. A later client works with an earlier server by using
 only the capabilities its discovery lists (<Spec s="12" />).
 
 ## What a 1.x version may add
@@ -57,8 +57,14 @@ Headers whose names begin with `Chargewire-` are the protocol's (<Spec s="2.7" /
   (`spec/openapi.yaml`, served at `GET /chargewire/v1/openapi.json`) describes the same endpoints for
   tools, and carries the specification's version as `info.version`; where the two differ, the
   specification is right.
-- The [conformance suite](/conformance/) has the specification's version: suite 1.0.2 tests
-  specification 1.0.2. It checks every response against the OpenAPI document of the same
+- The [conformance suite](/conformance/) has the specification's version: suite 2.0.1 tests
+  specification 2.0.1. It checks every response against the OpenAPI document of the same
   version.
+- **One number:** the specification's version is Chargewire's release version. The
+  specification, the OpenAPI document, the conformance suite, the SDK and the reference server
+  all carry it. 2.0.0 was a major release because it renamed the protocol (new paths, headers
+  and error types); protocol version 1 itself didn't change, and servers still answer clients
+  written before the rename. The protocol version moves only with a change that would break a
+  version 1 client.
 - The specification's <Spec s="A" label="Appendix A" /> lists
   additions that may come, each behind a capability of its own.
