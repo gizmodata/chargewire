@@ -1,5 +1,7 @@
 #include "transport.hpp"
 
+#include "legacy_dialect.hpp"
+
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 
@@ -165,7 +167,7 @@ std::shared_ptr<ssl::context> MakeTlsContext(const TlsOptions& options) {
 }
 
 std::string Reply::Header(std::string_view name) const {
-  auto it = headers.find(name);
+  auto it = headers.find(legacy ? LegacyHeaderName(name) : std::string(name));
   return it == headers.end() ? std::string() : std::string(it->value());
 }
 
@@ -206,7 +208,7 @@ int BodyReader::status() const { return static_cast<int>(parser_->get().result_i
 const http::fields& BodyReader::headers() const { return parser_->get().base(); }
 
 std::string BodyReader::Header(std::string_view name) const {
-  auto it = headers().find(name);
+  auto it = headers().find(transport_.Legacy() ? LegacyHeaderName(name) : std::string(name));
   return it == headers().end() ? std::string() : std::string(it->value());
 }
 
@@ -263,8 +265,9 @@ std::string BodyReader::ReadAll() {
 // ---- Transport ----
 
 Transport::Transport(std::string host, uint16_t port, std::shared_ptr<ssl::context> tls,
-                     std::chrono::milliseconds connect_timeout)
-    : host_(std::move(host)), port_(port), tls_(std::move(tls)), connect_timeout_(connect_timeout) {
+                     std::chrono::milliseconds connect_timeout, std::shared_ptr<const std::atomic<bool>> legacy)
+    : host_(std::move(host)), port_(port), tls_(std::move(tls)), connect_timeout_(connect_timeout),
+      legacy_(std::move(legacy)) {
   if (host_.size() > 2 && host_.front() == '[' && host_.back() == ']') host_ = host_.substr(1, host_.size() - 2);
 }
 
@@ -413,6 +416,7 @@ std::unique_ptr<BodyReader> Transport::Open(http::request<http::string_body> req
     ~ResetDeadline() { t.deadline_ = {}; }
   } reset{*this};
   if (request.find(http::field::host) == request.end()) request.set(http::field::host, host_);
+  if (Legacy()) ToLegacyHeaders(request);
   if (chunks != nullptr) {
     request.body().clear();
     request.chunked(true);
@@ -494,6 +498,7 @@ Reply Transport::Exchange(http::request<http::string_body> request, const ChunkS
                                             : std::chrono::steady_clock::time_point{};
   auto reader = Open(std::move(request), chunks, timeout);
   Reply reply;
+  reply.legacy = Legacy();
   reply.status = reader->status();
   reply.headers = reader->headers();
   deadline_ = deadline;

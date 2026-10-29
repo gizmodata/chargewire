@@ -13,7 +13,10 @@ spec's version is the repository's version.
   headers (`Chargewire-*`), error types (`urn:chargewire:error:*`), the SDK's C++
   namespaces, headers and libraries, and the reference server (`chargewire-duckdb`).
   Servers keep answering clients released before the rename, in the spelling they use,
-  so those clients need no change; their own test suites pass against this server.
+  so those clients need no change; their own test suites pass against this server. The
+  C++ client also works with servers from before the rename: when a server has no
+  discovery document at `/chargewire` but a pre-rename one, the client speaks that
+  server's spelling. It still accepts a base path written for those servers.
 
 ### Fixed
 

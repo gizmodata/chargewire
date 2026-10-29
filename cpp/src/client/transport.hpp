@@ -16,6 +16,7 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/beast/core.hpp>
+#include <atomic>
 #include <boost/beast/http.hpp>
 #include <boost/beast/ssl.hpp>
 
@@ -42,6 +43,7 @@ struct Reply {
   int status = 0;
   http::fields headers;
   std::string body;
+  bool legacy = false;  // from a server in the pre-rename spelling (legacy_dialect.hpp)
   std::string Header(std::string_view name) const;
   std::string ContentType() const;  // without parameters, lower case
 };
@@ -80,8 +82,11 @@ class BodyReader {
 
 class Transport {
  public:
+  // `legacy`, when set and true, makes requests and header lookups use the protocol's
+  // pre-rename spelling (legacy_dialect.hpp); it may turn true after construction.
   Transport(std::string host, uint16_t port, std::shared_ptr<ssl::context> tls,
-            std::chrono::milliseconds connect_timeout);
+            std::chrono::milliseconds connect_timeout,
+            std::shared_ptr<const std::atomic<bool>> legacy = nullptr);
   ~Transport();
   Transport(const Transport&) = delete;
   Transport& operator=(const Transport&) = delete;
@@ -125,6 +130,8 @@ class Transport {
   uint64_t generation_ = 0;  // bumped on every drop, so a stale BodyReader can tell
   BodyReader* active_ = nullptr;
   std::chrono::steady_clock::time_point deadline_{};
+  std::shared_ptr<const std::atomic<bool>> legacy_;
+  bool Legacy() const { return legacy_ && legacy_->load(); }
 };
 
 std::string UrlEncode(std::string_view text);

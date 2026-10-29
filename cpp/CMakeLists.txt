@@ -160,6 +160,7 @@ chargewire_windows_settings(chargewire)
 # TLS and mutual TLS). It needs Arrow, Boost and OpenSSL, not DuckDB.
 add_library(chargewire_client
   src/client/client.cc
+  src/client/legacy_dialect.cc
   src/client/transport.cc)
 target_include_directories(chargewire_client PUBLIC include PRIVATE src/client)
 target_link_libraries(chargewire_client PUBLIC Boost::beast Boost::json Boost::url Arrow::arrow_static

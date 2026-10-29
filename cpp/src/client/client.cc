@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <format>
 #include <condition_variable>
@@ -21,6 +22,7 @@
 #include <arrow/ipc/writer.h>
 #include <boost/url/parse.hpp>
 
+#include "legacy_dialect.hpp"
 #include "transport.hpp"
 
 namespace chargewire::client {
@@ -304,6 +306,8 @@ class ClientCore {
     if (options.base_path.empty()) options.base_path = "/chargewire";
     while (options.base_path.size() > 1 && options.base_path.back() == '/') options.base_path.pop_back();
     if (options.base_path.front() != '/') options.base_path = "/" + options.base_path;
+    if (detail::IsLegacyRoot(options.base_path)) options.base_path = "/chargewire";
+    may_fall_back = options.base_path == "/chargewire";
     if (options.tls.enabled) tls = detail::MakeTlsContext(options.tls);
     const bool v6 = options.host.find(':') != std::string::npos && options.host.front() != '[';
     host_header = (v6 ? "[" + options.host + "]" : options.host) + ":" + std::to_string(options.port);
@@ -311,10 +315,36 @@ class ClientCore {
 
   std::unique_ptr<Transport> NewTransport(std::chrono::milliseconds connect_timeout = kNoTimeout) const {
     return std::make_unique<Transport>(options.host, options.port, tls,
-                                       connect_timeout.count() > 0 ? connect_timeout : options.connect_timeout);
+                                       connect_timeout.count() > 0 ? connect_timeout : options.connect_timeout,
+                                       legacy);
   }
 
-  std::string V1(std::string_view path) const { return options.base_path + "/v1" + std::string(path); }
+  // A server released before the protocol's rename has no discovery document at the
+  // current root, only at its old one; the client then speaks the old spelling to it
+  // (legacy_dialect.hpp). Asked once, before the first request that names a path; a
+  // failure to ask is thrown, and the next request asks again.
+  void ResolveDialect() {
+    if (!may_fall_back) return;
+    std::call_once(dialect_once, [this] {
+      Transport probe(options.host, options.port, tls, options.connect_timeout);
+      Reply current = probe.Exchange(Request(http::verb::get, options.base_path, false));
+      auto object = current.status == 200 ? ParseObject(current.body) : std::nullopt;
+      if (object && String(*object, "protocol") == "chargewire") return;
+      Reply old = probe.Exchange(Request(http::verb::get, detail::LegacyRoot(), false));
+      object = old.status == 200 ? ParseObject(old.body) : std::nullopt;
+      if (object && detail::IsLegacyProtocol(String(*object, "protocol"))) {
+        options.base_path = detail::LegacyRoot();
+        legacy->store(true);
+      }
+    });
+  }
+
+  const std::string& BasePath() {
+    ResolveDialect();
+    return options.base_path;
+  }
+
+  std::string V1(std::string_view path) { return BasePath() + "/v1" + std::string(path); }
 
   http::request<http::string_body> Request(http::verb verb, const std::string& target, bool authorized) {
     http::request<http::string_body> request(verb, target, 11);
@@ -373,6 +403,12 @@ class ClientCore {
   std::shared_ptr<detail::ssl::context> tls;
   std::string host_header;
 
+  // Whether this client speaks the pre-rename spelling (ResolveDialect), shared with its
+  // transports.
+  bool may_fall_back = false;
+  std::once_flag dialect_once;
+  std::shared_ptr<std::atomic<bool>> legacy = std::make_shared<std::atomic<bool>>(false);
+
   std::mutex token_mutex;
   std::string token;
   std::chrono::steady_clock::time_point expires_at{};
@@ -386,7 +422,7 @@ class ClientCore {
     std::lock_guard lock(auth_mutex);
     if (!capabilities) {
       if (!auth_transport) auth_transport = NewTransport();
-      Reply reply = auth_transport->Exchange(Request(http::verb::get, options.base_path, false));
+      Reply reply = auth_transport->Exchange(Request(http::verb::get, BasePath(), false));
       capabilities.emplace();
       if (auto object = reply.status == 200 ? ParseObject(reply.body) : std::nullopt) {
         if (auto* caps = object->if_contains("capabilities"); caps != nullptr && caps->is_array()) {
@@ -1450,10 +1486,11 @@ const ConnectOptions& Client::options() const { return core_->options; }
 
 Discovery Client::Discover() {
   auto transport = core_->NewTransport();
-  Reply reply = transport->Exchange(core_->Request(http::verb::get, core_->options.base_path, false));
+  Reply reply = transport->Exchange(core_->Request(http::verb::get, core_->BasePath(), false));
   if (reply.status != 200) throw ProblemOf(reply);
   auto object = ParseObject(reply.body);
-  if (!object || String(*object, "protocol") != "chargewire") {
+  const std::string protocol = object ? String(*object, "protocol") : std::string();
+  if (protocol != "chargewire" && !(core_->legacy->load() && detail::IsLegacyProtocol(protocol))) {
     throw Error(reply.status, "client_protocol_error", BaseUrl(core_->options) + " is not a Chargewire server");
   }
   Discovery discovery;
