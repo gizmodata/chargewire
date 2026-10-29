@@ -7,6 +7,12 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-29
+
+The protocol is renamed Chargewire. Protocol version 1 is unchanged apart from the name: a server
+answers clients written for 1.x in their own spelling, and the C++ client talks to servers from
+before the rename.
+
 ### Changed
 
 - The protocol is now named Chargewire: its paths (`/chargewire`, `/chargewire/v1/...`),
