@@ -7,6 +7,7 @@
 #include "api.hpp"
 #include "http.hpp"
 #include "json.hpp"
+#include "legacy_dialect.hpp"
 
 namespace chargewire {
 
@@ -104,8 +105,9 @@ class Server::Impl {
           io_, health_options, limits_,
           [this](Request& request) -> Task<Response> {
             if (request.method == http::verb::get &&
-                (request.path == "/chargewire/v1/health" || request.path == "/health")) {
-              request.path = "/chargewire/v1/health";
+                (request.path == "/chargewire/v1/health" || request.path == "/health" ||
+                 request.path == kLegacyHealthPath)) {
+              if (request.path == "/health") request.path = "/chargewire/v1/health";
               co_return co_await api_.Handle(request);
             }
             co_return ProblemResponse(Error(ErrorCode::kNotFound, "this port serves /health only"),

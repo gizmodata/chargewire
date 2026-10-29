@@ -7,6 +7,14 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Changed
+
+- The protocol is now named Chargewire: its paths (`/chargewire`, `/chargewire/v1/...`),
+  headers (`Chargewire-*`), error types (`urn:chargewire:error:*`), the SDK's C++
+  namespaces, headers and libraries, and the reference server (`chargewire-duckdb`).
+  Servers keep answering clients released before the rename, in the spelling they use,
+  so those clients need no change; their own test suites pass against this server.
+
 ### Fixed
 
 - Bound Arrow ingest IPC messages and expanded compressed buffers before allocation.

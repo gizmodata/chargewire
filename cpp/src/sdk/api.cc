@@ -17,6 +17,7 @@
 #include "ids.hpp"
 #include "ipc.hpp"
 #include "json.hpp"
+#include "legacy_dialect.hpp"
 #include "metadata.hpp"
 #include "openapi_document.hpp"
 #include "tls_context.hpp"
@@ -261,6 +262,9 @@ Task<std::invoke_result_t<Fn>> Api::OnEngine(Session& session, Fn work) {
 }
 
 Task<Response> Api::Handle(Request& request) {
+  // Clients released before the protocol's rename ask in its old spelling, and are answered
+  // in it (legacy_dialect.hpp). Everything below sees only the current one.
+  const bool legacy = AdoptLegacyDialect(request);
   Response response;
   try {
     // A connection whose client certificate was revoked (or expired) after its handshake
@@ -323,6 +327,7 @@ Task<Response> Api::Handle(Request& request) {
       response.headers.emplace_back("Access-Control-Max-Age", "600");
     }
   }
+  if (legacy) ApplyLegacyDialect(request, response);
   co_return response;
 }
 

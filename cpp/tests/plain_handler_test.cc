@@ -220,15 +220,15 @@ TEST(PlainHandler, ProtocolPathsNeverReachIt) {
   auto running = Start(std::move(options));
   // The protocol's own answers, however the path is spelled: the server decodes it, and
   // empty segments don't count, before deciding.
-  for (const char* path : {"/chargewire", "/%77arp", "//chargewire", "/chargewire/", "/%77%61%72%70"}) {
+  for (const char* path : {"/chargewire", "/%63hargewire", "//chargewire", "/chargewire/", "/%63%68%61%72%67%65%77%69%72%65"}) {
     const Answer answer = Send(running->port, http::verb::get, path);
     EXPECT_EQ(answer.status, 200) << path;
     EXPECT_NE(answer.body.find("\"chargewire\""), std::string::npos) << path;
   }
-  for (const char* path : {"/chargewire/v1/health", "/%77arp/v1/health", "//chargewire//v1/health", "/chargewire%2Fv1%2Fhealth"}) {
+  for (const char* path : {"/chargewire/v1/health", "/%63hargewire/v1/health", "//chargewire//v1/health", "/chargewire%2Fv1%2Fhealth"}) {
     EXPECT_EQ(Send(running->port, http::verb::get, path).status, 200) << path;
   }
-  for (const char* path : {"/chargewire/v1/no-such-thing", "/%77arp/ui/page", "//chargewire/ui/page"}) {
+  for (const char* path : {"/chargewire/v1/no-such-thing", "/%63hargewire/ui/page", "//chargewire/ui/page"}) {
     const Answer answer = Send(running->port, http::verb::get, path);
     EXPECT_EQ(answer.status, 404) << path;
     EXPECT_FALSE(answer.has("x-plain")) << path;

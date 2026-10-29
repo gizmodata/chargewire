@@ -9,6 +9,7 @@
 
 #include "forwarded.hpp"
 #include "ids.hpp"
+#include "legacy_dialect.hpp"
 #include "platform.hpp"
 #include "tls_context.hpp"
 #include "tls_stream.hpp"
@@ -434,6 +435,9 @@ Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler
 
       if (early) {
         response = std::move(*early);
+        // Answered before the handler: a request in the pre-rename spelling still gets its
+        // answer in that spelling (legacy_dialect.hpp).
+        if (target_ok && AdoptLegacyDialect(request)) ApplyLegacyDialect(request, response);
       } else {
         try {
           response = co_await handler(request);

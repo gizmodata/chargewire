@@ -137,6 +137,7 @@ add_library(chargewire
   src/sdk/ingests.cc
   src/sdk/ipc.cc
   src/sdk/json.cc
+  src/sdk/legacy_dialect.cc
   src/sdk/metadata.cc
   src/sdk/platform.cc
   src/sdk/security_events.cc
@@ -217,7 +218,8 @@ if(CHARGEWIRE_BUILD_TESTS)
   add_executable(chargewire-sdk-tests tests/security_events_test.cc tests/sessions_test.cc
                  tests/statements_test.cc tests/plain_handler_test.cc tests/browser_sign_in_test.cc
                  tests/statement_ids_test.cc tests/openapi_test.cc
-                 tests/forwarded_test.cc tests/session_authority_test.cc tests/upload_limits_test.cc)
+                 tests/forwarded_test.cc tests/session_authority_test.cc tests/upload_limits_test.cc
+                 tests/legacy_dialect_test.cc)
   target_include_directories(chargewire-sdk-tests PRIVATE src/sdk)
   target_link_libraries(chargewire-sdk-tests PRIVATE chargewire chargewire_client GTest::gtest_main)
 endif()
