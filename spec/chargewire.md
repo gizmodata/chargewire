@@ -1,6 +1,6 @@
 # Chargewire Protocol, version 1
 
-**Status:** specification 2.0.1 (2026-10-29), Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
+**Status:** 2.0.1 (2026-10-29), the specification's version, which is Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
 addition (§12).
 
 Chargewire is an open protocol for running SQL against a database server over plain

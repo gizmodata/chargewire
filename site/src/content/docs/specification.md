@@ -12,7 +12,7 @@ tableOfContents:
 This page is [`spec/chargewire.md`](https://github.com/gizmodata/chargewire/blob/main/spec/chargewire.md), rendered as it is. Its endpoints are also described for tools in the [OpenAPI document](/reference/openapi/).
 :::
 
-**Status:** specification 2.0.1 (2026-10-29), Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
+**Status:** 2.0.1 (2026-10-29), the specification's version, which is Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
 addition ([§12](#12-versioning)).
 
 Chargewire is an open protocol for running SQL against a database server over plain
