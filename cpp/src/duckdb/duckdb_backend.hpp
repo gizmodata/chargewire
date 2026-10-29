@@ -1,4 +1,4 @@
-// The reference backend: DuckDB 2.0 behind the Warp SQL SDK, through DuckDB's v2 C
+// The reference backend: DuckDB 2.0 behind the Chargewire SDK, through DuckDB's v2 C
 // API only.
 #pragma once
 
@@ -9,11 +9,11 @@
 #include <vector>
 
 #include "duckdb_v2.hpp"
-#include "warpsql/backend.hpp"
+#include "chargewire/backend.hpp"
 
-namespace warpduckdb {
+namespace chargewire_duckdb {
 
-class DuckDBBackend : public warpsql::Backend {
+class DuckDBBackend : public chargewire::Backend {
  public:
   struct Options {
     std::string database = ":memory:";  // a file path, or ":memory:"
@@ -31,11 +31,11 @@ class DuckDBBackend : public warpsql::Backend {
   explicit DuckDBBackend(Options options);
   ~DuckDBBackend() override;
 
-  warpsql::ServerIdentity Identity() override;
-  std::unique_ptr<warpsql::EngineSession> OpenSession(const warpsql::Principal& principal, const std::string& session_id,
+  chargewire::ServerIdentity Identity() override;
+  std::unique_ptr<chargewire::EngineSession> OpenSession(const chargewire::Principal& principal, const std::string& session_id,
                                                       const boost::json::object& options) override;
   void CheckHealth() override;
-  warpsql::BackendCapabilities Capabilities() override;
+  chargewire::BackendCapabilities Capabilities() override;
   boost::json::object ServerInfo() override;
 
   duckdb_v2_instance_handle instance() const { return instance_.get(); }
@@ -43,9 +43,9 @@ class DuckDBBackend : public warpsql::Backend {
   const std::string& duckdb_version() const { return version_; }
 
  protected:
-  // Creates the engine side of session `session_id` (its Warp SQL id); servers built on
+  // Creates the engine side of session `session_id` (its Chargewire id); servers built on
   // this backend return their own DuckDBSession subclass.
-  virtual std::unique_ptr<warpsql::EngineSession> NewSession(const warpsql::Principal& principal,
+  virtual std::unique_ptr<chargewire::EngineSession> NewSession(const chargewire::Principal& principal,
                                                              const std::string& session_id);
 
  private:
@@ -62,7 +62,7 @@ class DuckDBBackend : public warpsql::Backend {
 // The single-user authenticator the reference server uses.
 // One user with a password, plus (with mutual TLS) the certificate identities allowed to
 // sign in as themselves with the client_certificate grant (spec §4.4).
-class StaticPasswordAuthenticator : public warpsql::Authenticator {
+class StaticPasswordAuthenticator : public chargewire::Authenticator {
  public:
   StaticPasswordAuthenticator(std::string username, std::string password,
                               std::vector<std::string> certificate_identities = {})
@@ -70,11 +70,11 @@ class StaticPasswordAuthenticator : public warpsql::Authenticator {
         password_(std::move(password)),
         certificate_identities_(std::move(certificate_identities)) {}
 
-  warpsql::Principal AuthenticatePassword(std::string_view username,
+  chargewire::Principal AuthenticatePassword(std::string_view username,
                                           std::string_view password) override;
   // An identity on the list (ignoring ASCII case) signs in as itself.
-  warpsql::Principal AuthenticateCertificate(std::string_view identity,
-                                             const warpsql::ClientCertificate& certificate) override;
+  chargewire::Principal AuthenticateCertificate(std::string_view identity,
+                                             const chargewire::ClientCertificate& certificate) override;
   boost::json::array GrantTypes() override {
     boost::json::array grants{"password"};
     if (!certificate_identities_.empty()) grants.emplace_back("client_certificate");
@@ -87,4 +87,4 @@ class StaticPasswordAuthenticator : public warpsql::Authenticator {
   std::vector<std::string> certificate_identities_;
 };
 
-}  // namespace warpduckdb
+}  // namespace chargewire_duckdb

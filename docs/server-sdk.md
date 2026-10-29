@@ -1,20 +1,20 @@
 # Server SDK design
 
-This describes the reference C++ server library in this repo, `libwarpsql`. It is not
-part of the protocol: any server that follows `spec/warp-sql.md` is a Warp SQL server.
+This describes the reference C++ server library in this repo, `libchargewire`. It is not
+part of the protocol: any server that follows `spec/chargewire.md` is a Chargewire server.
 The SDK exists so that putting an engine behind the protocol means writing the engine
-part only. The API is in [`cpp/include/warpsql/`](../cpp/include/warpsql/); this page is
+part only. The API is in [`cpp/include/chargewire/`](../cpp/include/chargewire/); this page is
 the map.
 
 ## The pattern
 
 Arrow Flight SQL's C++ server has a base class, `FlightSqlServerBase`, whose virtual
 methods (`GetFlightInfoStatement`, `DoGetTables`, `BeginTransaction`, …) return
-"not implemented" until a server overrides them. The Warp SQL SDK keeps that pattern and
+"not implemented" until a server overrides them. The Chargewire SDK keeps that pattern and
 fixes one thing about it.
 
 **What changes:** in Flight SQL every server writes its own authentication and
-handle checks. In the Warp SQL SDK the library owns everything the spec requires for
+handle checks. In the Chargewire SDK the library owns everything the spec requires for
 safety, and the overridable methods only do engine work:
 
 | The library does (not overridable) | The backend does (virtual, defaults to `not_implemented`) |
@@ -37,7 +37,7 @@ author cannot forget the ownership check, because there is nothing to forget.
 
 ## The interfaces
 
-[`backend.hpp`](../cpp/include/warpsql/backend.hpp):
+[`backend.hpp`](../cpp/include/chargewire/backend.hpp):
 
 - **`Backend`**: `Identity()` (discovery's `server`), `Capabilities()` (which of
   `prepared_statements`, `transactions` and `ingest` the engine has: the SDK lists only
@@ -51,7 +51,7 @@ author cannot forget the ownership check, because there is nothing to forget.
   around each statement and ingest, and `SetStatementId()` around each statement,
   prepared execution and prepare, with the id the client holds for it (`q_…`, `p_…`), so
   an engine that records or logs statements keys them the way clients see them.
-  `warpsql::NewId(prefix)` makes ids of the same shape for an engine's own kinds.
+  `chargewire::NewId(prefix)` makes ids of the same shape for an engine's own kinds.
 - **`Authenticator`** turns credentials into a `Principal`; **`TokenService`** issues and
   checks tokens (the default keeps random tokens in memory; a server with replicas supplies
   signed ones). Sessions belong to a principal's `name` and `authority_key` (spec §9.2): a
@@ -59,12 +59,12 @@ author cannot forget the ownership check, because there is nothing to forget.
   catalog limits) sets `authority_key` to a value that differs between them, so a weaker
   token of the user can't act through a stronger one's session.
 
-A backend reports a failure by throwing `warpsql::Error` with the code that describes it
-([`errors.hpp`](../cpp/include/warpsql/errors.hpp)); the SDK turns it into a problem
+A backend reports a failure by throwing `chargewire::Error` with the code that describes it
+([`errors.hpp`](../cpp/include/chargewire/errors.hpp)); the SDK turns it into a problem
 document with that code's status and title. Anything else that escapes a backend is
 answered as `internal_error`.
 
-[`server.hpp`](../cpp/include/warpsql/server.hpp) holds `ServerOptions` (listeners, TLS,
+[`server.hpp`](../cpp/include/chargewire/server.hpp) holds `ServerOptions` (listeners, TLS,
 limits, lifetimes) and `Server`, plus what an engine may ask about its own sessions
 (`Sessions()`, `CancelSession()`, `EndSession()`), for SQL such as a sessions table or
 a command that ends a session.
@@ -77,12 +77,12 @@ per-address bound on browser sign-ins, with the proxy's own address beside it (`
 `proxy_address`); authentication and TLS never see it. Empty (the default), no header is
 believed.
 
-`warp-duckdb` ([`cpp/src/duckdb/`](../cpp/src/duckdb/)) is a complete backend in about
+`chargewire-duckdb` ([`cpp/src/duckdb/`](../cpp/src/duckdb/)) is a complete backend in about
 3,000 lines, and the one the conformance suite and the drivers test against.
 
 ## Dependencies
 
-The point of Warp SQL is a small build. The SDK needs only:
+The point of Chargewire is a small build. The SDK needs only:
 
 - **Arrow C++, built with IPC only**: `ARROW_IPC` with ZSTD and LZ4, and Flight,
   compute, Parquet, filesystems and the bundled allocators off. Without Flight it needs

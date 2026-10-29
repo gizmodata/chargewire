@@ -1,6 +1,6 @@
 # Distributed queries: what the protocol already allows
 
-Warp SQL 1 servers may run each statement on one node. A server that runs one statement
+Chargewire 1 servers may run each statement on one node. A server that runs one statement
 across several nodes needs no new major version of the protocol. This note records what
 the protocol already provides for that, and what a distributed server still has to
 settle on its own side.
@@ -9,7 +9,7 @@ settle on its own side.
 
 - **Results come in partitions** (spec §6.2). A statement document lists its result's
   partitions, each with a `location`: `null` for "this server", or, for a client that
-  sent `Warp-Result-Locations: remote` to a server with capability `result_locations`,
+  sent `Chargewire-Result-Locations: remote` to a server with capability `result_locations`,
   the base URL of the node that holds it (§6.2 gives the URL form). A client that
   didn't ask never sees a non-null `location`. Clients read every partition, all at
   once, with the same access token. The ADBC driver already reads partitions through

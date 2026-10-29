@@ -1,6 +1,6 @@
-#include "warpsql/errors.hpp"
+#include "chargewire/errors.hpp"
 
-namespace warpsql {
+namespace chargewire {
 
 namespace {
 
@@ -68,4 +68,4 @@ std::string_view CodeTitle(ErrorCode code) { return Info(code).title; }
 
 int HttpStatus(ErrorCode code) { return Info(code).status; }
 
-}  // namespace warpsql
+}  // namespace chargewire

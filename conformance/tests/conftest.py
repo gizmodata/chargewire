@@ -2,19 +2,19 @@
 
 Either point the suite at a running server:
 
-    WARP_SQL_TEST_URL=https://host:port  WARP_SQL_TEST_USERNAME=…  WARP_SQL_TEST_PASSWORD=…
+    CHARGEWIRE_TEST_URL=https://host:port  CHARGEWIRE_TEST_USERNAME=…  CHARGEWIRE_TEST_PASSWORD=…
 
 or let it start one, given a binary that takes `--host` and `--port` and reads its
-password from an environment variable, such as `warp-duckdb`:
+password from an environment variable, such as `chargewire-duckdb`:
 
-    WARP_SQL_TEST_SERVER_BINARY=/path/to/warp-duckdb
-    WARP_SQL_TEST_SERVER_PASSWORD_ENV=WARP_DUCKDB_PASSWORD   (the default)
-    WARP_SQL_TEST_SERVER_USERNAME=warp                       (the default)
+    CHARGEWIRE_TEST_SERVER_BINARY=/path/to/chargewire-duckdb
+    CHARGEWIRE_TEST_SERVER_PASSWORD_ENV=CHARGEWIRE_DUCKDB_PASSWORD   (the default)
+    CHARGEWIRE_TEST_SERVER_USERNAME=chargewire                       (the default)
 
 The suite fails, never skips, when it has no reachable server. A server it started must
 also survive every test and stop cleanly (exit code 0) at the end: a crash, including
 one a sanitizer reports at shutdown, fails the run with the end of the server's log
-(kept in WARP_SQL_TEST_SERVER_LOG, or a temporary file).
+(kept in CHARGEWIRE_TEST_SERVER_LOG, or a temporary file).
 """
 
 import dataclasses
@@ -33,7 +33,7 @@ import pytest
 
 from openapi_check import OpenApi
 from openapi_check import operations as operations_of
-from warp import Warp
+from chargewire import Chargewire
 
 
 @dataclasses.dataclass
@@ -77,12 +77,12 @@ def wait_until_up(base_url: str, timeout: float = 20, verify=True) -> None:
     last_error = None
     while time.monotonic() < deadline:
         try:
-            if httpx.get(url=f"{base_url}/warp", timeout=2, verify=verify).status_code == 200:
+            if httpx.get(url=f"{base_url}/chargewire", timeout=2, verify=verify).status_code == 200:
                 return
         except httpx.HTTPError as error:
             last_error = error
         time.sleep(0.2)
-    pytest.fail(reason=f"no Warp SQL server answered at {base_url}/warp ({last_error})")
+    pytest.fail(reason=f"no Chargewire server answered at {base_url}/chargewire ({last_error})")
 
 
 def start_server(binary: str, extra_args: list[str] | None = None,
@@ -95,10 +95,10 @@ def start_server(binary: str, extra_args: list[str] | None = None,
     # A password with ':' and '@' in it: credentials travel as JSON fields, so nothing
     # may split them (spec §4.1).
     password = secrets.token_urlsafe(nbytes=12) + ":p@ss:word"
-    password_env = os.environ.get("WARP_SQL_TEST_SERVER_PASSWORD_ENV", "WARP_DUCKDB_PASSWORD")
-    username = os.environ.get("WARP_SQL_TEST_SERVER_USERNAME", "warp")
-    log = Path(os.environ.get("WARP_SQL_TEST_SERVER_LOG")
-               or tempfile.mkstemp(prefix="warp-sql-server-", suffix=".log")[1])
+    password_env = os.environ.get("CHARGEWIRE_TEST_SERVER_PASSWORD_ENV", "CHARGEWIRE_DUCKDB_PASSWORD")
+    username = os.environ.get("CHARGEWIRE_TEST_SERVER_USERNAME", "chargewire")
+    log = Path(os.environ.get("CHARGEWIRE_TEST_SERVER_LOG")
+               or tempfile.mkstemp(prefix="chargewire-server-", suffix=".log")[1])
     with log.open(mode="ab") as out:
         process = subprocess.Popen(
             args=[binary, "--host", "127.0.0.1", "--port", str(port), *(extra_args or [])],
@@ -131,7 +131,7 @@ def stop_server(server: ServerUnderTest) -> int | None:
 
 @pytest.fixture(scope="session")
 def server():
-    binary = os.environ.get("WARP_SQL_TEST_SERVER_BINARY")
+    binary = os.environ.get("CHARGEWIRE_TEST_SERVER_BINARY")
     if binary:
         started = start_server(binary=binary)
         yield started
@@ -140,28 +140,28 @@ def server():
             pytest.fail(reason=f"the server did not stop cleanly (exit code {code}):\n"
                                f"{started.log_tail()}", pytrace=False)
         return
-    url = os.environ.get("WARP_SQL_TEST_URL")
+    url = os.environ.get("CHARGEWIRE_TEST_URL")
     if not url:
-        pytest.fail(reason="set WARP_SQL_TEST_URL (with WARP_SQL_TEST_USERNAME and "
-                           "WARP_SQL_TEST_PASSWORD) or WARP_SQL_TEST_SERVER_BINARY")
+        pytest.fail(reason="set CHARGEWIRE_TEST_URL (with CHARGEWIRE_TEST_USERNAME and "
+                           "CHARGEWIRE_TEST_PASSWORD) or CHARGEWIRE_TEST_SERVER_BINARY")
     wait_until_up(base_url=url)
-    yield ServerUnderTest(base_url=url, username=os.environ.get("WARP_SQL_TEST_USERNAME", ""),
-                          password=os.environ.get("WARP_SQL_TEST_PASSWORD", ""))
+    yield ServerUnderTest(base_url=url, username=os.environ.get("CHARGEWIRE_TEST_USERNAME", ""),
+                          password=os.environ.get("CHARGEWIRE_TEST_PASSWORD", ""))
 
 
 @pytest.fixture
-def warp(server):
-    client = Warp(base_url=server.base_url, username=server.username, password=server.password)
+def chargewire(server):
+    client = Chargewire(base_url=server.base_url, username=server.username, password=server.password)
     yield client
     client.close()
     server.check_alive()
 
 
 @pytest.fixture
-def session_id(warp):
-    sid = warp.new_session()
+def session_id(chargewire):
+    sid = chargewire.new_session()
     yield sid
-    warp.http.delete(url=warp.session_url(sid), headers=warp.headers())
+    chargewire.http.delete(url=chargewire.session_url(sid), headers=chargewire.headers())
 
 
 # ---- Every response is checked against the OpenAPI document (spec/openapi.yaml) ----

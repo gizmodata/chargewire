@@ -1,6 +1,6 @@
 ---
 title: Prepared statements
-description: "Prepare a Warp SQL statement once, read its parameter and result schemas, and execute it with JSON parameters or an Arrow batch where each row is one execution."
+description: "Prepare a Chargewire statement once, read its parameter and result schemas, and execute it with JSON parameters or an Arrow batch where each row is one execution."
 ---
 
 import Diagram from '../../../components/Diagram.astro';
@@ -14,12 +14,12 @@ applies.
 <Diagram name="prepared-statements" alt="The client prepares an INSERT and gets its parameter and result schemas, executes it with JSON parameters and then with an Arrow stream of rows, one execution per row, and deletes it." />
 
 ```bash test
-WARP=http://127.0.0.1:31337
-TOKEN=$(curl -s $WARP/warp/v1/auth/token -H 'Content-Type: application/json' \
+CHARGEWIRE=http://127.0.0.1:31337
+TOKEN=$(curl -s $CHARGEWIRE/chargewire/v1/auth/token -H 'Content-Type: application/json' \
   -d '{"grant_type": "password", "username": "joe", "password": "s3:cret"}' | jq -r .access_token)
 AUTH="Authorization: Bearer $TOKEN"
-SESSION=$(curl -s $WARP/warp/v1/sessions -H "$AUTH" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
-curl -s $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
+SESSION=$(curl -s $CHARGEWIRE/chargewire/v1/sessions -H "$AUTH" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
+curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"sql": "CREATE TABLE events (id INTEGER, name VARCHAR)"}' | jq -c .result
 ```
 
@@ -34,7 +34,7 @@ executing returns: `result_kind` `rows` (with `result_schema` when the server ca
 before running), `update`, or `null` when it can only tell at execution:
 
 ```bash test
-curl -s $WARP/warp/v1/sessions/$SESSION/prepared -H "$AUTH" -H 'Content-Type: application/json' \
+curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/prepared -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"sql": "INSERT INTO events VALUES (?, ?)"}' > prepared.json
 PREPARED=$(jq -r .prepared_id prepared.json)
 jq -c '{prepared_id, result_kind, result_schema}' prepared.json
@@ -56,7 +56,7 @@ The body is `{"parameters": [...]}`, as for a submit, and the answer is exactly 
 answers, with the same headers (`Accept`, `Prefer`, `Idempotency-Key`, …):
 
 ```bash test
-curl -s $WARP/warp/v1/sessions/$SESSION/prepared/$PREPARED/execute -H "$AUTH" \
+curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/prepared/$PREPARED/execute -H "$AUTH" \
   -H 'Content-Type: application/json' -d '{"parameters": [1, "signup"]}' | jq -c '{state, result}'
 ```
 
@@ -78,7 +78,7 @@ rows = pa.table([pa.array([2, 3, 4], schema.field(0).type), pa.array(["login", "
 with ipc.new_stream("rows.arrows", schema) as writer:
     writer.write_table(rows)
 EOF
-curl -s $WARP/warp/v1/sessions/$SESSION/prepared/$PREPARED/execute -H "$AUTH" \
+curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/prepared/$PREPARED/execute -H "$AUTH" \
   -H 'Content-Type: application/vnd.apache.arrow.stream' --data-binary @rows.arrows | jq -c '{state, result}'
 ```
 
@@ -91,9 +91,9 @@ in order. The same shape as a submit holds for a query too: here a prepared quer
 result:
 
 ```bash test
-QUERY=$(curl -s $WARP/warp/v1/sessions/$SESSION/prepared -H "$AUTH" -H 'Content-Type: application/json' \
+QUERY=$(curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/prepared -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"sql": "SELECT name FROM events WHERE id >= ? ORDER BY id"}' | jq -r .prepared_id)
-curl -s $WARP/warp/v1/sessions/$SESSION/prepared/$QUERY/execute -H "$AUTH" \
+curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/prepared/$QUERY/execute -H "$AUTH" \
   -H 'Content-Type: application/json' -H 'Accept: application/vnd.apache.arrow.stream' \
   -d '{"parameters": [3]}' -o names.arrows
 python3 -c "import pyarrow.ipc as ipc; print(ipc.open_stream('names.arrows').read_all().column('name').to_pylist())"
@@ -106,8 +106,8 @@ python3 -c "import pyarrow.ipc as ipc; print(ipc.open_stream('names.arrows').rea
 ## Close
 
 ```bash test
-curl -s -o /dev/null -w '%{http_code}\n' -X DELETE $WARP/warp/v1/sessions/$SESSION/prepared/$PREPARED -H "$AUTH"
-curl -s $WARP/warp/v1/sessions/$SESSION/prepared/$PREPARED/execute -H "$AUTH" \
+curl -s -o /dev/null -w '%{http_code}\n' -X DELETE $CHARGEWIRE/chargewire/v1/sessions/$SESSION/prepared/$PREPARED -H "$AUTH"
+curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/prepared/$PREPARED/execute -H "$AUTH" \
   -H 'Content-Type: application/json' -d '{"parameters": [9, "x"]}' | jq -c '{status, code}'
 ```
 

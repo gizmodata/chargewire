@@ -13,10 +13,10 @@
 
 #include "duckdb_sql.hpp"
 
-namespace warpduckdb {
+namespace chargewire_duckdb {
 
-using warpsql::Error;
-using warpsql::ErrorCode;
+using chargewire::Error;
+using chargewire::ErrorCode;
 
 namespace {
 
@@ -88,7 +88,7 @@ arrow::Result<std::shared_ptr<arrow::RecordBatch>> DayTimeAsMonthDayNano(
 }
 
 // Any RecordBatchReader as IngestBatches: read one batch at a time, under a lock.
-class SerialBatches : public warpsql::IngestBatches {
+class SerialBatches : public chargewire::IngestBatches {
  public:
   explicit SerialBatches(std::shared_ptr<arrow::RecordBatchReader> source) : source_(std::move(source)) {}
   std::shared_ptr<arrow::Schema> schema() const override { return source_->schema(); }
@@ -107,7 +107,7 @@ class SerialBatches : public warpsql::IngestBatches {
 
 // The upload in progress: its rows, and what reading them found.
 struct Slot {
-  std::shared_ptr<warpsql::IngestBatches> rows;
+  std::shared_ptr<chargewire::IngestBatches> rows;
   std::shared_ptr<arrow::Schema> schema;  // what DuckDB is given (day_time intervals converted)
   bool convert_day_time = false;
   std::atomic<int64_t> rows_read = 0;
@@ -120,7 +120,7 @@ struct Slot {
 // statement, on any other thread, finds none.
 thread_local Slot* current_upload = nullptr;
 
-constexpr std::string_view kFunction = "warp_upload";
+constexpr std::string_view kFunction = "chargewire_upload";
 constexpr idx_t kChunkRows = 2048;  // a table function returns at most this many rows
 
 using ArrowImporter = Owned<duckdb_v2_arrow_importer_handle, duckdb_v2_arrow_importer_destroy>;
@@ -155,7 +155,7 @@ struct CSchema {
   }
 };
 
-// warp_upload() reads the upload on several DuckDB threads at once (parallel insert):
+// chargewire_upload() reads the upload on several DuckDB threads at once (parallel insert):
 // each thread takes the next uploaded batch (IngestBatches::NextIndexed decodes and
 // validates it in that thread) and turns it into DuckDB chunks with its own importer.
 // Every chunk carries its batch's position as its batch index, so DuckDB keeps the
@@ -183,7 +183,7 @@ void Bind(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_function_bin
   Guarded(err, [&] {
     Slot* slot = current_upload;
     if (slot == nullptr || slot->rows == nullptr) {
-      throw Error(ErrorCode::kSqlError, "warp_upload() only reads the rows of a bulk ingest");
+      throw Error(ErrorCode::kSqlError, "chargewire_upload() only reads the rows of a bulk ingest");
     }
     auto scan = std::make_unique<Scan>();
     scan->slot = slot;
@@ -252,7 +252,7 @@ void InitLocal(duckdb_v2_table_function_init_local_info_handle info, duckdb_v2_c
     {
       std::lock_guard lock(scan.mutex);
       if (scan.importers.empty()) {
-        throw Error(ErrorCode::kExecutionError, "warp_upload(): more scanning threads than importers");
+        throw Error(ErrorCode::kExecutionError, "chargewire_upload(): more scanning threads than importers");
       }
       // Kept by the Scan; the local state only borrows it.
       local->importer = scan.importers.back().get();
@@ -481,7 +481,7 @@ void RegisterUploadFunction(duckdb_v2_connection_handle connection) {
   });
 }
 
-int64_t Ingest(duckdb_v2_connection_handle connection, const warpsql::IngestTarget& target,
+int64_t Ingest(duckdb_v2_connection_handle connection, const chargewire::IngestTarget& target,
                std::shared_ptr<arrow::RecordBatchReader> rows) {
   if (target.temporary && (!target.catalog.empty() || !target.schema.empty())) {
     throw Error(ErrorCode::kBadRequest, "a temporary table takes no catalog or schema");
@@ -500,15 +500,15 @@ int64_t Ingest(duckdb_v2_connection_handle connection, const warpsql::IngestTarg
   const std::string source = "SELECT *" + (replace.empty() ? std::string() : " REPLACE (" + replace + ")") +
                              " FROM " + std::string(kFunction) + "()";
   auto mode = target.mode;
-  if (mode == warpsql::IngestMode::kCreateAppend) {
-    mode = TableExists(connection, name) ? warpsql::IngestMode::kAppend
-                                          : warpsql::IngestMode::kCreate;
+  if (mode == chargewire::IngestMode::kCreateAppend) {
+    mode = TableExists(connection, name) ? chargewire::IngestMode::kAppend
+                                          : chargewire::IngestMode::kCreate;
   }
   const std::string create = target.temporary ? "CREATE TEMPORARY TABLE " : "CREATE TABLE ";
   std::string sql;
   switch (mode) {
-    case warpsql::IngestMode::kCreate: sql = create + name + " AS " + source; break;
-    case warpsql::IngestMode::kReplace:
+    case chargewire::IngestMode::kCreate: sql = create + name + " AS " + source; break;
+    case chargewire::IngestMode::kReplace:
       sql = (target.temporary ? "CREATE OR REPLACE TEMPORARY TABLE " : "CREATE OR REPLACE TABLE ") +
             name + " AS " + source;
       break;
@@ -516,12 +516,12 @@ int64_t Ingest(duckdb_v2_connection_handle connection, const warpsql::IngestTarg
     // name whatever its position, an omitted column takes its default, and a column
     // the table lacks is refused. Positional binding would write two columns of the
     // same type uploaded in the other order crosswise, without an error.
-    case warpsql::IngestMode::kAppend: sql = "INSERT INTO " + name + " BY NAME " + source; break;
-    case warpsql::IngestMode::kCreateAppend: break;  // resolved above
+    case chargewire::IngestMode::kAppend: sql = "INSERT INTO " + name + " BY NAME " + source; break;
+    case chargewire::IngestMode::kCreateAppend: break;  // resolved above
   }
 
   Slot slot;
-  slot.rows = std::dynamic_pointer_cast<warpsql::IngestBatches>(rows);
+  slot.rows = std::dynamic_pointer_cast<chargewire::IngestBatches>(rows);
   if (!slot.rows) {
     slot.rows = std::make_shared<SerialBatches>(std::move(rows));  // not from the SDK: one at a time
   }
@@ -542,4 +542,4 @@ int64_t Ingest(duckdb_v2_connection_handle connection, const warpsql::IngestTarg
   return slot.rows_read;
 }
 
-}  // namespace warpduckdb
+}  // namespace chargewire_duckdb

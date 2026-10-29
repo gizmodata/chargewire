@@ -29,7 +29,7 @@
 
 #include "common.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 class TlsStream {
  public:
@@ -270,10 +270,10 @@ class TlsStream {
   std::vector<char> input_;  // ciphertext read, [input_begin_, input_end_) not yet decrypted
   std::size_t input_begin_ = 0;
   std::size_t input_end_ = 0;
-  // For WARPSQL_STREAM_STATS: time spent encrypting and sending, and plaintext written.
+  // For CHARGEWIRE_STREAM_STATS: time spent encrypting and sending, and plaintext written.
   std::chrono::steady_clock::duration encrypt_time_{};
   std::chrono::steady_clock::duration send_time_{};
   std::size_t encrypted_ = 0;
 };
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

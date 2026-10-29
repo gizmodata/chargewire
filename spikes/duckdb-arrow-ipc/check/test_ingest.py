@@ -1,4 +1,4 @@
-"""pyarrow IPC -> nanoarrow reader -> DuckDB (v2 Arrow importer + warp_upload())
+"""pyarrow IPC -> nanoarrow reader -> DuckDB (v2 Arrow importer + chargewire_upload())
 must store what DuckDB's own Arrow ingest stores, and values that read back equal
 to the upload. A type DuckDB can't ingest must be refused, never stored as text."""
 

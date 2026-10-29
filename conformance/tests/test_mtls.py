@@ -1,9 +1,9 @@
 """Spec §2.1 and §4.4: mutual TLS that carries identity. The client_certificate grant,
 certificate-bound tokens, revocation, identity match.
 
-These tests start servers of their own with TLS, from WARP_SQL_TEST_SERVER_BINARY. The
-flags are warp-duckdb's, which Hardcharger shares for the --mtls-* options; only the flag
-naming the client CA differs (WARP_SQL_TEST_SERVER_MTLS_FLAG, default --tls-client-ca;
+These tests start servers of their own with TLS, from CHARGEWIRE_TEST_SERVER_BINARY. The
+flags are chargewire-duckdb's, which Hardcharger shares for the --mtls-* options; only the flag
+naming the client CA differs (CHARGEWIRE_TEST_SERVER_MTLS_FLAG, default --tls-client-ca;
 Hardcharger's is --mtls-ca-cert). Against a server given by URL they cannot run: deselect
 them with `-m "not mtls"`, visibly, rather than let them skip.
 """
@@ -25,7 +25,7 @@ import pytest
 from conftest import ServerUnderTest, start_server, stop_server
 from pki import Pki
 from test_discovery_auth import assert_problem
-from warp import ARROW_STREAM, Warp, read_batches
+from chargewire import ARROW_STREAM, Chargewire, read_batches
 
 pytestmark = pytest.mark.mtls
 
@@ -39,15 +39,15 @@ def pki(tmp_path_factory) -> Pki:
 
 
 def binary() -> str:
-    path = os.environ.get("WARP_SQL_TEST_SERVER_BINARY")
+    path = os.environ.get("CHARGEWIRE_TEST_SERVER_BINARY")
     if not path:
-        pytest.fail(reason="the mutual-TLS tests start their own servers: set WARP_SQL_TEST_SERVER_BINARY, "
+        pytest.fail(reason="the mutual-TLS tests start their own servers: set CHARGEWIRE_TEST_SERVER_BINARY, "
                            "or deselect them with -m 'not mtls'")
     return path
 
 
 def tls_args(pki: Pki, crl: Path | None = None) -> list[str]:
-    ca_flag = os.environ.get("WARP_SQL_TEST_SERVER_MTLS_FLAG", "--tls-client-ca")
+    ca_flag = os.environ.get("CHARGEWIRE_TEST_SERVER_MTLS_FLAG", "--tls-client-ca")
     args = ["--tls-cert", str(pki.server.cert_path), "--tls-key", str(pki.server.key_path),
             ca_flag, str(pki.ca.cert_path)]
     if crl is not None:
@@ -88,9 +88,9 @@ def optional(pki):
 @pytest.fixture(scope="module")
 def matching(pki):
     """Identity from the subject CN, and a password sign-in must match it."""
-    username = os.environ.get("WARP_SQL_TEST_SERVER_USERNAME", "warp")
-    pki.warp_cn = pki.ca.issue(file_name="cn-user", common_name=username)
-    matched = started(pki=pki, probe=pki.warp_cn,
+    username = os.environ.get("CHARGEWIRE_TEST_SERVER_USERNAME", "chargewire")
+    pki.chargewire_cn = pki.ca.issue(file_name="cn-user", common_name=username)
+    matched = started(pki=pki, probe=pki.chargewire_cn,
                       args=[*tls_args(pki=pki), "--mtls-identity-source", "subject_cn",
                             "--mtls-require-identity-match", "--mtls-certificate-sign-in", "--mtls-admin-identities", username])
     yield matched
@@ -115,7 +115,7 @@ def client(server: ServerUnderTest, pki: Pki, cert) -> httpx.Client:
 
 
 def certificate_grant(http: httpx.Client) -> httpx.Response:
-    return http.post(url="/warp/v1/auth/token", json={"grant_type": "client_certificate"})
+    return http.post(url="/chargewire/v1/auth/token", json={"grant_type": "client_certificate"})
 
 
 def certificate_token(http: httpx.Client) -> str:
@@ -131,7 +131,7 @@ def bearer(token: str) -> dict[str, str]:
 
 
 def new_session(http: httpx.Client, token: str) -> str:
-    response = http.post(url="/warp/v1/sessions", headers=bearer(token=token), json={})
+    response = http.post(url="/chargewire/v1/sessions", headers=bearer(token=token), json={})
     assert response.status_code == 201, response.text
     return response.json()["session_id"]
 
@@ -143,7 +143,7 @@ def handshake_refusal(server: ServerUnderTest, context: ssl.SSLContext) -> str |
     try:
         with socket.create_connection(address=(url.hostname, url.port), timeout=10) as raw:
             with context.wrap_socket(sock=raw, server_hostname=url.hostname) as tls:
-                tls.sendall(b"GET /warp HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                tls.sendall(b"GET /chargewire HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
                 answer = tls.recv(4096)
                 return None if answer.startswith(b"HTTP/1.1 ") else f"no answer ({answer!r})"
     except ssl.SSLError as error:
@@ -178,16 +178,16 @@ def raw_request(server: ServerUnderTest, context: ssl.SSLContext, method: str, p
 
 def test_discovery_offers_certificate_sign_in(pki, strict):
     with client(server=strict, pki=pki, cert=pki.alice) as http:
-        doc = http.get(url="/warp").json()
+        doc = http.get(url="/chargewire").json()
     assert "mtls_identity" in doc["capabilities"]
     assert "client_certificate" in doc["auth"]["grant_types"]
 
 
 def test_a_server_without_client_cas_offers_no_certificate_sign_in(server):
-    doc = httpx.get(url=f"{server.base_url}/warp").json()
+    doc = httpx.get(url=f"{server.base_url}/chargewire").json()
     assert "mtls_identity" not in doc["capabilities"]
     assert "client_certificate" not in doc["auth"]["grant_types"]
-    response = httpx.post(url=f"{server.base_url}/warp/v1/auth/token", json={"grant_type": "client_certificate"})
+    response = httpx.post(url=f"{server.base_url}/chargewire/v1/auth/token", json={"grant_type": "client_certificate"})
     assert_problem(response=response, status=400, code="unsupported_grant_type")
 
 
@@ -196,7 +196,7 @@ def test_certificate_sign_in_is_opt_in(pki):
     server = started(pki=pki, probe=pki.alice, args=tls_args(pki=pki))
     try:
         with client(server=server, pki=pki, cert=pki.alice) as http:
-            doc = http.get(url="/warp").json()
+            doc = http.get(url="/chargewire").json()
             assert "mtls_identity" not in doc["capabilities"]
             assert "client_certificate" not in doc["auth"]["grant_types"]
             assert_problem(response=certificate_grant(http=http), status=400, code="unsupported_grant_type")
@@ -212,7 +212,7 @@ def test_certificate_sign_in_needs_no_password(pki, strict):
     with client(server=strict, pki=pki, cert=pki.alice) as http:
         token = certificate_token(http=http)
         session_id = new_session(http=http, token=token)
-        response = http.post(url=f"/warp/v1/sessions/{session_id}/statements",
+        response = http.post(url=f"/chargewire/v1/sessions/{session_id}/statements",
                              headers={**bearer(token=token), "Accept": ARROW_STREAM}, json={"sql": "SELECT 42 AS a"})
         assert response.status_code == 200, response.text
         assert pa.Table.from_batches(batches=read_batches(content=response.content)).to_pylist() == [{"a": 42}]
@@ -229,7 +229,7 @@ def test_no_certificate_cannot_use_the_grant_when_optional(pki, optional):
     with client(server=optional, pki=pki, cert=None) as http:
         assert_problem(response=certificate_grant(http=http), status=401, code="certificate_required")
         # Without a certificate a client still signs in with its password.
-        response = http.post(url="/warp/v1/auth/token",
+        response = http.post(url="/chargewire/v1/auth/token",
                              json={"grant_type": "password", "username": optional.username,
                                    "password": optional.password})
         assert response.status_code == 200, response.text
@@ -316,10 +316,10 @@ def test_a_bound_token_fails_over_another_certificate(pki, strict):
     with client(server=strict, pki=pki, cert=pki.alice) as alice:
         token = certificate_token(http=alice)
         session_id = new_session(http=alice, token=token)
-        assert alice.get(url=f"/warp/v1/sessions/{session_id}", headers=bearer(token=token)).status_code == 200
+        assert alice.get(url=f"/chargewire/v1/sessions/{session_id}", headers=bearer(token=token)).status_code == 200
     with client(server=strict, pki=pki, cert=pki.bob) as bob:
-        for response in [bob.get(url=f"/warp/v1/sessions/{session_id}", headers=bearer(token=token)),
-                         bob.post(url="/warp/v1/sessions", headers=bearer(token=token), json={})]:
+        for response in [bob.get(url=f"/chargewire/v1/sessions/{session_id}", headers=bearer(token=token)),
+                         bob.post(url="/chargewire/v1/sessions", headers=bearer(token=token), json={})]:
             assert_problem(response=response, status=401, code="certificate_mismatch")
             assert response.headers["www-authenticate"] == "Bearer"
 
@@ -329,16 +329,16 @@ def test_a_bound_token_fails_without_a_certificate(pki, optional):
         token = certificate_token(http=alice)
         session_id = new_session(http=alice, token=token)
     with client(server=optional, pki=pki, cert=None) as anonymous:
-        response = anonymous.get(url=f"/warp/v1/sessions/{session_id}", headers=bearer(token=token))
+        response = anonymous.get(url=f"/chargewire/v1/sessions/{session_id}", headers=bearer(token=token))
         assert_problem(response=response, status=401, code="certificate_mismatch")
     with client(server=optional, pki=pki, cert=pki.alice) as alice:
-        assert alice.get(url=f"/warp/v1/sessions/{session_id}", headers=bearer(token=token)).status_code == 200
+        assert alice.get(url=f"/chargewire/v1/sessions/{session_id}", headers=bearer(token=token)).status_code == 200
 
 
 def test_a_password_token_is_not_bound(pki, strict):
     # The binding comes from the client_certificate grant only (spec §9.6).
     with client(server=strict, pki=pki, cert=pki.alice) as alice:
-        response = alice.post(url="/warp/v1/auth/token",
+        response = alice.post(url="/chargewire/v1/auth/token",
                               json={"grant_type": "password", "username": strict.username,
                                     "password": strict.password})
         assert response.status_code == 200, response.text
@@ -351,13 +351,13 @@ def test_partitions_need_the_bound_certificate_on_every_connection(pki, strict):
     with client(server=strict, pki=pki, cert=pki.alice) as alice:
         token = certificate_token(http=alice)
         session_id = new_session(http=alice, token=token)
-        response = alice.post(url=f"/warp/v1/sessions/{session_id}/statements",
+        response = alice.post(url=f"/chargewire/v1/sessions/{session_id}/statements",
                               headers={**bearer(token=token), "Prefer": "respond-async, wait=60",
-                                       "Warp-Retain-Result": "true", "Warp-Result-Partitions": "4"},
+                                       "Chargewire-Retain-Result": "true", "Chargewire-Result-Partitions": "4"},
                               json={"sql": "SELECT i FROM range(1000000) t(i)"})
         assert response.status_code in (200, 201, 202), response.text
         statement_id = response.json()["statement_id"]
-        statement_url = f"/warp/v1/sessions/{session_id}/statements/{statement_id}"
+        statement_url = f"/chargewire/v1/sessions/{session_id}/statements/{statement_id}"
         deadline = time.monotonic() + 60
         doc = response.json()
         while doc["state"] not in ("succeeded", "failed", "cancelled") and time.monotonic() < deadline:
@@ -388,7 +388,7 @@ def test_ingest_parts_need_the_bound_certificate_on_every_connection(pki, strict
     with client(server=strict, pki=pki, cert=pki.alice) as alice:
         token = certificate_token(http=alice)
         session_id = new_session(http=alice, token=token)
-        base = f"/warp/v1/sessions/{session_id}/ingests"
+        base = f"/chargewire/v1/sessions/{session_id}/ingests"
         opened = alice.post(url=base, headers=bearer(token=token), json={"table": "mtls_parts", "mode": "create"})
         assert opened.status_code == 201, opened.text
         ingest_id = opened.json()["ingest_id"]
@@ -419,7 +419,7 @@ def test_a_session_keeps_the_binding_of_the_token_that_opened_it(pki, strict):
         session_id = new_session(http=alice, token=token)
     with client(server=strict, pki=pki, cert=pki.alice_again) as again:
         other_token = certificate_token(http=again)
-        url = f"/warp/v1/sessions/{session_id}"
+        url = f"/chargewire/v1/sessions/{session_id}"
         for response in [again.get(url=url, headers=bearer(token=other_token)),
                          again.post(url=f"{url}/statements", headers=bearer(token=other_token), json={"sql": "SELECT 1"}),
                          again.delete(url=url, headers=bearer(token=other_token))]:
@@ -427,27 +427,27 @@ def test_a_session_keeps_the_binding_of_the_token_that_opened_it(pki, strict):
         # Her other certificate opens sessions of its own.
         new_session(http=again, token=other_token)
     with client(server=strict, pki=pki, cert=pki.alice) as alice:
-        response = alice.post(url=f"/warp/v1/sessions/{session_id}/statements", headers=bearer(token=token),
+        response = alice.post(url=f"/chargewire/v1/sessions/{session_id}/statements", headers=bearer(token=token),
                               json={"sql": "SELECT 1"})
         assert response.status_code in (200, 201, 202), response.text
 
 
 def test_a_password_token_cannot_use_a_certificate_session(pki, matching):
     # Identity from the subject CN, which is the password user's name: one principal.
-    with client(server=matching, pki=pki, cert=pki.warp_cn) as http:
+    with client(server=matching, pki=pki, cert=pki.chargewire_cn) as http:
         cert_token = certificate_token(http=http)
         password = password_grant(http=http, server=matching)
         assert password.status_code == 200, password.text
         password_token = password.json()["access_token"]
         bound_session = new_session(http=http, token=cert_token)
-        response = http.get(url=f"/warp/v1/sessions/{bound_session}", headers=bearer(token=password_token))
+        response = http.get(url=f"/chargewire/v1/sessions/{bound_session}", headers=bearer(token=password_token))
         assert_problem(response=response, status=401, code="certificate_mismatch")
-        assert http.get(url=f"/warp/v1/sessions/{bound_session}", headers=bearer(token=cert_token)).status_code == 200
+        assert http.get(url=f"/chargewire/v1/sessions/{bound_session}", headers=bearer(token=cert_token)).status_code == 200
         # A session opened with the password token is unbound, and only unbound tokens use it:
         # what runs there (a scoped token minted, say) then never runs under a binding it lacks.
         plain_session = new_session(http=http, token=password_token)
-        assert http.get(url=f"/warp/v1/sessions/{plain_session}", headers=bearer(token=password_token)).status_code == 200
-        response = http.get(url=f"/warp/v1/sessions/{plain_session}", headers=bearer(token=cert_token))
+        assert http.get(url=f"/chargewire/v1/sessions/{plain_session}", headers=bearer(token=password_token)).status_code == 200
+        response = http.get(url=f"/chargewire/v1/sessions/{plain_session}", headers=bearer(token=cert_token))
         assert_problem(response=response, status=401, code="certificate_mismatch")
 
 
@@ -455,11 +455,11 @@ def test_a_password_token_cannot_use_a_certificate_session(pki, matching):
 
 def test_a_resumed_session_keeps_its_certificate_and_its_bound_token(pki, strict):
     context = pki.context(client=pki.alice)
-    status, body, session, _ = raw_request(server=strict, context=context, method="POST", path="/warp/v1/auth/token",
+    status, body, session, _ = raw_request(server=strict, context=context, method="POST", path="/chargewire/v1/auth/token",
                                            body=b'{"grant_type":"client_certificate"}')
     assert status == 200, body
     token = json.loads(body)["access_token"]
-    status, body, _, reused = raw_request(server=strict, context=context, method="POST", path="/warp/v1/sessions",
+    status, body, _, reused = raw_request(server=strict, context=context, method="POST", path="/chargewire/v1/sessions",
                                           token=token, body=b"{}", session=session)
     assert reused, "the server did not resume the TLS session"
     assert status == 201, body
@@ -472,17 +472,17 @@ def test_resumption_cannot_change_the_certificate(pki, strict):
     with client(server=strict, pki=pki, cert=pki.bob) as bob:
         bob_token = certificate_token(http=bob)
     context = pki.context(client=pki.alice)
-    status, body, session, _ = raw_request(server=strict, context=context, method="POST", path="/warp/v1/auth/token",
+    status, body, session, _ = raw_request(server=strict, context=context, method="POST", path="/chargewire/v1/auth/token",
                                            body=b'{"grant_type":"client_certificate"}')
     assert status == 200, body
     alice_token = json.loads(body)["access_token"]
     context.load_cert_chain(certfile=str(pki.bob.cert_path), keyfile=str(pki.bob.key_path))
     status, body, session, reused = raw_request(server=strict, context=context, method="POST",
-                                                path="/warp/v1/sessions", token=bob_token, body=b"{}",
+                                                path="/chargewire/v1/sessions", token=bob_token, body=b"{}",
                                                 session=session)
     assert reused, "the server did not resume the TLS session"
     assert status == 401 and json.loads(body)["code"] == "certificate_mismatch", body
-    status, body, _, reused = raw_request(server=strict, context=context, method="POST", path="/warp/v1/sessions",
+    status, body, _, reused = raw_request(server=strict, context=context, method="POST", path="/chargewire/v1/sessions",
                                           token=alice_token, body=b"{}", session=session)
     assert reused and status == 201, body
 
@@ -504,12 +504,12 @@ def test_revocation_reaches_open_connections_without_a_restart(pki, tmp_path):
     try:
         # A TLS session dave could resume later (it must not outlive the revocation).
         dave_context = pki.context(client=pki.dave)
-        status, _, dave_session, _ = raw_request(server=server, context=dave_context, method="GET", path="/warp")
+        status, _, dave_session, _ = raw_request(server=server, context=dave_context, method="GET", path="/chargewire")
         assert status == 200
         with client(server=server, pki=pki, cert=pki.dave) as dave:
             token = certificate_token(http=dave)
             session_id = new_session(http=dave, token=token)
-            url = f"/warp/v1/sessions/{session_id}"
+            url = f"/chargewire/v1/sessions/{session_id}"
             assert dave.get(url=url, headers=bearer(token=token)).status_code == 200
             pki.ca.write_crl(path=crl, revoked=[pki.dave.cert])
             # The server looks at the CRL file every few seconds; the open (keep-alive)
@@ -526,7 +526,7 @@ def test_revocation_reaches_open_connections_without_a_restart(pki, tmp_path):
         # Nor does a session from before the reload resume: each CRL generation has its own
         # session cache and ticket keys, so dave meets a full handshake and the new CRL.
         with pytest.raises(ssl.SSLError, match="CERTIFICATE_REVOKED"):
-            raw_request(server=server, context=dave_context, method="GET", path="/warp", session=dave_session)
+            raw_request(server=server, context=dave_context, method="GET", path="/chargewire", session=dave_session)
         # Everyone else is unaffected by the reload.
         with client(server=server, pki=pki, cert=pki.alice) as alice:
             new_session(http=alice, token=certificate_token(http=alice))
@@ -537,7 +537,7 @@ def test_revocation_reaches_open_connections_without_a_restart(pki, tmp_path):
 # ---- Identity match on password sign-in ----
 
 def password_grant(http: httpx.Client, server: ServerUnderTest, password: str | None = None) -> httpx.Response:
-    return http.post(url="/warp/v1/auth/token",
+    return http.post(url="/chargewire/v1/auth/token",
                      json={"grant_type": "password", "username": server.username,
                            "password": server.password if password is None else password})
 
@@ -549,7 +549,7 @@ def test_identity_match_refuses_a_password_for_someone_else(pki, matching):
         # Decided before the password is checked: a wrong one gets the same answer.
         assert_problem(response=password_grant(http=alice, server=matching, password="wrong"), status=401,
                        code="certificate_identity_mismatch")
-    with client(server=matching, pki=pki, cert=pki.warp_cn) as same:
+    with client(server=matching, pki=pki, cert=pki.chargewire_cn) as same:
         assert password_grant(http=same, server=matching).status_code == 200
         assert_problem(response=password_grant(http=same, server=matching, password="wrong"), status=401,
                        code="invalid_credentials")
@@ -570,7 +570,7 @@ def chain(pki, tmp_path):
     signs (sent with the intermediate), and the CRL file to fill."""
     from pki import Authority
     from cryptography import x509 as _x509
-    inter = Authority(directory=tmp_path, common_name="warp-test-intermediate", parent=pki.ca)
+    inter = Authority(directory=tmp_path, common_name="chargewire-test-intermediate", parent=pki.ca)
     leaf = inter.issue(file_name="via-intermediate", common_name="alice",
                        sans=[_x509.RFC822Name("alice@example.com")])
     return inter, leaf, tmp_path / "chain.crl.pem"
@@ -640,7 +640,7 @@ def test_a_crl_that_passes_its_next_update_fails_open_connections_closed(pki, tm
     try:
         with client(server=server, pki=pki, cert=pki.dave) as dave:
             token = certificate_token(http=dave)
-            url = f"/warp/v1/sessions/{new_session(http=dave, token=token)}"
+            url = f"/chargewire/v1/sessions/{new_session(http=dave, token=token)}"
             # A CRL that expires soon replaces the long-lived one (however slow the server is
             # to start), and is picked up while still current.
             expires = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(seconds=20)
@@ -661,7 +661,7 @@ def test_a_crl_that_passes_its_next_update_fails_open_connections_closed(pki, tm
 
 # ---- Identities are printable ASCII ----
 
-@pytest.mark.parametrize("common_name", ["warp​", "‮warp", "warp\u0085", "wаrp", "warp "],
+@pytest.mark.parametrize("common_name", ["chargewire​", "‮chargewire", "chargewire\u0085", "wаrp", "chargewire "],
                          ids=["zero-width-space", "right-to-left-override", "next-line-c1", "cyrillic-a",
                               "line-separator"])
 def test_an_identity_must_be_printable_ascii(pki, matching, common_name):
@@ -673,7 +673,7 @@ def test_an_identity_must_be_printable_ascii(pki, matching, common_name):
     # The value is escaped in the detail: nothing invisible or reordering reaches a reader.
     assert all(0x20 <= ord(c) <= 0x7e for c in problem["detail"]), repr(problem["detail"])
     assert "\\x" in problem["detail"], problem
-    with client(server=matching, pki=pki, cert=pki.warp_cn) as http:  # the twin: plain "warp"
+    with client(server=matching, pki=pki, cert=pki.chargewire_cn) as http:  # the twin: plain "chargewire"
         certificate_token(http=http)
 
 
@@ -690,7 +690,7 @@ def refused_at_startup(pki, crl) -> str:
     import subprocess
     out = subprocess.run(args=[binary(), "--host", "127.0.0.1", "--port", "0", *tls_args(pki=pki, crl=crl),
                                "--mtls-certificate-sign-in", "--mtls-admin-identities", "alice@example.com"],
-                         env={**os.environ, os.environ.get("WARP_SQL_TEST_SERVER_PASSWORD_ENV", "WARP_DUCKDB_PASSWORD"): "pw"},
+                         env={**os.environ, os.environ.get("CHARGEWIRE_TEST_SERVER_PASSWORD_ENV", "CHARGEWIRE_DUCKDB_PASSWORD"): "pw"},
                          capture_output=True, text=True, timeout=30)
     assert out.returncode != 0, f"started with {crl.name}: {out.stdout} {out.stderr}"
     return out.stdout + out.stderr

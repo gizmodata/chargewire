@@ -9,9 +9,9 @@
 #include <vector>
 
 #include "duckdb_v2.hpp"
-#include "warpsql/backend.hpp"
+#include "chargewire/backend.hpp"
 
-namespace warpduckdb {
+namespace chargewire_duckdb {
 
 std::vector<SqlStatement> Parse(duckdb_v2_connection_handle connection, std::string_view sql);
 
@@ -32,9 +32,9 @@ std::string QueryText(duckdb_v2_connection_handle connection, std::string_view s
 
 // The outcome of an executed Arrow result: rows, or the count of rows changed. Takes
 // over `result`; `statement` is kept alive as long as the rows are.
-warpsql::StatementOutcome Outcome(ArrowResult& result, std::shared_ptr<void> keep_alive);
+chargewire::StatementOutcome Outcome(ArrowResult& result, std::shared_ptr<void> keep_alive);
 
 // "a"."b"."c" from the given parts, skipping empty ones, quoted as DuckDB needs.
 std::string QualifiedName(const std::vector<std::string>& parts);
 
-}  // namespace warpduckdb
+}  // namespace chargewire_duckdb

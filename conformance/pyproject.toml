@@ -1,7 +1,7 @@
 [project]
-name = "warp-sql-conformance"
+name = "chargewire-conformance"
 version = "1.0.2"
-description = "Black-box conformance tests for Warp SQL servers"
+description = "Black-box conformance tests for Chargewire servers"
 requires-python = ">=3.12"
 dependencies = [
   "httpx>=0.28.1",
@@ -16,8 +16,8 @@ dependencies = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-  "mtls: starts servers of its own with mutual TLS (needs WARP_SQL_TEST_SERVER_BINARY)",
-  "own_server: starts a server of its own with other flags (needs WARP_SQL_TEST_SERVER_BINARY)",
+  "mtls: starts servers of its own with mutual TLS (needs CHARGEWIRE_TEST_SERVER_BINARY)",
+  "own_server: starts a server of its own with other flags (needs CHARGEWIRE_TEST_SERVER_BINARY)",
   "openapi_unchecked: sees responses the OpenAPI document does not describe, on purpose",
-  "oauth: starts servers of its own with browser sign-in and a mock identity provider (needs WARP_SQL_TEST_SERVER_BINARY)",
+  "oauth: starts servers of its own with browser sign-in and a mock identity provider (needs CHARGEWIRE_TEST_SERVER_BINARY)",
 ]

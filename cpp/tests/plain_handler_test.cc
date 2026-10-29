@@ -1,4 +1,4 @@
-// ServerOptions::plain_handler: an application's answers to GET and HEAD outside /warp
+// ServerOptions::plain_handler: an application's answers to GET and HEAD outside /chargewire
 // (Hardcharger serves its web UI with it). Each test starts the SDK's server in this
 // process, with a backend that runs nothing, and talks plain HTTP/1.1 (and TLS) to it.
 #include <gtest/gtest.h>
@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-#include "warpsql/server.hpp"
+#include "chargewire/server.hpp"
 
 namespace {
 
@@ -31,16 +31,16 @@ namespace ssl = boost::asio::ssl;
 namespace beast = boost::beast;
 namespace http = boost::beast::http;
 
-class NoEngine : public warpsql::Backend {
+class NoEngine : public chargewire::Backend {
  public:
-  warpsql::ServerIdentity Identity() override { return {"plain-handler-test", "0"}; }
-  std::unique_ptr<warpsql::EngineSession> OpenSession(const warpsql::Principal&, const std::string&,
+  chargewire::ServerIdentity Identity() override { return {"plain-handler-test", "0"}; }
+  std::unique_ptr<chargewire::EngineSession> OpenSession(const chargewire::Principal&, const std::string&,
                                                       const boost::json::object&) override {
-    throw warpsql::Error(warpsql::ErrorCode::kNotImplemented, "no engine");
+    throw chargewire::Error(chargewire::ErrorCode::kNotImplemented, "no engine");
   }
 };
 
-class NoSignIn : public warpsql::Authenticator {
+class NoSignIn : public chargewire::Authenticator {
  public:
   boost::json::array GrantTypes() override { return {"password"}; }
 };
@@ -51,14 +51,14 @@ struct Recorder {
   std::mutex mutex;
   std::vector<std::string> calls;
 
-  warpsql::PlainHandler Handler() {
-    return [this](const warpsql::PlainRequest& request) -> std::optional<warpsql::PlainResponse> {
+  chargewire::PlainHandler Handler() {
+    return [this](const chargewire::PlainRequest& request) -> std::optional<chargewire::PlainResponse> {
       {
         std::lock_guard lock(mutex);
         calls.push_back(request.method + " " + request.path);
       }
       if (!request.path.starts_with("/ui/")) return std::nullopt;
-      warpsql::PlainResponse response;
+      chargewire::PlainResponse response;
       response.content_type = "text/plain; charset=utf-8";
       response.headers.emplace_back("X-Plain", "yes");
       response.body = "hello from " + request.path;
@@ -122,24 +122,24 @@ Answer Send(uint16_t port, http::verb method, const std::string& target,
 }
 
 struct Running {
-  std::unique_ptr<warpsql::Server> server;
+  std::unique_ptr<chargewire::Server> server;
   uint16_t port = 0;
   ~Running() {
     if (server) server->Stop();
   }
 };
 
-std::unique_ptr<Running> Start(warpsql::ServerOptions options) {
+std::unique_ptr<Running> Start(chargewire::ServerOptions options) {
   options.host = "127.0.0.1";
   auto running = std::make_unique<Running>();
-  running->server = std::make_unique<warpsql::Server>(std::move(options), std::make_shared<NoEngine>(),
+  running->server = std::make_unique<chargewire::Server>(std::move(options), std::make_shared<NoEngine>(),
                                                       std::make_shared<NoSignIn>());
   running->server->Start();
   running->port = running->server->port();
   return running;
 }
 
-TEST(PlainHandler, WithoutOneEverythingOutsideWarpIs404) {
+TEST(PlainHandler, WithoutOneEverythingOutsideChargewireIs404) {
   auto running = Start({});
   for (const char* path : {"/ui/", "/", "/index.html"}) {
     const Answer answer = Send(running->port, http::verb::get, path);
@@ -150,7 +150,7 @@ TEST(PlainHandler, WithoutOneEverythingOutsideWarpIs404) {
 
 TEST(PlainHandler, AnswersGetAndHeadWithoutTheBody) {
   Recorder recorder;
-  warpsql::ServerOptions options;
+  chargewire::ServerOptions options;
   options.plain_handler = recorder.Handler();
   auto running = Start(std::move(options));
 
@@ -184,13 +184,13 @@ TEST(PlainHandler, AnswersGetAndHeadWithoutTheBody) {
 TEST(PlainHandler, SeesTheRequestsHeaders) {
   std::mutex mutex;
   std::vector<std::string> seen;
-  warpsql::ServerOptions options;
-  options.plain_handler = [&](const warpsql::PlainRequest& request) -> std::optional<warpsql::PlainResponse> {
+  chargewire::ServerOptions options;
+  options.plain_handler = [&](const chargewire::PlainRequest& request) -> std::optional<chargewire::PlainResponse> {
     std::lock_guard lock(mutex);
     seen.emplace_back(request.Header("accept-encoding"));
     seen.emplace_back(request.Header("IF-NONE-MATCH"));
     seen.emplace_back(request.Header("x-absent"));
-    return warpsql::PlainResponse{};
+    return chargewire::PlainResponse{};
   };
   auto running = Start(std::move(options));
   EXPECT_EQ(Send(running->port, http::verb::get, "/ui/",
@@ -202,7 +202,7 @@ TEST(PlainHandler, SeesTheRequestsHeaders) {
 
 TEST(PlainHandler, NulloptLeavesTheServers404) {
   Recorder recorder;
-  warpsql::ServerOptions options;
+  chargewire::ServerOptions options;
   options.plain_handler = recorder.Handler();
   auto running = Start(std::move(options));
   for (const char* path : {"/", "/nope", "/uix/page"}) {
@@ -215,31 +215,31 @@ TEST(PlainHandler, NulloptLeavesTheServers404) {
 
 TEST(PlainHandler, ProtocolPathsNeverReachIt) {
   Recorder recorder;
-  warpsql::ServerOptions options;
+  chargewire::ServerOptions options;
   options.plain_handler = recorder.Handler();
   auto running = Start(std::move(options));
   // The protocol's own answers, however the path is spelled: the server decodes it, and
   // empty segments don't count, before deciding.
-  for (const char* path : {"/warp", "/%77arp", "//warp", "/warp/", "/%77%61%72%70"}) {
+  for (const char* path : {"/chargewire", "/%77arp", "//chargewire", "/chargewire/", "/%77%61%72%70"}) {
     const Answer answer = Send(running->port, http::verb::get, path);
     EXPECT_EQ(answer.status, 200) << path;
-    EXPECT_NE(answer.body.find("\"warp-sql\""), std::string::npos) << path;
+    EXPECT_NE(answer.body.find("\"chargewire\""), std::string::npos) << path;
   }
-  for (const char* path : {"/warp/v1/health", "/%77arp/v1/health", "//warp//v1/health", "/warp%2Fv1%2Fhealth"}) {
+  for (const char* path : {"/chargewire/v1/health", "/%77arp/v1/health", "//chargewire//v1/health", "/chargewire%2Fv1%2Fhealth"}) {
     EXPECT_EQ(Send(running->port, http::verb::get, path).status, 200) << path;
   }
-  for (const char* path : {"/warp/v1/no-such-thing", "/%77arp/ui/page", "//warp/ui/page"}) {
+  for (const char* path : {"/chargewire/v1/no-such-thing", "/%77arp/ui/page", "//chargewire/ui/page"}) {
     const Answer answer = Send(running->port, http::verb::get, path);
     EXPECT_EQ(answer.status, 404) << path;
     EXPECT_FALSE(answer.has("x-plain")) << path;
   }
-  EXPECT_EQ(Send(running->port, http::verb::head, "/warp/v1/health").status, 405);
+  EXPECT_EQ(Send(running->port, http::verb::head, "/chargewire/v1/health").status, 405);
   EXPECT_TRUE(recorder.Calls().empty()) << recorder.Calls().front();
 }
 
 TEST(PlainHandler, OtherMethodsNeverReachIt) {
   Recorder recorder;
-  warpsql::ServerOptions options;
+  chargewire::ServerOptions options;
   options.plain_handler = recorder.Handler();
   auto running = Start(std::move(options));
   for (http::verb method : {http::verb::post, http::verb::put, http::verb::delete_, http::verb::patch}) {
@@ -254,7 +254,7 @@ TEST(PlainHandler, OtherMethodsNeverReachIt) {
 
 TEST(PlainHandler, CorsHeadersAsForEveryOtherAnswer) {
   Recorder recorder;
-  warpsql::ServerOptions options;
+  chargewire::ServerOptions options;
   options.plain_handler = recorder.Handler();
   options.cors_allowed_origins = {"https://app.example"};
   auto running = Start(std::move(options));
@@ -263,7 +263,7 @@ TEST(PlainHandler, CorsHeadersAsForEveryOtherAnswer) {
   EXPECT_EQ(allowed.status, 200);
   EXPECT_EQ(allowed.headers.at("access-control-allow-origin"), "https://app.example");
   EXPECT_EQ(allowed.headers.at("vary"), "Origin");
-  const Answer protocol = Send(running->port, http::verb::get, "/warp", {{"Origin", "https://app.example"}});
+  const Answer protocol = Send(running->port, http::verb::get, "/chargewire", {{"Origin", "https://app.example"}});
   EXPECT_EQ(protocol.headers.at("access-control-allow-origin"), allowed.headers.at("access-control-allow-origin"));
   EXPECT_EQ(protocol.headers.at("access-control-expose-headers"), allowed.headers.at("access-control-expose-headers"));
 
@@ -276,7 +276,7 @@ TEST(PlainHandler, CorsHeadersAsForEveryOtherAnswer) {
 
 TEST(PlainHandler, TheHealthPortNeverConsultsIt) {
   Recorder recorder;
-  warpsql::ServerOptions options;
+  chargewire::ServerOptions options;
   options.plain_handler = recorder.Handler();
   net::io_context io;
   net::ip::tcp::acceptor probe(io, {net::ip::make_address("127.0.0.1"), 0});
@@ -335,7 +335,7 @@ Issued Issue(const std::string& common_name, const Issued* issuer, const std::ve
 class PlainHandlerMtls : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
-    dir_ = fs::temp_directory_path() / ("warpsql-plain-handler-" + std::to_string(std::rand()));
+    dir_ = fs::temp_directory_path() / ("chargewire-plain-handler-" + std::to_string(std::rand()));
     fs::create_directories(dir_);
     const std::vector<std::string> ca_ext{"basicConstraints=critical,CA:TRUE", "keyUsage=critical,keyCertSign,cRLSign",
                                           "subjectKeyIdentifier=hash"};
@@ -382,9 +382,9 @@ fs::path PlainHandlerMtls::dir_;
 
 TEST_F(PlainHandlerMtls, AnswersOverTlsOnlyToAClientWithACertificate) {
   Recorder recorder;
-  warpsql::ServerOptions options;
+  chargewire::ServerOptions options;
   options.plain_handler = recorder.Handler();
-  options.tls = warpsql::TlsOptions{};
+  options.tls = chargewire::TlsOptions{};
   options.tls->certificate_chain_file = (dir_ / "server.pem").string();
   options.tls->private_key_file = (dir_ / "server.key").string();
   options.tls->client_ca_file = (dir_ / "ca.pem").string();

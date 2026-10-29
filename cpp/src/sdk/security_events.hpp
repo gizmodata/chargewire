@@ -16,9 +16,9 @@
 
 #include "common.hpp"
 #include "forwarded.hpp"
-#include "warpsql/server.hpp"
+#include "chargewire/server.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 class SecurityEventLimiter {
  public:
@@ -63,4 +63,4 @@ inline constexpr std::size_t kMaxSecurityEventField = 512;
 // `event` with every client-supplied field cut to kMaxSecurityEventField.
 SecurityEvent Capped(SecurityEvent event);
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

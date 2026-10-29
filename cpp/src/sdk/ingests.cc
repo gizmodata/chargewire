@@ -6,7 +6,7 @@
 
 #include "json.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 namespace {
 
@@ -297,4 +297,4 @@ void IngestOperation::EngineDone(std::optional<int64_t> rows, std::exception_ptr
   changed_.Notify();
 }
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

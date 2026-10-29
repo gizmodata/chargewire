@@ -8,13 +8,13 @@
 #include <chrono>
 #include <stdexcept>
 
-#include "warpsql/client.hpp"
+#include "chargewire/client.hpp"
 
-namespace warpduckdb {
+namespace chargewire_duckdb {
 
 namespace json = boost::json;
-using warpsql::Error;
-using warpsql::ErrorCode;
+using chargewire::Error;
+using chargewire::ErrorCode;
 
 namespace {
 
@@ -66,7 +66,7 @@ OidcBrowserSignIn::OidcBrowserSignIn(Options options) : options_(std::move(optio
     throw std::runtime_error("--oauth-issuer must be https:// (http:// only on a loopback address)");
   }
   const auto [status, document] =
-      warpsql::client::GetJson(issuer + "/.well-known/openid-configuration", warpsql::client::TlsOptions{});
+      chargewire::client::GetJson(issuer + "/.well-known/openid-configuration", chargewire::client::TlsOptions{});
   if (status != 200 || !document.is_object()) {
     throw std::runtime_error("the issuer's OpenID configuration answered HTTP " + std::to_string(status));
   }
@@ -95,14 +95,14 @@ std::string OidcBrowserSignIn::AuthorizeUrl(const Authorization& authorization) 
   return std::string(url.buffer());
 }
 
-warpsql::Principal OidcBrowserSignIn::CompleteSignIn(const Callback& callback) {
-  const auto [status, answer] = warpsql::client::PostForm(token_endpoint_, {{"grant_type", "authorization_code"},
+chargewire::Principal OidcBrowserSignIn::CompleteSignIn(const Callback& callback) {
+  const auto [status, answer] = chargewire::client::PostForm(token_endpoint_, {{"grant_type", "authorization_code"},
                                                                            {"code", callback.code},
                                                                            {"redirect_uri", options_.redirect_uri},
                                                                            {"client_id", options_.client_id},
                                                                            {"client_secret", options_.client_secret},
                                                                            {"code_verifier", callback.code_verifier}},
-                                                          warpsql::client::TlsOptions{});
+                                                          chargewire::client::TlsOptions{});
   const json::object* body = answer.is_object() ? &answer.as_object() : nullptr;
   if (body != nullptr && body->contains("error")) {
     std::string error = Text(*body, "error");
@@ -146,10 +146,10 @@ warpsql::Principal OidcBrowserSignIn::CompleteSignIn(const Callback& callback) {
   if (identity.empty()) identity = Text(claims, "sub");
   for (const auto& allowed : options_.identities) {
     if (EqualsIgnoringCase(allowed, identity)) {
-      return warpsql::Principal{.name = allowed, .role = "admin", .auth_method = "oauth_browser"};
+      return chargewire::Principal{.name = allowed, .role = "admin", .auth_method = "oauth_browser"};
     }
   }
   throw Error(ErrorCode::kInvalidCredentials, "'" + identity + "' may not sign in to this server");
 }
 
-}  // namespace warpduckdb
+}  // namespace chargewire_duckdb

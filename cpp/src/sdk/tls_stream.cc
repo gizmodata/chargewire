@@ -10,7 +10,7 @@
 #include <string_view>
 #include <stdexcept>
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 namespace {
 
@@ -70,7 +70,7 @@ struct TlsBio {
 
   static BIO_METHOD* Method() {
     static BIO_METHOD* method = [] {
-      BIO_METHOD* m = BIO_meth_new(BIO_get_new_index() | BIO_TYPE_SOURCE_SINK, "warpsql-tls");
+      BIO_METHOD* m = BIO_meth_new(BIO_get_new_index() | BIO_TYPE_SOURCE_SINK, "chargewire-tls");
       if (m == nullptr) throw std::runtime_error("BIO_meth_new failed");
       BIO_meth_set_write_ex(m, Write);
       BIO_meth_set_read_ex(m, Read);
@@ -98,12 +98,12 @@ TlsStream::TlsStream(next_layer_type next, SSL_CTX* context)
 }
 
 TlsStream::~TlsStream() {
-  if (const char* stats = std::getenv("WARPSQL_STREAM_STATS");
+  if (const char* stats = std::getenv("CHARGEWIRE_STREAM_STATS");
       stats != nullptr && std::string_view(stats) == "1" && encrypted_ > (1 << 20)) {
     const double encrypt = std::chrono::duration<double>(encrypt_time_).count();
     const double send = std::chrono::duration<double>(send_time_).count();
     std::fprintf(stderr,
-                 "warpsql tls: %.1f MB written; encrypting %.3f s (%.0f MB/s), sending %.3f s "
+                 "chargewire tls: %.1f MB written; encrypting %.3f s (%.0f MB/s), sending %.3f s "
                  "(%.0f MB/s), %s\n",
                  encrypted_ / 1e6, encrypt, encrypt > 0 ? encrypted_ / 1e6 / encrypt : 0.0, send,
                  send > 0 ? encrypted_ / 1e6 / send : 0.0, SSL_get_cipher_name(ssl_));
@@ -193,4 +193,4 @@ void TlsStream::PrepareInput() {
   }
 }
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

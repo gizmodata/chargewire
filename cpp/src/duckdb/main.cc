@@ -1,6 +1,6 @@
-// warp-duckdb: the Warp SQL reference server, DuckDB 2.0 behind the SDK.
+// chargewire-duckdb: the Chargewire reference server, DuckDB 2.0 behind the SDK.
 //
-//   WARP_DUCKDB_PASSWORD=… warp-duckdb [--database PATH] [--read-only] [--host HOST]
+//   CHARGEWIRE_DUCKDB_PASSWORD=… chargewire-duckdb [--database PATH] [--read-only] [--host HOST]
 //       [--port PORT] [--username NAME] [--tls-cert PEM --tls-key PEM [--tls-client-ca PEM]]
 //       [--mtls-require-client-cert=BOOL] [--mtls-crl-file PEM] [--mtls-identity-source SRC]
 //       [--mtls-certificate-sign-in --mtls-admin-identities A,B] [--mtls-require-identity-match[=BOOL]]
@@ -12,8 +12,8 @@
 //        [--oauth-base-url URL] [--oauth-redirect-uri URL] [--oauth-provider-name NAME] [--oauth-max-flows N]]
 //
 // --oauth-*: browser sign-in (spec §4.3) with an OpenID Connect provider; the client secret
-// comes from WARP_DUCKDB_OAUTH_CLIENT_SECRET. The identity provider's redirect URI is
-// <base url>/warp/v1/auth/oauth/callback (default base: http(s)://HOST:PORT).
+// comes from CHARGEWIRE_DUCKDB_OAUTH_CLIENT_SECRET. The identity provider's redirect URI is
+// <base url>/chargewire/v1/auth/oauth/callback (default base: http(s)://HOST:PORT).
 //
 // The password comes from the environment, never the command line, so it doesn't show
 // in process listings. The --mtls-* flags are named as Hardcharger's options are, so test
@@ -29,25 +29,25 @@
 
 #include "duckdb_backend.hpp"
 #include "oidc_sign_in.hpp"
-#include "warpsql/server.hpp"
-#include "warpsql/stop_signals.hpp"
+#include "chargewire/server.hpp"
+#include "chargewire/stop_signals.hpp"
 
 namespace {
 
 struct Flags {
-  warpduckdb::DuckDBBackend::Options backend;
-  warpsql::ServerOptions server;
-  std::string username = "warp";
+  chargewire_duckdb::DuckDBBackend::Options backend;
+  chargewire::ServerOptions server;
+  std::string username = "chargewire";
   std::vector<std::string> certificate_identities;
   bool certificate_sign_in = false;
   int drain_seconds = 30;
-  warpduckdb::OidcBrowserSignIn::Options oauth;
+  chargewire_duckdb::OidcBrowserSignIn::Options oauth;
   std::string oauth_base_url;
 };
 
 [[noreturn]] void Usage(const std::string& problem) {
-  std::cerr << "warp-duckdb: " << problem << "\n"
-            << "usage: WARP_DUCKDB_PASSWORD=... warp-duckdb [--database PATH] [--read-only]\n"
+  std::cerr << "chargewire-duckdb: " << problem << "\n"
+            << "usage: CHARGEWIRE_DUCKDB_PASSWORD=... chargewire-duckdb [--database PATH] [--read-only]\n"
             << "       [--host HOST] [--port PORT] [--username NAME]\n"
             << "       [--tls-cert PEM --tls-key PEM [--tls-client-ca PEM]]\n"
             << "       [--mtls-require-client-cert=BOOL] [--mtls-crl-file PEM]\n"
@@ -65,7 +65,7 @@ struct Flags {
 Flags ParseFlags(int argc, char** argv) {
   Flags flags;
   flags.server.port = 31337;
-  warpsql::TlsOptions tls;
+  chargewire::TlsOptions tls;
   bool mtls_option = false;  // an --mtls-* flag, which needs --tls-client-ca
   for (int i = 1; i < argc; i++) {
     std::string flag = argv[i];
@@ -100,7 +100,7 @@ Flags ParseFlags(int argc, char** argv) {
     else if (flag == "--mtls-certificate-sign-in") flags.certificate_sign_in = boolean();
     else if (flag == "--mtls-identity-source") {
       try {
-        tls.client_identity_source = warpsql::ParseClientIdentitySource(value());
+        tls.client_identity_source = chargewire::ParseClientIdentitySource(value());
       } catch (const std::invalid_argument& e) {
         Usage(e.what());
       }
@@ -162,12 +162,12 @@ Flags ParseFlags(int argc, char** argv) {
                std::to_string(flags.server.port);
       }
       while (base.ends_with('/')) base.pop_back();
-      flags.oauth.redirect_uri = base + "/warp/v1/auth/oauth/callback";
+      flags.oauth.redirect_uri = base + "/chargewire/v1/auth/oauth/callback";
     }
-    if (const char* secret = std::getenv("WARP_DUCKDB_OAUTH_CLIENT_SECRET")) flags.oauth.client_secret = secret;
+    if (const char* secret = std::getenv("CHARGEWIRE_DUCKDB_OAUTH_CLIENT_SECRET")) flags.oauth.client_secret = secret;
   }
-  flags.server.on_security_event = [](const warpsql::SecurityEvent& event) {
-    std::cerr << "warp-duckdb: SECURITY " << event.code << " user=" << event.user
+  flags.server.on_security_event = [](const chargewire::SecurityEvent& event) {
+    std::cerr << "chargewire-duckdb: SECURITY " << event.code << " user=" << event.user
               << " token_id=" << event.token_id << " thumbprint=" << event.presented_thumbprint
               << " peer=" << event.peer << " request=" << event.request_id
               << (event.suppressed > 0 ? " suppressed=" + std::to_string(event.suppressed) : std::string())
@@ -176,7 +176,7 @@ Flags ParseFlags(int argc, char** argv) {
   };
   if (flags.server.tls) {
     flags.server.tls->on_crl_reload = [](bool ok, const std::string& message) {
-      std::cerr << "warp-duckdb: " << (ok ? "" : "WARNING: ") << message << std::endl;
+      std::cerr << "chargewire-duckdb: " << (ok ? "" : "WARNING: ") << message << std::endl;
     };
   }
   return flags;
@@ -185,31 +185,31 @@ Flags ParseFlags(int argc, char** argv) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  warpsql::InitializeProcess();
+  chargewire::InitializeProcess();
   Flags flags = ParseFlags(argc, argv);
-  const char* password = std::getenv("WARP_DUCKDB_PASSWORD");
+  const char* password = std::getenv("CHARGEWIRE_DUCKDB_PASSWORD");
   if (password == nullptr || *password == '\0') {
-    Usage("set WARP_DUCKDB_PASSWORD");
+    Usage("set CHARGEWIRE_DUCKDB_PASSWORD");
   }
 
   // Before any thread starts, so only stop_signals.Wait() below sees the stop requests
   // (SIGINT/SIGTERM; on Windows, the console's Ctrl+C/Ctrl+Break/close events).
-  warpsql::StopSignals stop_signals;
+  chargewire::StopSignals stop_signals;
 
   try {
-    auto backend = std::make_shared<warpduckdb::DuckDBBackend>(flags.backend);
+    auto backend = std::make_shared<chargewire_duckdb::DuckDBBackend>(flags.backend);
     auto authenticator =
-        std::make_shared<warpduckdb::StaticPasswordAuthenticator>(flags.username, password,
+        std::make_shared<chargewire_duckdb::StaticPasswordAuthenticator>(flags.username, password,
                                                                   flags.certificate_identities);
     if (!flags.oauth.issuer.empty()) {
-      flags.server.browser_sign_in = std::make_shared<warpduckdb::OidcBrowserSignIn>(flags.oauth);
+      flags.server.browser_sign_in = std::make_shared<chargewire_duckdb::OidcBrowserSignIn>(flags.oauth);
       std::cout << "browser sign-in with " << flags.oauth.issuer << "; redirect URI "
                 << flags.oauth.redirect_uri << std::endl;
     }
-    warpsql::Server server(flags.server, backend, authenticator);
+    chargewire::Server server(flags.server, backend, authenticator);
     server.Start();
-    std::cout << "warp-duckdb listening on " << (flags.server.tls ? "https" : "http") << "://"
-              << flags.server.host << ":" << server.port() << "/warp" << std::endl;
+    std::cout << "chargewire-duckdb listening on " << (flags.server.tls ? "https" : "http") << "://"
+              << flags.server.host << ":" << server.port() << "/chargewire" << std::endl;
 
     // First signal: drain (finish running work, refuse new work). Second: stop now.
     // Joined before `server` goes: a second signal that arrives after a drain finished
@@ -231,7 +231,7 @@ int main(int argc, char** argv) {
     signals.join();
     std::cout << "stopped" << std::endl;
   } catch (const std::exception& e) {
-    std::cerr << "warp-duckdb: " << e.what() << "\n";
+    std::cerr << "chargewire-duckdb: " << e.what() << "\n";
     return 1;
   }
   return 0;

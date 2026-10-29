@@ -15,7 +15,7 @@
 #include <cerrno>
 #endif
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 bool PeerClosed(boost::asio::ip::tcp::socket& socket) {
   const auto fd = socket.native_handle();
@@ -88,4 +88,4 @@ std::tm UtcTime(std::time_t seconds) {
   return utc;
 }
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

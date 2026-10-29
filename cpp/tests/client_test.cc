@@ -1,5 +1,5 @@
-// Tests of the client library: unit tests, and live tests against a real warp-duckdb
-// (started here, on a free port; WARPSQL_TEST_SERVER_BINARY names another binary). A
+// Tests of the client library: unit tests, and live tests against a real chargewire-duckdb
+// (started here, on a free port; CHARGEWIRE_TEST_SERVER_BINARY names another binary). A
 // server that doesn't start fails the tests; nothing is skipped.
 #include <gtest/gtest.h>
 
@@ -22,7 +22,7 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
-#include "warpsql/client.hpp"
+#include "chargewire/client.hpp"
 
 #ifdef _WIN32
 #include <process.h>
@@ -36,7 +36,7 @@
 extern char** environ;
 #endif
 
-namespace wc = warpsql::client;
+namespace wc = chargewire::client;
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
 
@@ -167,7 +167,7 @@ struct Certificates {
 
   static Certificates Make(const std::string& names) {
     Certificates c;
-    c.dir = fs::temp_directory_path() / ("warpsql-client-certs-" + std::to_string(ProcessId()) + "-" +
+    c.dir = fs::temp_directory_path() / ("chargewire-client-certs-" + std::to_string(ProcessId()) + "-" +
                                          std::to_string(std::rand()));
     fs::create_directories(c.dir);
     c.ca = c.dir / "ca.pem";
@@ -208,26 +208,26 @@ struct Certificates {
   }
 };
 
-// A warp-duckdb process for the tests.
+// A chargewire-duckdb process for the tests.
 class Server {
  public:
   explicit Server(std::vector<std::string> extra = {}, bool tls = false) : tls_(tls) {
-    const char* binary = std::getenv("WARPSQL_TEST_SERVER_BINARY");
-    binary_ = binary != nullptr && *binary != '\0' ? binary : WARPSQL_TEST_DEFAULT_SERVER;
+    const char* binary = std::getenv("CHARGEWIRE_TEST_SERVER_BINARY");
+    binary_ = binary != nullptr && *binary != '\0' ? binary : CHARGEWIRE_TEST_DEFAULT_SERVER;
     port_ = FreePort();
     std::vector<std::string> args{binary_, "--host", "127.0.0.1", "--port", std::to_string(port_)};
     args.insert(args.end(), extra.begin(), extra.end());
-    log_ = fs::temp_directory_path() / ("warpsql-client-test-" + std::to_string(port_) + ".log");
+    log_ = fs::temp_directory_path() / ("chargewire-client-test-" + std::to_string(port_) + ".log");
 #ifdef _WIN32
     // The command line, each argument quoted (none here holds a quote or ends in '\\').
     std::wstring command;
     for (const auto& a : args) command += L"\"" + std::wstring(a.begin(), a.end()) + L"\" ";
-    // This process's environment without WARP_DUCKDB_*, plus the password.
-    std::wstring block = L"WARP_DUCKDB_PASSWORD=" + std::wstring(password_.begin(), password_.end());
+    // This process's environment without CHARGEWIRE_DUCKDB_*, plus the password.
+    std::wstring block = L"CHARGEWIRE_DUCKDB_PASSWORD=" + std::wstring(password_.begin(), password_.end());
     block.push_back(L'\0');
     if (wchar_t* env = GetEnvironmentStringsW()) {
       for (const wchar_t* e = env; *e != L'\0'; e += wcslen(e) + 1) {
-        if (std::wstring_view(e).starts_with(L"WARP_DUCKDB_")) continue;
+        if (std::wstring_view(e).starts_with(L"CHARGEWIRE_DUCKDB_")) continue;
         block.append(e);
         block.push_back(L'\0');
       }
@@ -254,9 +254,9 @@ class Server {
     std::vector<char*> argv;
     for (auto& a : args) argv.push_back(a.data());
     argv.push_back(nullptr);
-    std::vector<std::string> env_strings{"WARP_DUCKDB_PASSWORD=" + password_};
+    std::vector<std::string> env_strings{"CHARGEWIRE_DUCKDB_PASSWORD=" + password_};
     for (char** e = environ; *e != nullptr; e++) {
-      if (std::string_view(*e).starts_with("WARP_DUCKDB_")) continue;
+      if (std::string_view(*e).starts_with("CHARGEWIRE_DUCKDB_")) continue;
       env_strings.emplace_back(*e);
     }
     std::vector<char*> envp;
@@ -309,7 +309,7 @@ class Server {
 #endif
   }
 
-  // Waits until the server answers GET /warp.
+  // Waits until the server answers GET /chargewire.
   ::testing::AssertionResult WaitReady(const wc::TlsOptions& tls = {}) {
     if (!Started()) return ::testing::AssertionFailure() << "cannot start " << binary_;
     const auto deadline = std::chrono::steady_clock::now() + 30s;
@@ -365,7 +365,7 @@ class Server {
 #endif
   bool tls_;
   fs::path log_;
-  std::string username_ = "warp";
+  std::string username_ = "chargewire";
   std::string password_ = "p:ss@word;" + std::to_string(ProcessId());
 };
 
@@ -421,7 +421,7 @@ TEST(ClientUnit, RefusesASchemaThatIsNotBase64) {
 }
 
 TEST(ClientUnit, ReadsAProblemDocument) {
-  auto problem = boost::json::parse(R"({"type":"urn:warp-sql:error:session_ended","status":401,
+  auto problem = boost::json::parse(R"({"type":"urn:chargewire:error:session_ended","status":401,
     "code":"session_ended","detail":"killed by an administrator","reason":"killed",
     "sqlstate":"57P01","request_id":"r_1"})").as_object();
   auto error = wc::Error::FromProblem(0, problem);
@@ -450,11 +450,11 @@ TEST(ClientUnit, BaseUrls) {
   options.host = "db.example.com";
   options.port = 443;
   options.tls.enabled = true;
-  EXPECT_EQ(wc::BaseUrl(options), "https://db.example.com:443/warp");
+  EXPECT_EQ(wc::BaseUrl(options), "https://db.example.com:443/chargewire");
   options.host = "::1";
   options.tls.enabled = false;
   options.port = 31337;
-  EXPECT_EQ(wc::BaseUrl(options), "http://[::1]:31337/warp");
+  EXPECT_EQ(wc::BaseUrl(options), "http://[::1]:31337/chargewire");
 }
 
 TEST(ClientUnit, TotalRowsNeedsEveryPartitionCounted) {
@@ -976,7 +976,7 @@ TEST_F(LiveTls, VerifiesTheServerAgainstTheGivenRoots) {
     EXPECT_EQ(e.code(), "client_tls_failed");
     EXPECT_NE(std::string(e.what()).find("certificate verify failed"), std::string::npos) << e.what();
   }
-  // Plain HTTP to a TLS server is not a Warp SQL answer.
+  // Plain HTTP to a TLS server is not a Chargewire answer.
   wc::ConnectOptions plain = server.Options();
   plain.tls = {};
   EXPECT_THROW(wc::Client(plain).Discover(), wc::Error);

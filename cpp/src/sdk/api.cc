@@ -22,7 +22,7 @@
 #include "tls_context.hpp"
 #include "upload.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 namespace {
 
@@ -62,18 +62,18 @@ Clock::time_point SettleSplitIfDue(Statement& statement, Clock::time_point waiti
   }
   return now + kSplitPoll;
 }
-// The most partitions a client may ask for (Warp-Result-Partitions).
+// The most partitions a client may ask for (Chargewire-Result-Partitions).
 constexpr int64_t kMaxRequestedPartitions = 256;
 constexpr std::size_t kEncodeBytes = 64 * 1024 * 1024;
 constexpr std::size_t kGatherBytes = 1024 * 1024;
 // Authentication failures one connection may have before the server closes it.
 constexpr int kMaxAuthFailuresPerConnection = 5;
 
-// WARPSQL_STREAM_STATS=1 logs, for every result stream and statement, how long each
+// CHARGEWIRE_STREAM_STATS=1 logs, for every result stream and statement, how long each
 // stage of the pipeline took (stderr), to see which one limits a stream.
 bool StreamStatsEnabled() {
   static const bool enabled = [] {
-    const char* value = std::getenv("WARPSQL_STREAM_STATS");
+    const char* value = std::getenv("CHARGEWIRE_STREAM_STATS");
     return value != nullptr && std::string_view(value) == "1";
   }();
   return enabled;
@@ -155,23 +155,23 @@ Response NoContent() {
   return response;
 }
 
-// The longest Warp-Query-Tag a server takes (spec §2.5).
+// The longest Chargewire-Query-Tag a server takes (spec §2.5).
 constexpr std::size_t kMaxQueryTagBytes = 4096;
 
-// The request's Warp-Query-Tag (spec §2.5): a JSON object in ASCII, at most 4,096 bytes.
+// The request's Chargewire-Query-Tag (spec §2.5): a JSON object in ASCII, at most 4,096 bytes.
 std::optional<json::object> QueryTag(const Request& request) {
-  const std::string_view header = request.Header("Warp-Query-Tag");
+  const std::string_view header = request.Header("Chargewire-Query-Tag");
   if (header.empty()) return std::nullopt;
   if (header.size() > kMaxQueryTagBytes) {
-    throw Error(ErrorCode::kBadRequest, std::format("Warp-Query-Tag is longer than {} bytes", kMaxQueryTagBytes));
+    throw Error(ErrorCode::kBadRequest, std::format("Chargewire-Query-Tag is longer than {} bytes", kMaxQueryTagBytes));
   }
   if (std::ranges::any_of(header, [](char c) { return static_cast<unsigned char>(c) >= 0x80; })) {
-    throw Error(ErrorCode::kBadRequest, "Warp-Query-Tag must be ASCII (write other characters as \\u escapes)");
+    throw Error(ErrorCode::kBadRequest, "Chargewire-Query-Tag must be ASCII (write other characters as \\u escapes)");
   }
   boost::system::error_code ec;
   json::value tag = json::parse(header, ec);
   if (ec || !tag.is_object()) {
-    throw Error(ErrorCode::kBadRequest, "Warp-Query-Tag must be a JSON object");
+    throw Error(ErrorCode::kBadRequest, "Chargewire-Query-Tag must be a JSON object");
   }
   return std::move(tag.as_object());
 }
@@ -295,7 +295,7 @@ Task<Response> Api::Handle(Request& request) {
   } catch (const std::exception&) {
     response = ProblemResponse(Error(ErrorCode::kInternalError, "internal server error"), request.request_id);
   }
-  response.headers.emplace_back("Warp-Request-Id", request.request_id);
+  response.headers.emplace_back("Chargewire-Request-Id", request.request_id);
 
   // CORS: only for origins on the allow-list (spec §9.5), each named exactly (never "*").
   // Credentials are allowed for them: a browser presents the user's client certificate
@@ -310,16 +310,16 @@ Task<Response> Api::Handle(Request& request) {
     response.headers.emplace_back("Vary", "Origin");
     response.headers.emplace_back(
         "Access-Control-Expose-Headers",
-        "Location, Warp-Statement-Id, Warp-IPC-Compression, Warp-Request-Id, Retry-After, "
-        "Warp-Result-Partitions, Warp-Result-Order, ETag");
+        "Location, Chargewire-Statement-Id, Chargewire-IPC-Compression, Chargewire-Request-Id, Retry-After, "
+        "Chargewire-Result-Partitions, Chargewire-Result-Order, ETag");
     if (request.method == http::verb::options) {
       response.headers.emplace_back("Access-Control-Allow-Methods",
                                     "GET, POST, PATCH, DELETE, OPTIONS");
       response.headers.emplace_back(
           "Access-Control-Allow-Headers",
           "Authorization, Content-Type, Accept, Prefer, Idempotency-Key, "
-          "Warp-Statement-Timeout, Warp-Retain-Result, Warp-Query-Tag, Warp-IPC-Compression, "
-          "Warp-Result-Partitions, Warp-Result-Order, If-None-Match");
+          "Chargewire-Statement-Timeout, Chargewire-Retain-Result, Chargewire-Query-Tag, Chargewire-IPC-Compression, "
+          "Chargewire-Result-Partitions, Chargewire-Result-Order, If-None-Match");
       response.headers.emplace_back("Access-Control-Max-Age", "600");
     }
   }
@@ -327,11 +327,11 @@ Task<Response> Api::Handle(Request& request) {
 }
 
 Task<Response> Api::Route(Request& request) {
-  // GET and HEAD outside /warp: the application's, if it answers (options.plain_handler).
+  // GET and HEAD outside /chargewire: the application's, if it answers (options.plain_handler).
   if (state_.options.plain_handler &&
       (request.method == http::verb::get || request.method == http::verb::head)) {
     const auto segments = Segments(request.path);
-    if (segments.empty() || segments[0] != "warp") {
+    if (segments.empty() || segments[0] != "chargewire") {
       const bool head = request.method == http::verb::head;
       PlainRequest plain_request{head ? "HEAD" : "GET", request.path, {}};
       for (const auto& field : request.headers) {
@@ -360,11 +360,11 @@ Task<Response> Api::Route(Request& request) {
     return Error(ErrorCode::kMethodNotAllowed, "this endpoint does not take that method");
   };
 
-  if (segments.size() == 1 && segments[0] == "warp") {
+  if (segments.size() == 1 && segments[0] == "chargewire") {
     if (method != http::verb::get) throw wrong_method();
     co_return co_await Discovery(request);
   }
-  if (segments.size() < 3 || segments[0] != "warp" || segments[1] != "v1") {
+  if (segments.size() < 3 || segments[0] != "chargewire" || segments[1] != "v1") {
     throw Error(ErrorCode::kNotFound, "no such endpoint");
   }
   const std::vector<std::string_view> rest(segments.begin() + 2, segments.end());
@@ -536,14 +536,14 @@ Task<Response> Api::Discovery(Request&) {
     if (std::string name = provider->DisplayName(); !name.empty()) browser["provider"] = std::move(name);
     auth["oauth_browser"] = std::move(browser);
   }
-  capabilities.emplace_back("openapi");  // GET /warp/v1/openapi.json (spec §3.3)
+  capabilities.emplace_back("openapi");  // GET /chargewire/v1/openapi.json (spec §3.3)
   json::object doc{
-      {"protocol", "warp-sql"},
+      {"protocol", "chargewire"},
       {"protocol_versions", json::array{"1"}},
       {"server", {{"name", identity.name}, {"version", identity.version}}},
       {"capabilities", std::move(capabilities)},
       {"auth", std::move(auth)},
-      {"links", {{"openapi", "/warp/v1/openapi.json"}}},
+      {"links", {{"openapi", "/chargewire/v1/openapi.json"}}},
   };
   co_return JsonResponse(http::status::ok, doc);
 }
@@ -783,7 +783,7 @@ Task<Response> Api::CreateBrowserFlow(Request& request) {
                    {"authorize_url", authorize_url},
                    {"poll_interval_s", state_.options.browser_sign_in_poll_interval.count()},
                    {"expires_at", Rfc3339(created.expires_at)}});
-  response.headers.emplace_back("Location", "/warp/v1/auth/oauth/flows/" + created.flow_id);
+  response.headers.emplace_back("Location", "/chargewire/v1/auth/oauth/flows/" + created.flow_id);
   co_return response;
 }
 
@@ -1060,7 +1060,7 @@ Task<Response> Api::CreateSession(Request& request) {
   state_.sessions.Add(session);
 
   Response response = JsonResponse(http::status::created, SessionDocument(*session));
-  response.headers.emplace_back("Location", "/warp/v1/sessions/" + session->id());
+  response.headers.emplace_back("Location", "/chargewire/v1/sessions/" + session->id());
   co_return response;
 }
 
@@ -1185,7 +1185,7 @@ void Api::Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> state
           ~Report() {
             if (!StreamStatsEnabled()) return;
             std::fprintf(stderr,
-                         "warpsql statement: %lld batches, %.1f MB in %.3f s: engine producing "
+                         "chargewire statement: %lld batches, %.1f MB in %.3f s: engine producing "
                          "%.3f s (%.0f MB/s), waiting for readers %.3f s\n",
                          static_cast<long long>(produced), produced_bytes / 1e6,
                          Seconds(Clock::now() - started), Seconds(producing),
@@ -1282,9 +1282,9 @@ Task<Response> Api::Launch(Request& request, std::shared_ptr<Session> session, S
   const Preferences prefs = ParsePrefer(request.Header("Prefer"));
   const bool streamed = AcceptsArrow(request.Header("Accept")) && !prefs.respond_async;
   bool retain = !streamed;
-  if (const auto header = request.Header("Warp-Retain-Result"); !header.empty()) {
+  if (const auto header = request.Header("Chargewire-Retain-Result"); !header.empty()) {
     if (header != "true" && header != "false") {
-      throw Error(ErrorCode::kBadRequest, "Warp-Retain-Result must be true or false");
+      throw Error(ErrorCode::kBadRequest, "Chargewire-Retain-Result must be true or false");
     }
     retain = header == "true";
   }
@@ -1296,10 +1296,10 @@ Task<Response> Api::Launch(Request& request, std::shared_ptr<Session> session, S
   if (auto session_default = session->DefaultStatementTimeout()) {
     timeout = session_default->count() > 0 ? session_default : std::nullopt;
   }
-  if (const auto header = request.Header("Warp-Statement-Timeout"); !header.empty()) {
-    const int64_t ms = ParseInt(header, "Warp-Statement-Timeout");
+  if (const auto header = request.Header("Chargewire-Statement-Timeout"); !header.empty()) {
+    const int64_t ms = ParseInt(header, "Chargewire-Statement-Timeout");
     if (ms <= 0) {
-      throw Error(ErrorCode::kBadRequest, "Warp-Statement-Timeout must be positive");
+      throw Error(ErrorCode::kBadRequest, "Chargewire-Statement-Timeout must be positive");
     }
     timeout = std::chrono::milliseconds(ms);
   }
@@ -1318,25 +1318,25 @@ Task<Response> Api::Launch(Request& request, std::shared_ptr<Session> session, S
                         ->FindStatement(existing->statement_id);
     // A statement response, so it names the statement (spec §2.6), as the first answer did.
     Response replay = JsonResponse(http::status::ok, StatementDocument(*session, *original));
-    replay.headers.emplace_back("Warp-Statement-Id", original->id());
+    replay.headers.emplace_back("Chargewire-Statement-Id", original->id());
     co_return replay;
   }
 
   Statement::Config config;
   config.retain = retain;
   // Partitioned results (spec §6.10), when the client asks and the server allows.
-  if (const auto header = request.Header("Warp-Result-Partitions"); !header.empty()) {
-    const int64_t wanted = ParseInt(header, "Warp-Result-Partitions");
+  if (const auto header = request.Header("Chargewire-Result-Partitions"); !header.empty()) {
+    const int64_t wanted = ParseInt(header, "Chargewire-Result-Partitions");
     if (wanted < 1 || wanted > kMaxRequestedPartitions) {
       throw Error(ErrorCode::kBadRequest,
-                  std::format("Warp-Result-Partitions must be between 1 and {}", kMaxRequestedPartitions));
+                  std::format("Chargewire-Result-Partitions must be between 1 and {}", kMaxRequestedPartitions));
     }
     config.partitions = std::min<std::size_t>(static_cast<std::size_t>(wanted),
                                               std::max<std::size_t>(state_.options.max_result_partitions, 1));
   }
-  if (const auto header = request.Header("Warp-Result-Order"); !header.empty()) {
+  if (const auto header = request.Header("Chargewire-Result-Order"); !header.empty()) {
     if (header != "preserve" && header != "any") {
-      throw Error(ErrorCode::kBadRequest, "Warp-Result-Order must be preserve or any");
+      throw Error(ErrorCode::kBadRequest, "Chargewire-Result-Order must be preserve or any");
     }
     config.any_order = header == "any";
   }
@@ -1379,18 +1379,18 @@ Task<Response> Api::Launch(Request& request, std::shared_ptr<Session> session, S
   // streamed path waits for a split's decision, so a failure there was the common case.)
   if (const auto state = statement->state(); state == StatementState::kFailed || state == StatementState::kCancelled) {
     Response response = ProblemResponse(*statement->error(), request.request_id);
-    response.headers.emplace_back("Warp-Statement-Id", statement_id);
+    response.headers.emplace_back("Chargewire-Statement-Id", statement_id);
     co_return response;
   }
   if (streamed && statement->HasRows() && statement->PartitionCount()) {
     statement->ClaimRead(0, 0);
-    co_return ResultStream(session, statement, 0, 0, request.Header("Warp-IPC-Compression"));
+    co_return ResultStream(session, statement, 0, 0, request.Header("Chargewire-IPC-Compression"));
   }
   Response response = JsonResponse(streamed ? http::status::ok : http::status::created,
                                    StatementDocument(*session, *statement));
   response.headers.emplace_back(
-      "Location", std::format("/warp/v1/sessions/{}/statements/{}", session->id(), statement_id));
-  response.headers.emplace_back("Warp-Statement-Id", statement_id);
+      "Location", std::format("/chargewire/v1/sessions/{}/statements/{}", session->id(), statement_id));
+  response.headers.emplace_back("Chargewire-Statement-Id", statement_id);
   co_return response;
 }
 
@@ -1457,7 +1457,7 @@ Task<Response> Api::PrepareStatement(Request& request, const std::string& sessio
                                                 {"result_schema", prepared.result_schema},
                                                 {"result_kind", prepared.result_kind}});
   response.headers.emplace_back(
-      "Location", std::format("/warp/v1/sessions/{}/prepared/{}", session_id, id));
+      "Location", std::format("/chargewire/v1/sessions/{}/prepared/{}", session_id, id));
   co_return response;
 }
 
@@ -1559,7 +1559,7 @@ Task<Response> Api::OpenIngest(Request& request, const std::string& session_id) 
                                                  state_.options.max_ingest_message_bytes);
   session->AddIngest(ingest);
   Response response = JsonResponse(http::status::created, ingest->Document());
-  response.headers.emplace_back("Location", std::format("/warp/v1/sessions/{}/ingests/{}", session_id, id));
+  response.headers.emplace_back("Location", std::format("/chargewire/v1/sessions/{}/ingests/{}", session_id, id));
   co_return response;
 }
 
@@ -1847,7 +1847,7 @@ Task<Response> Api::Metadata(Request& request, const std::string& session_id,
   });
 
   IpcStreamEncoder encoder(table->schema(),
-                           ParseIpcCompression(request.Header("Warp-IPC-Compression")));
+                           ParseIpcCompression(request.Header("Chargewire-IPC-Compression")));
   std::string body;
   arrow::TableBatchReader batches(*table);
   for (;;) {
@@ -1925,7 +1925,7 @@ Task<Response> Api::GetResult(Request& request, const std::string& session_id,
   }
   statement->ClaimRead(static_cast<std::size_t>(partition), from_batch);
   co_return ResultStream(session, statement, static_cast<std::size_t>(partition), from_batch,
-                         request.Header("Warp-IPC-Compression"));
+                         request.Header("Chargewire-IPC-Compression"));
 }
 
 Response Api::ResultStream(std::shared_ptr<Session> session, std::shared_ptr<Statement> statement,
@@ -1935,11 +1935,11 @@ Response Api::ResultStream(std::shared_ptr<Session> session, std::shared_ptr<Sta
   Response response;
   response.status = http::status::ok;
   response.content_type = kArrowStream;
-  response.headers.emplace_back("Warp-Statement-Id", statement->id());
-  response.headers.emplace_back("Warp-IPC-Compression", std::string(IpcCompressionName(compression)));
+  response.headers.emplace_back("Chargewire-Statement-Id", statement->id());
+  response.headers.emplace_back("Chargewire-IPC-Compression", std::string(IpcCompressionName(compression)));
   if (const auto count = statement->PartitionCount(); count && *count > 1) {
-    response.headers.emplace_back("Warp-Result-Partitions", std::to_string(*count));
-    response.headers.emplace_back("Warp-Result-Order", std::string(statement->PartitionOrder()));
+    response.headers.emplace_back("Chargewire-Result-Partitions", std::to_string(*count));
+    response.headers.emplace_back("Chargewire-Result-Order", std::string(statement->PartitionOrder()));
   }
   response.headers.emplace_back("X-Content-Type-Options", "nosniff");
   response.headers.emplace_back("Cache-Control", "no-store");
@@ -2040,7 +2040,7 @@ Task<bool> Api::StreamBatches(Statement& statement, std::size_t partition, int64
       if (!StreamStatsEnabled()) return;
       const double wall = Seconds(Clock::now() - started);
       std::fprintf(stderr,
-                   "warpsql stream: partition %zu, %lld batches, %.1f MB raw, %.1f MB sent, %.3f s "
+                   "chargewire stream: partition %zu, %lld batches, %.1f MB raw, %.1f MB sent, %.3f s "
                    "(%.0f MB/s sent): waiting for rows %.3f s, waiting for encoding %.3f s, "
                    "writing %.3f s in %lld writes (%.0f MB/s while writing), encoding %.3f s of CPU "
                    "(%.0f MB/s per thread)\n",
@@ -2266,9 +2266,9 @@ Task<Response> Api::DeleteStatement(Request& request, const std::string& session
   co_return NoContent();
 }
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail
 
-namespace warpsql {
+namespace chargewire {
 
 std::string_view PlainRequest::Header(std::string_view name) const {
   for (const auto& [key, value] : headers) {
@@ -2282,4 +2282,4 @@ std::string_view PlainRequest::Header(std::string_view name) const {
   return {};
 }
 
-}  // namespace warpsql
+}  // namespace chargewire

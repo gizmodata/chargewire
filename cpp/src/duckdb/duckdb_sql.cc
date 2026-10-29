@@ -4,10 +4,10 @@
 #include <arrow/scalar.h>
 #include <arrow/table.h>
 
-namespace warpduckdb {
+namespace chargewire_duckdb {
 
-using warpsql::Error;
-using warpsql::ErrorCode;
+using chargewire::Error;
+using chargewire::ErrorCode;
 
 namespace {
 
@@ -66,7 +66,7 @@ void RunSql(duckdb_v2_connection_handle connection, std::string_view sql) {
   }
 }
 
-warpsql::StatementOutcome Outcome(ArrowResult& result, std::shared_ptr<void> keep_alive) {
+chargewire::StatementOutcome Outcome(ArrowResult& result, std::shared_ptr<void> keep_alive) {
   DUCKDB_V2_RESULT_TYPE type{};
   DUCKDB_V2_STATEMENT_TYPE statement{};
   // A statement that expands into several (PIVOT without an IN list) knows its shape
@@ -84,7 +84,7 @@ warpsql::StatementOutcome Outcome(ArrowResult& result, std::shared_ptr<void> kee
     }
     Call([&](auto* err) { return duckdb_v2_arrow_result_get_statement_type(result.get(), &statement, err); });
   }
-  warpsql::StatementOutcome outcome;
+  chargewire::StatementOutcome outcome;
   // Only reads are cancelled when their reader goes away; a write finishes what it began.
   outcome.finish_if_abandoned = statement != DUCKDB_V2_STATEMENT_TYPE_SELECT &&
                                 statement != DUCKDB_V2_STATEMENT_TYPE_EXPLAIN &&
@@ -158,4 +158,4 @@ std::string QualifiedName(const std::vector<std::string>& parts) {
   return text;
 }
 
-}  // namespace warpduckdb
+}  // namespace chargewire_duckdb

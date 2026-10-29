@@ -8,7 +8,7 @@
 #include <map>
 #include <stdexcept>
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 namespace {
 
@@ -303,9 +303,9 @@ std::string PeerHost(std::string_view peer) {
   return std::string(colon == std::string_view::npos ? peer : peer.substr(0, colon));
 }
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail
 
-namespace warpsql {
+namespace chargewire {
 
 namespace net = detail::net;
 
@@ -369,4 +369,4 @@ IpNetwork ParseIpNetwork(std::string_view text) {
   return network;
 }
 
-}  // namespace warpsql
+}  // namespace chargewire

@@ -8,7 +8,7 @@
 
 #include "common.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 class Signal {
  public:
@@ -28,4 +28,4 @@ class Signal {
   std::vector<std::weak_ptr<net::steady_timer>> waiters_;
 };
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

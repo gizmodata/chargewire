@@ -15,10 +15,10 @@
 #include <string>
 
 #include "common.hpp"
-#include "warpsql/backend.hpp"
-#include "warpsql/server.hpp"
+#include "chargewire/backend.hpp"
+#include "chargewire/server.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 // Why a handshake refused a client certificate (filled in by the verify callback).
 struct HandshakeRefusal {
@@ -101,4 +101,4 @@ std::string EscapeForDisplay(std::string_view text);
 // CertificateIdentitiesMatch (URI identities exactly, others ignoring ASCII case).
 bool SameIdentityName(std::string_view a, std::string_view b);
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

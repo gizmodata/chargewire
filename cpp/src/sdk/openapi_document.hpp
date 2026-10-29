@@ -4,11 +4,11 @@
 
 #include <string_view>
 
-namespace warpsql {
+namespace chargewire {
 
 // The document, compact JSON.
 std::string_view OpenApiJson();
 // A strong entity tag for it, quoted ("..."), from a hash of the JSON.
 std::string_view OpenApiEtag();
 
-}  // namespace warpsql
+}  // namespace chargewire

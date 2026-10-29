@@ -1,4 +1,4 @@
-#include "warpsql/client.hpp"
+#include "chargewire/client.hpp"
 
 #include <openssl/rand.h>
 
@@ -23,7 +23,7 @@
 
 #include "transport.hpp"
 
-namespace warpsql::client {
+namespace chargewire::client {
 
 using detail::BodyReader;
 using detail::ChunkSource;
@@ -40,7 +40,7 @@ constexpr auto kNoTimeout = std::chrono::milliseconds(0);
 // error page): the client's, so it can't be taken for a server's code (spec §11).
 std::string CodeForStatus(int status) { return "client_http_" + std::to_string(status); }
 
-std::string DefaultUserAgent() { return "warpsql-client-cpp/" WARPSQL_VERSION; }
+std::string DefaultUserAgent() { return "chargewire-client-cpp/" CHARGEWIRE_VERSION; }
 
 std::string RandomKey() {
   unsigned char bytes[16];
@@ -301,7 +301,7 @@ std::shared_ptr<arrow::Table> ReadStream(const std::string& bytes) {
 class ClientCore {
  public:
   explicit ClientCore(ConnectOptions o) : options(std::move(o)) {
-    if (options.base_path.empty()) options.base_path = "/warp";
+    if (options.base_path.empty()) options.base_path = "/chargewire";
     while (options.base_path.size() > 1 && options.base_path.back() == '/') options.base_path.pop_back();
     if (options.base_path.front() != '/') options.base_path = "/" + options.base_path;
     if (options.tls.enabled) tls = detail::MakeTlsContext(options.tls);
@@ -567,7 +567,7 @@ class SessionCore : public std::enable_shared_from_this<SessionCore> {
 
   ExecuteResult Execute(const std::string& target, const json::value* body, arrow::RecordBatchReader* parameters,
                         const StatementOptions& options);
-  // `ipc_compression` is the Warp-IPC-Compression the request sends (spec §8.2).
+  // `ipc_compression` is the Chargewire-IPC-Compression the request sends (spec §8.2).
   std::shared_ptr<ResultReader> Fetch(const std::string& statement_id, int64_t partition, int64_t from_batch,
                                       uint64_t serial, const std::string& ipc_compression);
   ExecuteResult Finish(StatementDocument doc, uint64_t serial, const std::string& ipc_compression);
@@ -972,13 +972,13 @@ ExecuteResult SessionCore::Execute(const std::string& target, const json::value*
   auto request = client->Request(http::verb::post, target, true);
   request.set(http::field::accept, kArrowStream);
   request.set("Idempotency-Key", options.idempotency_key.empty() ? RandomKey() : options.idempotency_key);
-  if (options.timeout_ms) request.set("Warp-Statement-Timeout", std::to_string(*options.timeout_ms));
-  if (options.retain_result) request.set("Warp-Retain-Result", *options.retain_result ? "true" : "false");
-  if (!options.query_tag.empty()) request.set("Warp-Query-Tag", options.query_tag);
-  if (!options.ipc_compression.empty()) request.set("Warp-IPC-Compression", options.ipc_compression);
+  if (options.timeout_ms) request.set("Chargewire-Statement-Timeout", std::to_string(*options.timeout_ms));
+  if (options.retain_result) request.set("Chargewire-Retain-Result", *options.retain_result ? "true" : "false");
+  if (!options.query_tag.empty()) request.set("Chargewire-Query-Tag", options.query_tag);
+  if (!options.ipc_compression.empty()) request.set("Chargewire-IPC-Compression", options.ipc_compression);
   if (options.result_partitions > 1 && client->OffersPartitions()) {
-    request.set("Warp-Result-Partitions", std::to_string(std::min(options.result_partitions, 256)));
-    if (options.any_order) request.set("Warp-Result-Order", "any");
+    request.set("Chargewire-Result-Partitions", std::to_string(std::min(options.result_partitions, 256)));
+    if (options.any_order) request.set("Chargewire-Result-Order", "any");
   }
   std::optional<StreamChunks> chunks;
   ChunkSource source;
@@ -1001,19 +1001,19 @@ ExecuteResult SessionCore::Execute(const std::string& target, const json::value*
   const int status = reply->status();
   const std::string content_type = reply->ContentType();
   if (status == 200 && content_type == kArrowStream) {
-    const std::string statement_id = reply->Header("Warp-Statement-Id");
+    const std::string statement_id = reply->Header("Chargewire-Statement-Id");
     SetRunning(serial, statement_id);
     ExecuteResult result;
     result.statement_id = statement_id;
     try {
       int partitions = 1;
       try {
-        partitions = std::stoi(reply->Header("Warp-Result-Partitions"));
+        partitions = std::stoi(reply->Header("Chargewire-Result-Partitions"));
       } catch (...) {
       }
       if (partitions > 1 && partitions <= 256) {
         // A split result (spec §6.10): this body is partition 0; the rest are read at once.
-        const bool any = reply->Header("Warp-Result-Order") != "interleaved";
+        const bool any = reply->Header("Chargewire-Result-Order") != "interleaved";
         result.reader = MakePartitioned(statement_id, serial, partitions, any, std::move(reply),
                                         options.ipc_compression);
       } else {
@@ -1052,7 +1052,7 @@ std::shared_ptr<ResultReader> SessionCore::MakePartitioned(const std::string& st
     auto request = client->Request(
         http::verb::get, Path("/statements/" + statement_id + "/result?partition=" + std::to_string(index)), true);
     request.set(http::field::accept, kArrowStream);
-    if (!ipc_compression.empty()) request.set("Warp-IPC-Compression", ipc_compression);
+    if (!ipc_compression.empty()) request.set("Chargewire-IPC-Compression", ipc_compression);
     auto reply = on.Open(std::move(request));
     if (reply->status() != 200 || reply->ContentType() != kArrowStream) {
       const int status = reply->status();
@@ -1094,7 +1094,7 @@ std::shared_ptr<ResultReader> SessionCore::Fetch(const std::string& statement_id
              "&from_batch=" + std::to_string(from_batch)),
         true);
     request.set(http::field::accept, kArrowStream);
-    if (!ipc_compression.empty()) request.set("Warp-IPC-Compression", ipc_compression);
+    if (!ipc_compression.empty()) request.set("Chargewire-IPC-Compression", ipc_compression);
     auto reply = transport->Open(std::move(request));
     if (reply->status() == 200 && reply->ContentType() == kArrowStream) {
       return std::make_shared<StreamResultReader>(shared_from_this(), std::move(reply), statement_id, serial);
@@ -1178,12 +1178,12 @@ StatementDocument Session::Submit(const std::string& sql, int wait_s, const Stat
   ClientCore::SetJson(request, body);
   request.set(http::field::prefer, wait_s > 0 ? "wait=" + std::to_string(wait_s) : std::string("respond-async"));
   request.set("Idempotency-Key", options.idempotency_key.empty() ? RandomKey() : options.idempotency_key);
-  if (options.timeout_ms) request.set("Warp-Statement-Timeout", std::to_string(*options.timeout_ms));
-  if (options.retain_result) request.set("Warp-Retain-Result", *options.retain_result ? "true" : "false");
-  if (!options.query_tag.empty()) request.set("Warp-Query-Tag", options.query_tag);
+  if (options.timeout_ms) request.set("Chargewire-Statement-Timeout", std::to_string(*options.timeout_ms));
+  if (options.retain_result) request.set("Chargewire-Retain-Result", *options.retain_result ? "true" : "false");
+  if (!options.query_tag.empty()) request.set("Chargewire-Query-Tag", options.query_tag);
   if (options.result_partitions > 1 && core_->client->OffersPartitions()) {
-    request.set("Warp-Result-Partitions", std::to_string(std::min(options.result_partitions, 256)));
-    if (options.any_order) request.set("Warp-Result-Order", "any");
+    request.set("Chargewire-Result-Partitions", std::to_string(std::min(options.result_partitions, 256)));
+    if (options.any_order) request.set("Chargewire-Result-Order", "any");
   }
   Reply reply = core_->transport->Exchange(std::move(request));
   if (reply.status != 200 && reply.status != 201) throw ProblemOf(reply);
@@ -1308,7 +1308,7 @@ int64_t IngestParts(SessionCore& core, const std::string& table, SharedBatches& 
         auto request = core.client->Request(http::verb::post, base + "/parts/" + std::to_string(part), true);
         request.set(http::field::content_type, kArrowStream);
         request.set("Idempotency-Key", RandomKey());
-        if (!options.query_tag.empty()) request.set("Warp-Query-Tag", options.query_tag);
+        if (!options.query_tag.empty()) request.set("Chargewire-Query-Tag", options.query_tag);
         PartBatches rows(shared);
         StreamChunks chunks(rows);
         ChunkSource source = [&chunks] { return chunks(); };
@@ -1376,7 +1376,7 @@ int64_t Session::Ingest(const std::string& table, arrow::RecordBatchReader& data
     auto request = core_->client->Request(http::verb::post, target, true);
     request.set(http::field::content_type, kArrowStream);
     request.set("Idempotency-Key", options.idempotency_key.empty() ? RandomKey() : options.idempotency_key);
-    if (!options.query_tag.empty()) request.set("Warp-Query-Tag", options.query_tag);
+    if (!options.query_tag.empty()) request.set("Chargewire-Query-Tag", options.query_tag);
     PartBatches rows(shared);
     StreamChunks chunks(rows);
     ChunkSource source = [&chunks] { return chunks(); };
@@ -1453,8 +1453,8 @@ Discovery Client::Discover() {
   Reply reply = transport->Exchange(core_->Request(http::verb::get, core_->options.base_path, false));
   if (reply.status != 200) throw ProblemOf(reply);
   auto object = ParseObject(reply.body);
-  if (!object || String(*object, "protocol") != "warp-sql") {
-    throw Error(reply.status, "client_protocol_error", BaseUrl(core_->options) + " is not a Warp SQL server");
+  if (!object || String(*object, "protocol") != "chargewire") {
+    throw Error(reply.status, "client_protocol_error", BaseUrl(core_->options) + " is not a Chargewire server");
   }
   Discovery discovery;
   discovery.document = *object;
@@ -1683,4 +1683,4 @@ std::pair<int, json::value> PostForm(const std::string& url,
   return ExchangeJson(http::verb::post, url, std::move(body), tls, timeout);
 }
 
-}  // namespace warpsql::client
+}  // namespace chargewire::client

@@ -1,6 +1,6 @@
 ---
 title: Cancel and close
-description: "Cancelling a Warp SQL statement or everything a session runs, closing a statement, and statement timeouts with Warp-Statement-Timeout."
+description: "Cancelling a Chargewire statement or everything a session runs, closing a statement, and statement timeouts with Chargewire-Statement-Timeout."
 ---
 
 import Diagram from '../../../components/Diagram.astro';
@@ -12,11 +12,11 @@ server can free its result (<Spec s="6.8" />, <Spec s="6.9" />).
 <Diagram name="cancel-and-close" alt="The client cancels a running statement (202), reads it as cancelled with cancel_reason client, cancels everything the session runs, and deletes the statement (204)." />
 
 ```bash test
-WARP=http://127.0.0.1:31337
-TOKEN=$(curl -s $WARP/warp/v1/auth/token -H 'Content-Type: application/json' \
+CHARGEWIRE=http://127.0.0.1:31337
+TOKEN=$(curl -s $CHARGEWIRE/chargewire/v1/auth/token -H 'Content-Type: application/json' \
   -d '{"grant_type": "password", "username": "joe", "password": "s3:cret"}' | jq -r .access_token)
 AUTH="Authorization: Bearer $TOKEN"
-SESSION=$(curl -s $WARP/warp/v1/sessions -H "$AUTH" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
+SESSION=$(curl -s $CHARGEWIRE/chargewire/v1/sessions -H "$AUTH" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
 LONG='{"sql": "SELECT count(*) FROM range(100000000000)"}'
 ```
 
@@ -26,10 +26,10 @@ LONG='{"sql": "SELECT count(*) FROM range(100000000000)"}'
 finished changes nothing and still answers `202`:
 
 ```bash test
-STATEMENT=$(curl -s $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
+STATEMENT=$(curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
   -H 'Prefer: respond-async' -d "$LONG" | jq -r .statement_id)
-curl -s -o /dev/null -w '%{http_code}\n' -X POST $WARP/warp/v1/sessions/$SESSION/statements/$STATEMENT/cancel -H "$AUTH"
-curl -s $WARP/warp/v1/sessions/$SESSION/statements/$STATEMENT -H "$AUTH" -H 'Prefer: wait=10' \
+curl -s -o /dev/null -w '%{http_code}\n' -X POST $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements/$STATEMENT/cancel -H "$AUTH"
+curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements/$STATEMENT -H "$AUTH" -H 'Prefer: wait=10' \
   | jq -c '{state, cancel_reason, error: .error.code}'
 ```
 
@@ -46,13 +46,13 @@ one (<Spec s="12" />).
 ## Cancel everything the session runs
 
 A client whose submit hasn't been answered yet has no statement id to cancel. `POST
-/warp/v1/sessions/{id}/cancel` cancels every statement of the session that is queued or running
+/chargewire/v1/sessions/{id}/cancel` cancels every statement of the session that is queued or running
 when it arrives, and lists them:
 
 ```bash test
-OTHER=$(curl -s $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
+OTHER=$(curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
   -H 'Prefer: respond-async' -d "$LONG" | jq -r .statement_id)
-curl -s -X POST $WARP/warp/v1/sessions/$SESSION/cancel -H "$AUTH" > cancelled.json
+curl -s -X POST $CHARGEWIRE/chargewire/v1/sessions/$SESSION/cancel -H "$AUTH" > cancelled.json
 jq --arg id "$OTHER" '.cancelled | index($id) != null' cancelled.json
 ```
 
@@ -62,14 +62,14 @@ true
 
 ## Time limits
 
-`Warp-Statement-Timeout` (milliseconds) limits how long a statement may run. When it runs out
+`Chargewire-Statement-Timeout` (milliseconds) limits how long a statement may run. When it runs out
 the server cancels the statement (`cancel_reason: timeout`, code `statement_timeout`). A
 statement that has been cancelled by the time its submit is answered is an error response, not
 a success:
 
 ```bash test
-curl -s $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
-  -H 'Prefer: wait=10' -H 'Warp-Statement-Timeout: 200' -d "$LONG" | jq -c '{status, code, cancel_reason}'
+curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
+  -H 'Prefer: wait=10' -H 'Chargewire-Statement-Timeout: 200' -d "$LONG" | jq -c '{status, code, cancel_reason}'
 ```
 
 ```text output
@@ -83,8 +83,8 @@ is cancelled; a statement that changes data runs to the end with its rows discar
 write, cancel it):
 
 ```bash test
-curl -s -o /dev/null -w '%{http_code}\n' -X DELETE $WARP/warp/v1/sessions/$SESSION/statements/$STATEMENT -H "$AUTH"
-curl -s $WARP/warp/v1/sessions/$SESSION/statements/$STATEMENT -H "$AUTH" | jq -c '{status, code}'
+curl -s -o /dev/null -w '%{http_code}\n' -X DELETE $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements/$STATEMENT -H "$AUTH"
+curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements/$STATEMENT -H "$AUTH" | jq -c '{status, code}'
 ```
 
 ```text output
@@ -92,5 +92,5 @@ curl -s $WARP/warp/v1/sessions/$SESSION/statements/$STATEMENT -H "$AUTH" | jq -c
 {"status":404,"code":"statement_not_found"}
 ```
 
-Closing the session (`DELETE /warp/v1/sessions/{id}`) cancels everything it runs, with
+Closing the session (`DELETE /chargewire/v1/sessions/{id}`) cancels everything it runs, with
 `cancel_reason: session_closed`.

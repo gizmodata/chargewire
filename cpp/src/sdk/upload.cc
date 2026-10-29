@@ -12,9 +12,9 @@
 #include <stdexcept>
 #include <string_view>
 
-#include "warpsql/errors.hpp"
+#include "chargewire/errors.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 struct IngestMessageLimit {
   explicit IngestMessageLimit(std::size_t bytes) : bytes(static_cast<int64_t>(bytes)) {
@@ -384,4 +384,4 @@ std::shared_ptr<ValidatedReader> OpenValidatedIpc(std::string bytes, std::size_t
       std::make_shared<arrow::io::BufferReader>(arrow::Buffer::FromString(std::move(bytes))), max_message_bytes);
 }
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

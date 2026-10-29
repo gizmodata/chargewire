@@ -1,6 +1,6 @@
 ---
 title: Bulk ingest
-description: "Upload Arrow data into a Warp SQL table in one request, or as several parts over separate connections committed atomically as one transaction."
+description: "Upload Arrow data into a Chargewire table in one request, or as several parts over separate connections committed atomically as one transaction."
 ---
 
 import Diagram from '../../../components/Diagram.astro';
@@ -12,11 +12,11 @@ Arrow type to a column type that preserves its values, and refuses one it can't 
 `415 unsupported_arrow_type`; it never falls back to storing values as text.
 
 ```bash test
-WARP=http://127.0.0.1:31337
-TOKEN=$(curl -s $WARP/warp/v1/auth/token -H 'Content-Type: application/json' \
+CHARGEWIRE=http://127.0.0.1:31337
+TOKEN=$(curl -s $CHARGEWIRE/chargewire/v1/auth/token -H 'Content-Type: application/json' \
   -d '{"grant_type": "password", "username": "joe", "password": "s3:cret"}' | jq -r .access_token)
 AUTH="Authorization: Bearer $TOKEN"
-SESSION=$(curl -s $WARP/warp/v1/sessions -H "$AUTH" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
+SESSION=$(curl -s $CHARGEWIRE/chargewire/v1/sessions -H "$AUTH" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
 python3 - <<'EOF'
 import pyarrow as pa, pyarrow.ipc as ipc
 def write(name, start, stop):
@@ -40,7 +40,7 @@ and `schema` (default: the session's), `mode` (`create`, `append`, `replace`, or
 size:
 
 ```bash test
-curl -s "$WARP/warp/v1/sessions/$SESSION/ingest?table=trips&mode=create" -H "$AUTH" \
+curl -s "$CHARGEWIRE/chargewire/v1/sessions/$SESSION/ingest?table=trips&mode=create" -H "$AUTH" \
   -H 'Content-Type: application/vnd.apache.arrow.stream' --data-binary @trips.arrows
 ```
 
@@ -57,7 +57,7 @@ table the upload creates takes the upload's columns in the upload's order.
 so a client can tell (<Spec s="11" />); `append` to a missing table gets `42P01`:
 
 ```bash test
-curl -s "$WARP/warp/v1/sessions/$SESSION/ingest?table=trips&mode=create" -H "$AUTH" \
+curl -s "$CHARGEWIRE/chargewire/v1/sessions/$SESSION/ingest?table=trips&mode=create" -H "$AUTH" \
   -H 'Content-Type: application/vnd.apache.arrow.stream' --data-binary @trips.arrows \
   | jq -c '{status, code, sqlstate}'
 ```
@@ -84,7 +84,7 @@ one ingest, which the server commits as one transaction (<Spec s="8.3" />).
 **Open** the ingest, with the target as JSON:
 
 ```bash test
-INGEST=$(curl -s $WARP/warp/v1/sessions/$SESSION/ingests -H "$AUTH" -H 'Content-Type: application/json' \
+INGEST=$(curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/ingests -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"table": "trips_copy", "mode": "create"}' | tee ingest.json | jq -r .ingest_id)
 jq -c '{state, parts}' ingest.json
 ```
@@ -98,7 +98,7 @@ client chooses; every part has the same schema. The rows are not visible yet:
 
 ```bash test
 for part in 0 1; do
-  curl -s "$WARP/warp/v1/sessions/$SESSION/ingests/$INGEST/parts/$part" -H "$AUTH" \
+  curl -s "$CHARGEWIRE/chargewire/v1/sessions/$SESSION/ingests/$INGEST/parts/$part" -H "$AUTH" \
     -H 'Content-Type: application/vnd.apache.arrow.stream' --data-binary @trips-part$part.arrows \
     -o part$part.json &
 done
@@ -115,12 +115,12 @@ and the ingest stays open, so the client uploads it and commits again; a commit 
 was lost is safe to send again:
 
 ```bash test
-curl -s $WARP/warp/v1/sessions/$SESSION/ingests/$INGEST/commit -H "$AUTH" \
+curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/ingests/$INGEST/commit -H "$AUTH" \
   -H 'Content-Type: application/json' -d '{"part_count": 3}' | jq -c '{status, code}'
-curl -s $WARP/warp/v1/sessions/$SESSION/ingests/$INGEST/commit -H "$AUTH" \
+curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/ingests/$INGEST/commit -H "$AUTH" \
   -H 'Content-Type: application/json' -d '{"part_count": 2}'
 echo
-curl -s $WARP/warp/v1/sessions/$SESSION/ingests/$INGEST -H "$AUTH" | jq -c '{state, rows_ingested}'
+curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/ingests/$INGEST -H "$AUTH" | jq -c '{state, rows_ingested}'
 ```
 
 ```text output

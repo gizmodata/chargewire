@@ -1,19 +1,19 @@
-# Warp SQL server SDK (C++) and reference server
+# Chargewire server SDK (C++) and reference server
 
-- **`libwarpsql`** (`include/warpsql/`, `src/sdk/`): the protocol, over HTTP/1.1 and TLS
-  on Boost.Beast with C++20 coroutines. An engine implements `warpsql::Backend` (see
-  `include/warpsql/backend.hpp`); the SDK owns authentication, handles bound to their
+- **`libchargewire`** (`include/chargewire/`, `src/sdk/`): the protocol, over HTTP/1.1 and TLS
+  on Boost.Beast with C++20 coroutines. An engine implements `chargewire::Backend` (see
+  `include/chargewire/backend.hpp`); the SDK owns authentication, handles bound to their
   principal, retries, retention, streaming, cancellation and draining.
-- **`libwarpsql_client`** (`include/warpsql/client.hpp`, `src/client/`): the client side,
+- **`libchargewire_client`** (`include/chargewire/client.hpp`, `src/client/`): the client side,
   synchronous, on Boost.Beast: sign-in, sessions, the streamed and status-document
   statement paths, prepared statements, ingest, metadata, cancellation from another
   thread, TLS and mutual TLS. It needs Arrow, Boost and OpenSSL, not DuckDB. Hardcharger's
   command-line client is built on it.
-- **`warp-duckdb`** (`src/duckdb/`): the reference server, DuckDB 2.0 through its v2 C API
+- **`chargewire-duckdb`** (`src/duckdb/`): the reference server, DuckDB 2.0 through its v2 C API
   only. It is what the conformance suite and the drivers test against.
 
 > [!WARNING]
-> **`warp-duckdb` is for testing and development, not production.** It has one password,
+> **`chargewire-duckdb` is for testing and development, not production.** It has one password,
 > and whoever signs in is the administrator, with all of DuckDB's power: reading and
 > writing local files, attaching databases, loading extensions, reaching the network.
 > `--read-only` protects only the database file. It has no users, access control, file
@@ -34,7 +34,7 @@ Boost 1.92 (Beast, JSON, URL) is fetched by CMake. OpenSSL 3 comes from the syst
 
 DuckDB builds in its core extensions (core_functions, parquet, json, icu); the rest load
 at run time. A server that wants more built in lists them in a CMake file of
-`duckdb_extension_load()` calls and names it in `WARPSQL_DUCKDB_EXTENSION_CONFIGS`
+`duckdb_extension_load()` calls and names it in `CHARGEWIRE_DUCKDB_EXTENSION_CONFIGS`
 (several: `;`-separated) when it runs `build-duckdb.sh`.
 
 Windows (x64 and arm64) builds with MSVC from a Developer shell's Git Bash. DuckDB always
@@ -49,7 +49,7 @@ way.
 ## Run
 
 ```bash
-WARP_DUCKDB_PASSWORD='…' ./build/warp-duckdb --database my.duckdb --port 31337
+CHARGEWIRE_DUCKDB_PASSWORD='…' ./build/chargewire-duckdb --database my.duckdb --port 31337
 ```
 
 The password is read from the environment so it never shows in process listings. TLS:
@@ -74,10 +74,10 @@ endpoint; an `http://` issuer is accepted only on a loopback address).
 | Flag | Default | Meaning |
 |---|---|---|
 | `--oauth-issuer URL` | none | The provider, found by its `/.well-known/openid-configuration` |
-| `--oauth-client-id ID` | none | The server's client id (the secret comes from `WARP_DUCKDB_OAUTH_CLIENT_SECRET`) |
+| `--oauth-client-id ID` | none | The server's client id (the secret comes from `CHARGEWIRE_DUCKDB_OAUTH_CLIENT_SECRET`) |
 | `--oauth-identities A,B` | none | Who may sign in (the ID token's `email`, else `sub`; ASCII case ignored) |
 | `--oauth-scopes S` | `openid email profile` | |
-| `--oauth-base-url URL` | `http(s)://HOST:PORT` | The server's public URL; the redirect URI to register is `<it>/warp/v1/auth/oauth/callback` |
+| `--oauth-base-url URL` | `http(s)://HOST:PORT` | The server's public URL; the redirect URI to register is `<it>/chargewire/v1/auth/oauth/callback` |
 | `--oauth-redirect-uri URL` | from the base URL | The redirect URI, given whole |
 | `--oauth-provider-name NAME` | none | The provider's name in discovery ("Sign in with NAME") |
 | `--oauth-max-flows N` | 10000 | Sign-ins held at once |
@@ -90,11 +90,11 @@ console stops it at once.
 
 ## Test
 
-The client library's tests (unit, and live against `warp-duckdb`, which they start):
+The client library's tests (unit, and live against `chargewire-duckdb`, which they start):
 
 ```bash
-cmake -S . -B build -G Ninja -DWARPSQL_BUILD_TESTS=ON && cmake --build build
-./build/warpsql-client-tests
+cmake -S . -B build -G Ninja -DCHARGEWIRE_BUILD_TESTS=ON && cmake --build build
+./build/chargewire-client-tests
 ```
 
 The conformance suite:
@@ -102,7 +102,7 @@ The conformance suite:
 ```bash
 cd ../conformance
 uv venv .venv && uv pip install --python .venv/bin/python -e .
-WARP_SQL_TEST_SERVER_BINARY=../cpp/build/warp-duckdb .venv/bin/python -m pytest -q
+CHARGEWIRE_TEST_SERVER_BINARY=../cpp/build/chargewire-duckdb .venv/bin/python -m pytest -q
 ```
 
 ### Ingest message limits

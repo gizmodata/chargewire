@@ -7,7 +7,7 @@
 
 #include <chrono>
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 namespace net = boost::asio;
 namespace beast = boost::beast;
@@ -20,4 +20,4 @@ using WallClock = std::chrono::system_clock;
 template <typename T>
 using Task = net::awaitable<T>;
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

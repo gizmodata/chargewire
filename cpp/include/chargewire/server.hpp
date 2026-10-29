@@ -1,4 +1,4 @@
-// A Warp SQL server: the protocol over HTTP/1.1 (and TLS), in front of a Backend.
+// A Chargewire server: the protocol over HTTP/1.1 (and TLS), in front of a Backend.
 #pragma once
 
 #include <array>
@@ -12,9 +12,9 @@
 #include <utility>
 #include <vector>
 
-#include "warpsql/backend.hpp"
+#include "chargewire/backend.hpp"
 
-namespace warpsql {
+namespace chargewire {
 
 // Where the client_certificate grant (spec §4.4) takes a certificate's identity from.
 enum class ClientIdentitySource {
@@ -100,7 +100,7 @@ struct SecurityEvent {
   int64_t suppressed = 0;
 };
 
-// A GET or HEAD request outside the protocol's paths (anything not under /warp), which an
+// A GET or HEAD request outside the protocol's paths (anything not under /chargewire), which an
 // application may answer before the server's 404: a web UI's files, say.
 struct PlainRequest {
   std::string method;  // "GET" or "HEAD"
@@ -156,11 +156,11 @@ struct ServerOptions {
   std::chrono::seconds default_wait{5};  // submit without Prefer: wait / respond-async
   std::chrono::seconds max_wait{60};     // cap on Prefer: wait
   std::chrono::seconds health_timeout{5};
-  // Applies when a request sets no Warp-Statement-Timeout. 0: none.
+  // Applies when a request sets no Chargewire-Statement-Timeout. 0: none.
   std::chrono::milliseconds default_statement_timeout{0};
   std::size_t retained_bytes_per_principal = std::size_t{1} << 30;
   // Partitioned results (spec §6.10): the most partitions one result is split into when
-  // a client asks (Warp-Result-Partitions). 1: never split.
+  // a client asks (Chargewire-Result-Partitions). 1: never split.
   std::size_t max_result_partitions = 32;
 
   std::vector<std::string> cors_allowed_origins;  // empty: no cross-origin access
@@ -200,7 +200,7 @@ struct ServerOptions {
   // Told about every SecurityEvent (log it, audit it). Called on an I/O thread: keep it short.
   std::function<void(const SecurityEvent&)> on_security_event;
 
-  // Answers GET and HEAD requests outside /warp on the main listener (not the health
+  // Answers GET and HEAD requests outside /chargewire on the main listener (not the health
   // port). Unset: they get 404, as any unknown path.
   PlainHandler plain_handler;
 };
@@ -310,4 +310,4 @@ class Server {
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace warpsql
+}  // namespace chargewire

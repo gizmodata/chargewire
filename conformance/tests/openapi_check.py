@@ -4,7 +4,7 @@
 it: a documented status (or its 4XX/5XX range), a documented content type, the required
 headers and their values, and a JSON body that validates against the response's schema
 (OpenAPI 3.1 schemas are JSON Schema 2020-12). A problem document must also agree with
-the HTTP status and carry `urn:warp-sql:error:<code>` as its type (spec §11).
+the HTTP status and carry `urn:chargewire:error:<code>` as its type (spec §11).
 
 conftest.py installs it on every httpx request the suite makes, so every JSON endpoint the
 suite exercises is checked on every response, success or error, without each test asking.
@@ -25,9 +25,9 @@ import referencing.jsonschema
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
-OPENAPI_PATH = Path(os.environ.get("WARP_SQL_TEST_OPENAPI", REPO / "spec" / "openapi.yaml"))
-SPEC_PATH = REPO / "spec" / "warp-sql.md"
-DOC_URI = "urn:warp-sql:openapi"
+OPENAPI_PATH = Path(os.environ.get("CHARGEWIRE_TEST_OPENAPI", REPO / "spec" / "openapi.yaml"))
+SPEC_PATH = REPO / "spec" / "chargewire.md"
+DOC_URI = "urn:chargewire:openapi"
 METHODS = ("get", "put", "post", "delete", "options", "head", "patch", "trace")
 ARROW_STREAM = "application/vnd.apache.arrow.stream"
 # An Arrow IPC stream begins with a message, framed by the continuation marker.
@@ -61,13 +61,13 @@ def spec_body_endpoints(spec_text: str | None = None) -> set[tuple[str, str]]:
     """The endpoints the specification's sections name as `METHOD path`, before Appendix B."""
     text = spec_text if spec_text is not None else SPEC_PATH.read_text(encoding="utf-8")
     body = text.split("## Appendix B. Endpoints", 1)[0]
-    found = re.findall(r"`(GET|POST|PATCH|DELETE|PUT) ((?:/warp|…)[^`?\s]*)", body)
+    found = re.findall(r"`(GET|POST|PATCH|DELETE|PUT) ((?:/chargewire|…)[^`?\s]*)", body)
     return {(method, expand(path=path)) for method, path in found}
 
 
 def expand(path: str) -> str:
-    """Appendix B and the sections write `…` for /warp/v1/sessions/{session_id}."""
-    return path.replace("…", "/warp/v1/sessions/{session_id}", 1) if path.startswith("…") else path
+    """Appendix B and the sections write `…` for /chargewire/v1/sessions/{session_id}."""
+    return path.replace("…", "/chargewire/v1/sessions/{session_id}", 1) if path.startswith("…") else path
 
 
 @dataclass
@@ -136,7 +136,7 @@ class OpenApi:
         method = method.lower()
         path = unquote(path)
         where = f"{method.upper()} {path} -> {status}"
-        if method in ("options", "head") or not path.startswith("/warp"):
+        if method in ("options", "head") or not path.startswith("/chargewire"):
             return []
         route = self.find(path=path)
         if route is None or method not in route.item:
@@ -200,7 +200,7 @@ class OpenApi:
                 if instance.get("status") != status:
                     problems.append(f"the problem document's status {instance.get('status')} "
                                     f"is not the response's {status}")
-                if instance.get("type") != f"urn:warp-sql:error:{instance.get('code')}":
+                if instance.get("type") != f"urn:chargewire:error:{instance.get('code')}":
                     problems.append(f"the problem document's type {instance.get('type')!r} does not "
                                     f"name its code {instance.get('code')!r}")
         return problems

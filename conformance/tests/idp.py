@@ -30,7 +30,7 @@ def b64url_uint(value: int) -> str:
 
 
 class IdentityProvider:
-    def __init__(self, client_id: str = "warp-conformance", client_secret: str | None = None):
+    def __init__(self, client_id: str = "chargewire-conformance", client_secret: str | None = None):
         self.client_id = client_id
         self.client_secret = client_secret or secrets.token_urlsafe(nbytes=16) + "+/="
         self.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)

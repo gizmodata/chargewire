@@ -1,7 +1,7 @@
 sequenceDiagram
   participant C as Client
-  participant S as Warp SQL server
-  C->>S: POST /warp/v1/sessions/{id}/ingest?table=trips&mode=create<br/>Content-Type: application/vnd.apache.arrow.stream<br/>(any size, chunked)
+  participant S as Chargewire server
+  C->>S: POST /chargewire/v1/sessions/{id}/ingest?table=trips&mode=create<br/>Content-Type: application/vnd.apache.arrow.stream<br/>(any size, chunked)
   Note over S: writes every batch, one transaction
   alt every row written
     S-->>C: 200 {"rows_ingested"}

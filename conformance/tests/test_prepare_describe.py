@@ -17,12 +17,12 @@ import pyarrow as pa
 import pyarrow.ipc as ipc
 import pytest
 
-from warp import ARROW_STREAM, Warp
+from chargewire import ARROW_STREAM, Chargewire
 
 
-def prepare(warp, session_id: str, sql: str, timeout: float = 120) -> dict:
-    response = warp.http.post(url=f"{warp.session_url(session_id)}/prepared",
-                              headers=warp.headers(), json={"sql": sql}, timeout=timeout)
+def prepare(chargewire, session_id: str, sql: str, timeout: float = 120) -> dict:
+    response = chargewire.http.post(url=f"{chargewire.session_url(session_id)}/prepared",
+                              headers=chargewire.headers(), json={"sql": sql}, timeout=timeout)
     assert response.status_code == 201, response.text
     return response.json()
 
@@ -31,10 +31,10 @@ def schema_of(encoded: str) -> pa.Schema:
     return ipc.open_stream(source=io.BytesIO(initial_bytes=base64.b64decode(encoded))).schema
 
 
-def executed_schema(warp, session_id: str, prepared_id: str, parameters=None) -> pa.Schema:
-    headers = warp.headers()
+def executed_schema(chargewire, session_id: str, prepared_id: str, parameters=None) -> pa.Schema:
+    headers = chargewire.headers()
     headers["Accept"] = ARROW_STREAM
-    response = warp.http.post(url=f"{warp.session_url(session_id)}/prepared/{prepared_id}/execute",
+    response = chargewire.http.post(url=f"{chargewire.session_url(session_id)}/prepared/{prepared_id}/execute",
                               headers=headers, json={"parameters": parameters or []})
     assert response.status_code == 200, response.text
     assert response.headers["content-type"].startswith(ARROW_STREAM), response.text
@@ -55,7 +55,7 @@ PREPARING_SESSIONS = 16
 PREPARES_PER_SESSION = 250
 
 
-def test_preparing_an_expensive_query_returns_at_once(warp, server):
+def test_preparing_an_expensive_query_returns_at_once(chargewire, server):
     """Many sessions prepare expensive queries at once while others keep DuckDB's
     threads busy. A prepare that started the query and then waited for it (one that
     executed to learn the result schema, then dropped the result after DuckDB's
@@ -66,7 +66,7 @@ def test_preparing_an_expensive_query_returns_at_once(warp, server):
     lock = threading.Lock()
 
     def busy() -> None:
-        client = Warp(base_url=server.base_url, username=server.username, password=server.password)
+        client = Chargewire(base_url=server.base_url, username=server.username, password=server.password)
         session_id = client.new_session()
         try:
             while not stop.is_set():
@@ -76,7 +76,7 @@ def test_preparing_an_expensive_query_returns_at_once(warp, server):
             client.close()
 
     def preparer(k: int) -> None:
-        client = Warp(base_url=server.base_url, username=server.username, password=server.password)
+        client = Chargewire(base_url=server.base_url, username=server.username, password=server.password)
         session_id = client.new_session()
         try:
             for i in range(PREPARES_PER_SESSION):
@@ -84,7 +84,7 @@ def test_preparing_an_expensive_query_returns_at_once(warp, server):
                 started = time.monotonic()
                 try:
                     # A prepare that runs the query never returns: 10 s is a stall, not slowness.
-                    doc = prepare(warp=client, session_id=session_id, sql=sql, timeout=10)
+                    doc = prepare(chargewire=client, session_id=session_id, sql=sql, timeout=10)
                 except httpx.TimeoutException:
                     with lock:
                         stalls.append(f"session {k}, prepare {i}: {sql} (no answer in 10 s)")
@@ -161,21 +161,21 @@ SETTINGS = {
 }
 
 
-def session_with(warp, setting: str) -> str:
+def session_with(chargewire, setting: str) -> str:
     steps = SETTINGS[setting]
-    session_id = warp.new_session(options={"duckdb_arrow_lossless_conversion": True} if "lossless" in steps else None)
+    session_id = chargewire.new_session(options={"duckdb_arrow_lossless_conversion": True} if "lossless" in steps else None)
     for sql in steps:
         if sql != "lossless":
-            warp.execute(session_id=session_id, sql=sql)
-    warp.execute(session_id=session_id, sql="CREATE TYPE IF NOT EXISTS mood AS ENUM ('sad', 'happy')")
+            chargewire.execute(session_id=session_id, sql=sql)
+    chargewire.execute(session_id=session_id, sql="CREATE TYPE IF NOT EXISTS mood AS ENUM ('sad', 'happy')")
     return session_id
 
 
-def assert_described_as_executed(warp, session_id: str, sql: str, parameters=None) -> pa.Schema:
-    doc = prepare(warp=warp, session_id=session_id, sql=sql)
+def assert_described_as_executed(chargewire, session_id: str, sql: str, parameters=None) -> pa.Schema:
+    doc = prepare(chargewire=chargewire, session_id=session_id, sql=sql)
     assert doc["result_kind"] == "rows", doc
     described = schema_of(encoded=doc["result_schema"])
-    executed = executed_schema(warp=warp, session_id=session_id, prepared_id=doc["prepared_id"],
+    executed = executed_schema(chargewire=chargewire, session_id=session_id, prepared_id=doc["prepared_id"],
                                parameters=parameters)
     assert len(described) == len(executed)
     for want, got in zip(executed, described):
@@ -186,32 +186,32 @@ def assert_described_as_executed(warp, session_id: str, sql: str, parameters=Non
 
 
 @pytest.mark.parametrize("setting", list(SETTINGS))
-def test_described_schema_is_the_executed_one(warp, setting):
-    session_id = session_with(warp=warp, setting=setting)
+def test_described_schema_is_the_executed_one(chargewire, setting):
+    session_id = session_with(chargewire=chargewire, setting=setting)
     try:
-        typed = assert_described_as_executed(warp=warp, session_id=session_id, sql=TYPED)
+        typed = assert_described_as_executed(chargewire=chargewire, session_id=session_id, sql=TYPED)
         assert typed.names[-3:] == ["(1 + 1)", "dup", "dup"]
         # Every column of DuckDB's own type catalog (its NULL row: nothing to refuse).
         everything = assert_described_as_executed(
-            warp=warp, session_id=session_id, sql="SELECT * FROM test_all_types() WHERE bool IS NULL")
+            chargewire=chargewire, session_id=session_id, sql="SELECT * FROM test_all_types() WHERE bool IS NULL")
         assert len(everything) > 50
         assert_described_as_executed(
-            warp=warp, session_id=session_id, sql=PARAMETERIZED,
+            chargewire=chargewire, session_id=session_id, sql=PARAMETERIZED,
             parameters=["1.25", "00000000-0000-0000-0000-000000000001", "[1]", "2026-10-18 01:02:03+00", 7, "a"])
-        assert_described_as_executed(warp=warp, session_id=session_id, sql="EXPLAIN SELECT 1")
-        assert_described_as_executed(warp=warp, session_id=session_id,
+        assert_described_as_executed(chargewire=chargewire, session_id=session_id, sql="EXPLAIN SELECT 1")
+        assert_described_as_executed(chargewire=chargewire, session_id=session_id,
                                      sql="SELECT * FROM duckdb_settings() WHERE name = 'threads'")
     finally:
-        warp.http.delete(url=warp.session_url(session_id), headers=warp.headers())
+        chargewire.http.delete(url=chargewire.session_url(session_id), headers=chargewire.headers())
 
 
-def test_described_schema_follows_the_settings(warp):
+def test_described_schema_follows_the_settings(chargewire):
     # The described schema really is the session's (else the parity above proves little).
-    plain = session_with(warp=warp, setting="default")
-    views = session_with(warp=warp, setting="everything")
+    plain = session_with(chargewire=chargewire, setting="default")
+    views = session_with(chargewire=chargewire, setting="everything")
     sql = "SELECT 'x' AS v, 1::HUGEINT AS h, [1] AS l, TIMESTAMPTZ '2026-10-18 01:02:03+00' AS tz"
-    a = schema_of(encoded=prepare(warp=warp, session_id=plain, sql=sql)["result_schema"])
-    b = schema_of(encoded=prepare(warp=warp, session_id=views, sql=sql)["result_schema"])
+    a = schema_of(encoded=prepare(chargewire=chargewire, session_id=plain, sql=sql)["result_schema"])
+    b = schema_of(encoded=prepare(chargewire=chargewire, session_id=views, sql=sql)["result_schema"])
     assert a.field("v").type == pa.string() and b.field("v").type == pa.string_view()
     assert a.field("h").type == pa.decimal128(38, 0) and b.field("h").type != pa.decimal128(38, 0)
     assert a.field("l").type == pa.list_(pa.int32()) and b.field("l").type == pa.list_view(pa.int32())
@@ -235,83 +235,83 @@ RETURNING_WRITES = [
 RETURNING_PARAMETERS = {1: ["4.25", "c"]}
 
 
-def fresh_write_table(warp, session_id: str, name: str) -> None:
-    warp.execute(session_id=session_id, sql=f"DROP TABLE IF EXISTS {name}")
-    warp.execute(session_id=session_id, sql=WRITE_TABLE.format(t=name))
-    warp.execute(session_id=session_id, sql=f"INSERT INTO {name} VALUES "
+def fresh_write_table(chargewire, session_id: str, name: str) -> None:
+    chargewire.execute(session_id=session_id, sql=f"DROP TABLE IF EXISTS {name}")
+    chargewire.execute(session_id=session_id, sql=WRITE_TABLE.format(t=name))
+    chargewire.execute(session_id=session_id, sql=f"INSERT INTO {name} VALUES "
                                             "(1, 1.25, uuid(), ['a'], TIMESTAMPTZ '2026-10-17 01:00:00+00', 1, 'happy')")
 
 
-def table_rows(warp, session_id: str, name: str) -> list:
-    return warp.query(session_id=session_id, sql=f"SELECT id, amount, tags FROM {name} ORDER BY id").to_pylist()
+def table_rows(chargewire, session_id: str, name: str) -> list:
+    return chargewire.query(session_id=session_id, sql=f"SELECT id, amount, tags FROM {name} ORDER BY id").to_pylist()
 
 
 @pytest.mark.parametrize("setting", ["default", "lossless", "everything"])
-def test_a_write_with_returning_is_described_without_running(warp, setting):
-    session_id = session_with(warp=warp, setting=setting)
+def test_a_write_with_returning_is_described_without_running(chargewire, setting):
+    session_id = session_with(chargewire=chargewire, setting=setting)
     table = f"returning_{setting}"
     try:
-        fresh_write_table(warp=warp, session_id=session_id, name=table)
-        before = table_rows(warp=warp, session_id=session_id, name=table)
+        fresh_write_table(chargewire=chargewire, session_id=session_id, name=table)
+        before = table_rows(chargewire=chargewire, session_id=session_id, name=table)
         prepared = []
         for sql in RETURNING_WRITES:
-            doc = prepare(warp=warp, session_id=session_id, sql=sql.format(t=table))
+            doc = prepare(chargewire=chargewire, session_id=session_id, sql=sql.format(t=table))
             assert doc["result_kind"] == "rows", (sql, doc)
             assert doc["result_schema"], (sql, doc)
             prepared.append(doc)
         # Preparing wrote nothing: not one row inserted, changed or deleted.
-        assert table_rows(warp=warp, session_id=session_id, name=table) == before
+        assert table_rows(chargewire=chargewire, session_id=session_id, name=table) == before
         # Each one's described schema is what its execution sends.
         for i, (sql, doc) in enumerate(zip(RETURNING_WRITES, prepared)):
             described = schema_of(encoded=doc["result_schema"])
-            executed = executed_schema(warp=warp, session_id=session_id, prepared_id=doc["prepared_id"],
+            executed = executed_schema(chargewire=chargewire, session_id=session_id, prepared_id=doc["prepared_id"],
                                        parameters=RETURNING_PARAMETERS.get(i))
             assert described.equals(executed, check_metadata=True), f"{sql}\n{described}\n!=\n{executed}"
-        assert table_rows(warp=warp, session_id=session_id, name=table) != before  # the executions did write
+        assert table_rows(chargewire=chargewire, session_id=session_id, name=table) != before  # the executions did write
     finally:
-        warp.http.delete(url=warp.session_url(session_id), headers=warp.headers())
+        chargewire.http.delete(url=chargewire.session_url(session_id), headers=chargewire.headers())
 
 
-def test_a_write_without_returning_is_an_update_and_runs_nothing(warp, session_id):
+def test_a_write_without_returning_is_an_update_and_runs_nothing(chargewire, session_id):
     # Negative twin: no RETURNING, so no rows and no schema, whatever the text says.
-    warp.execute(session_id=session_id, sql="CREATE TYPE IF NOT EXISTS mood AS ENUM ('sad', 'happy')")
-    fresh_write_table(warp=warp, session_id=session_id, name="no_returning")
-    before = table_rows(warp=warp, session_id=session_id, name="no_returning")
+    chargewire.execute(session_id=session_id, sql="CREATE TYPE IF NOT EXISTS mood AS ENUM ('sad', 'happy')")
+    fresh_write_table(chargewire=chargewire, session_id=session_id, name="no_returning")
+    before = table_rows(chargewire=chargewire, session_id=session_id, name="no_returning")
     for sql in ["INSERT INTO no_returning (id, amount) VALUES (5, 5)",
                 "INSERT INTO no_returning (id, tags) VALUES (6, ['RETURNING *'])",  # a string says it
                 "UPDATE no_returning SET amount = 0 -- RETURNING *",               # a comment says it
                 'UPDATE no_returning SET amount = amount WHERE "id" = 1',
                 "DELETE FROM no_returning WHERE id IN (SELECT id FROM no_returning)"]:
-        doc = prepare(warp=warp, session_id=session_id, sql=sql)
+        doc = prepare(chargewire=chargewire, session_id=session_id, sql=sql)
         assert doc["result_kind"] == "update", (sql, doc)
         assert doc["result_schema"] is None, (sql, doc)
-    assert table_rows(warp=warp, session_id=session_id, name="no_returning") == before
+    assert table_rows(chargewire=chargewire, session_id=session_id, name="no_returning") == before
 
 
-def test_returning_one_bigint_named_count_is_rows_not_a_count(warp, session_id):
+def test_returning_one_bigint_named_count_is_rows_not_a_count(chargewire, session_id):
     # Its bound columns look exactly like a write's changed-rows count (one BIGINT,
     # "Count"); the RETURNING clause in the statement says they are rows.
-    warp.execute(session_id=session_id, sql="CREATE TABLE counted (n BIGINT)")
-    doc = prepare(warp=warp, session_id=session_id, sql='INSERT INTO counted VALUES (7) RETURNING n AS "Count"')
+    chargewire.execute(session_id=session_id, sql="CREATE TABLE counted (n BIGINT)")
+    doc = prepare(chargewire=chargewire, session_id=session_id, sql='INSERT INTO counted VALUES (7) RETURNING n AS "Count"')
     assert doc["result_kind"] == "rows", doc
-    executed = executed_schema(warp=warp, session_id=session_id, prepared_id=doc["prepared_id"])
+    executed = executed_schema(chargewire=chargewire, session_id=session_id, prepared_id=doc["prepared_id"])
     assert schema_of(encoded=doc["result_schema"]).equals(executed, check_metadata=True)
     # Positive twin of the count: the same table without RETURNING.
-    plain = prepare(warp=warp, session_id=session_id, sql="INSERT INTO counted VALUES (8)")
+    plain = prepare(chargewire=chargewire, session_id=session_id, sql="INSERT INTO counted VALUES (8)")
     assert plain["result_kind"] == "update" and plain["result_schema"] is None, plain
 
 
-def test_preparing_a_returning_write_inside_a_transaction_writes_nothing(warp, session_id):
-    warp.execute(session_id=session_id, sql="CREATE TYPE IF NOT EXISTS mood AS ENUM ('sad', 'happy')")
-    fresh_write_table(warp=warp, session_id=session_id, name="returning_tx")
-    warp.http.patch(url=warp.session_url(session_id), headers=warp.headers(),
+def test_preparing_a_returning_write_inside_a_transaction_writes_nothing(chargewire, session_id):
+    chargewire.execute(session_id=session_id, sql="CREATE TYPE IF NOT EXISTS mood AS ENUM ('sad', 'happy')")
+    fresh_write_table(chargewire=chargewire, session_id=session_id, name="returning_tx")
+    chargewire.http.patch(url=chargewire.session_url(session_id), headers=chargewire.headers(),
                     json={"options": {"autocommit": False}})
-    doc = prepare(warp=warp, session_id=session_id,
+    doc = prepare(chargewire=chargewire, session_id=session_id,
                   sql="DELETE FROM returning_tx RETURNING id")
     assert doc["result_kind"] == "rows"
     # The transaction is still usable, and still sees the row the DELETE would remove.
-    assert warp.query(session_id=session_id, sql="SELECT count(*) AS n FROM returning_tx").to_pylist() == [{"n": 1}]
-    assert warp.http.post(url=f"{warp.session_url(session_id)}/commit",
-                          headers=warp.headers()).status_code == 204
-    other = warp.new_session()
-    assert warp.query(session_id=other, sql="SELECT count(*) AS n FROM returning_tx").to_pylist() == [{"n": 1}]
+    assert chargewire.query(session_id=session_id, sql="SELECT count(*) AS n FROM returning_tx").to_pylist() == [{"n": 1}]
+    assert chargewire.http.post(url=f"{chargewire.session_url(session_id)}/commit",
+                          headers=chargewire.headers()).status_code == 204
+    other = chargewire.new_session()
+    assert chargewire.query(session_id=other, sql="SELECT count(*) AS n FROM returning_tx").to_pylist() == [{"n": 1}]

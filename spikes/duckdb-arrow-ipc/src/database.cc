@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-namespace warp {
+namespace chargewire {
 
 namespace {
 
@@ -13,7 +13,7 @@ using TableDescription =
 
 // The name SQL uses to read the rows of the ingest in progress. Outside an ingest
 // it reads nothing and fails.
-constexpr std::string_view kUploadFunction = "warp_upload";
+constexpr std::string_view kUploadFunction = "chargewire_upload";
 
 // DuckDB's own maximum rows per chunk; the importer must not produce more than a
 // table function may return at once.
@@ -63,7 +63,7 @@ std::string ArrowStreamError(ArrowArrayStream* stream, int code) {
 
 }  // namespace
 
-// Set only while Ingest() runs, so warp_upload() in any other statement finds
+// Set only while Ingest() runs, so chargewire_upload() in any other statement finds
 // nothing to read.
 struct Upload {
   ArrowArrayStream* rows = nullptr;
@@ -72,7 +72,7 @@ struct Upload {
 
 namespace {
 
-// warp_upload()'s state for one statement: the importer resolved from the upload's
+// chargewire_upload()'s state for one statement: the importer resolved from the upload's
 // schema, and where the stream is.
 struct UploadScan {
   Upload* upload = nullptr;  // not owned
@@ -89,7 +89,7 @@ void UploadBind(duckdb_v2_function_bind_info_handle info,
          [&](auto* e) { return duckdb_v2_function_bind_get_user_data(info, &user_data, e); });
     auto* upload = static_cast<Upload*>(user_data);
     if (upload->rows == nullptr) {
-      throw Error("warp_upload() only reads the rows of a bulk ingest in progress");
+      throw Error("chargewire_upload() only reads the rows of a bulk ingest in progress");
     }
 
     nanoarrow::UniqueSchema schema;
@@ -237,22 +237,22 @@ void Database::RegisterUploadFunction() {
     return duckdb_v2_connection_get_factory(connection_.get(), &factory, err);
   });
   TableFunction function;
-  Call("create warp_upload()",
+  Call("create chargewire_upload()",
        [&](auto* err) { return duckdb_v2_table_function_create(factory, function.out(), err); });
   const duckdb_v2_str name = Str(kUploadFunction);
-  Call("name warp_upload()",
+  Call("name chargewire_upload()",
        [&](auto* err) { return duckdb_v2_table_function_set_name(function.get(), &name, err); });
   duckdb_v2_opaque user_data{upload_.get(), nullptr, nullptr};
-  Call("warp_upload() state", [&](auto* err) {
+  Call("chargewire_upload() state", [&](auto* err) {
     return duckdb_v2_table_function_set_user_data(function.get(), &user_data, err);
   });
-  Call("warp_upload() bind", [&](auto* err) {
+  Call("chargewire_upload() bind", [&](auto* err) {
     return duckdb_v2_table_function_set_bind_callback(function.get(), UploadBind, err);
   });
-  Call("warp_upload() exec", [&](auto* err) {
+  Call("chargewire_upload() exec", [&](auto* err) {
     return duckdb_v2_table_function_set_exec_callback(function.get(), UploadExec, err);
   });
-  Call("register warp_upload()", [&](auto* err) {
+  Call("register chargewire_upload()", [&](auto* err) {
     return duckdb_v2_connection_register_table_function(connection_.get(), function.get(), err);
   });
 }
@@ -396,4 +396,4 @@ int64_t Database::Ingest(std::string_view table, IngestMode mode, ArrowArrayStre
   return upload_->rows_read;
 }
 
-}  // namespace warp
+}  // namespace chargewire

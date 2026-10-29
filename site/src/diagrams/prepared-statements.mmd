@@ -1,7 +1,7 @@
 sequenceDiagram
   participant C as Client
-  participant S as Warp SQL server
-  C->>S: POST /warp/v1/sessions/{id}/prepared<br/>{"sql": "INSERT INTO events VALUES (?, ?)"}
+  participant S as Chargewire server
+  C->>S: POST /chargewire/v1/sessions/{id}/prepared<br/>{"sql": "INSERT INTO events VALUES (?, ?)"}
   S-->>C: 201 prepared_id, parameter_schema,<br/>result_schema, result_kind (not run)
   C->>S: POST …/prepared/{prepared_id}/execute<br/>{"parameters": [1, "signup"]}
   S-->>C: as a submit: a statement document,<br/>or an Arrow stream for a query

@@ -1,14 +1,14 @@
-// The Warp SQL client library (libwarpsql_client): the protocol's client side, over
+// The Chargewire client library (libchargewire_client): the protocol's client side, over
 // HTTP/1.1 and TLS on Boost.Beast, with results as Arrow record batches.
 //
-//   warpsql::client::Client client({.host = "db.example.com", .port = 31337,
+//   chargewire::client::Client client({.host = "db.example.com", .port = 31337,
 //                                   .tls = {.enabled = true}});
 //   client.SignInWithPassword("joe", password);
 //   auto session = client.CreateSession();
 //   auto result = session->Execute("SELECT 42 AS answer");
 //   auto table = result.reader->ToTable();
 //
-// Every call throws warpsql::client::Error on failure: a problem document from the
+// Every call throws chargewire::client::Error on failure: a problem document from the
 // server (spec §11) or a transport failure (status 0). A Session is used by one thread
 // at a time, except Session::CancelRunning, which any thread may call while another
 // thread waits on a statement (it is what a command-line client's Ctrl-C calls).
@@ -31,7 +31,7 @@
 #include <arrow/type.h>
 #include <boost/json.hpp>
 
-namespace warpsql::client {
+namespace chargewire::client {
 
 namespace json = boost::json;
 
@@ -51,14 +51,14 @@ struct TlsOptions {
 struct ConnectOptions {
   std::string host = "localhost";
   uint16_t port = 31337;
-  std::string base_path = "/warp";  // where the server mounts the protocol (spec §2.1)
+  std::string base_path = "/chargewire";  // where the server mounts the protocol (spec §2.1)
   TlsOptions tls;
   std::chrono::milliseconds connect_timeout{10000};
-  // Empty: "warpsql-client-cpp/<version>".
+  // Empty: "chargewire-client-cpp/<version>".
   std::string user_agent;
 };
 
-// The base URL these options name: http(s)://host:port/warp.
+// The base URL these options name: http(s)://host:port/chargewire.
 std::string BaseUrl(const ConnectOptions& options);
 
 // ---- Errors ----
@@ -152,18 +152,18 @@ struct StatementDocument {
 struct StatementOptions {
   // Bind parameters (spec §6.1): an array (positional) or an object (by name); null: none.
   json::value parameters;
-  std::optional<int64_t> timeout_ms;   // Warp-Statement-Timeout
-  std::optional<bool> retain_result;   // Warp-Retain-Result
-  std::string query_tag;               // Warp-Query-Tag: a JSON object's text
+  std::optional<int64_t> timeout_ms;   // Chargewire-Statement-Timeout
+  std::optional<bool> retain_result;   // Chargewire-Retain-Result
+  std::string query_tag;               // Chargewire-Query-Tag: a JSON object's text
   std::string idempotency_key;         // empty: a random one per request
-  // Warp-IPC-Compression (spec §8.2): the Arrow buffer compression accepted, in order of
+  // Chargewire-IPC-Compression (spec §8.2): the Arrow buffer compression accepted, in order of
   // preference ("lz4_frame, zstd"); empty: none.
   std::string ipc_compression;
   // Split results (spec §6.10): up to this many partitions, read at once over separate
   // connections (sent only to a server with the result_partitions capability). With
   // any_order the batches come as they arrive; without, in the result's order.
-  int result_partitions = 8;           // Warp-Result-Partitions (1: one stream)
-  bool any_order = false;              // Warp-Result-Order: any
+  int result_partitions = 8;           // Chargewire-Result-Partitions (1: one stream)
+  bool any_order = false;              // Chargewire-Result-Order: any
 };
 
 // The record batches of a result, read from the network as they arrive. A stream that
@@ -324,7 +324,7 @@ class Client {
 
   const ConnectOptions& options() const;
 
-  // GET /warp (§3.1) and GET /warp/v1/health (§3.2); no sign-in needed.
+  // GET /chargewire (§3.1) and GET /chargewire/v1/health (§3.2); no sign-in needed.
   Discovery Discover();
   json::object Health();
 
@@ -386,4 +386,4 @@ std::shared_ptr<arrow::Schema> DecodeSchema(const std::string& base64);
 // Reads a complete Arrow IPC stream held in memory into a table.
 std::shared_ptr<arrow::Table> ReadStream(const std::string& bytes);
 
-}  // namespace warpsql::client
+}  // namespace chargewire::client

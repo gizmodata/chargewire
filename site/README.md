@@ -1,4 +1,4 @@
-# The Warp SQL site
+# The Chargewire site
 
 The protocol's documentation site: the specification, every flow with a sequence diagram and
 commands that run, the OpenAPI reference in Swagger UI, conformance and implementations. Built
@@ -18,7 +18,7 @@ The same source builds two sites, chosen by **one switch, `DOCS_GA`**:
 
 | | Private preview (`DOCS_GA` unset) | Public site (`DOCS_GA=true`) |
 |---|---|---|
-| Address | <https://glowing-system-8l9q85e.pages.github.io/> (GitHub Pages, visible to the gizmodata organization only) | <https://warpsql.gizmodata.com/> (`public/CNAME`; DNS already points there) |
+| Address | <https://glowing-system-8l9q85e.pages.github.io/> (GitHub Pages, visible to the gizmodata organization only) | <https://chargewire.gizmodata.com/> (`public/CNAME`; DNS already points there) |
 | Banner, `noindex` | on every page | none |
 | External links | `github.com/gizmodata/` left out (also in a dry run with the **ga** input: the repositories are private until the flip) | checked |
 
@@ -28,7 +28,7 @@ input checks the public site. On `main`, a manual run also deploys using the rep
 variable (the input alone never switches the live site to GA).
 
 **The flip, when the repository is public:** set the repository variable `DOCS_GA` to `true`
-(`gh variable set DOCS_GA --body true --repo gizmodata/warp-sql`), set the Pages custom domain
+(`gh variable set DOCS_GA --body true --repo gizmodata/chargewire`), set the Pages custom domain
 (the GA checklist below), and push to `main` (or run **site** by hand on `main`).
 
 ## What is generated
@@ -38,7 +38,7 @@ makes these from it, and `npm run check:generated` fails when a committed page i
 
 | Page | From |
 |---|---|
-| `src/content/docs/specification.md` | `spec/warp-sql.md`, every "§N.M" a link to its heading |
+| `src/content/docs/specification.md` | `spec/chargewire.md`, every "§N.M" a link to its heading |
 | `src/content/docs/reference/endpoints.md` | the spec's Appendix B and `spec/openapi.yaml` |
 | `src/content/docs/conformance.md` | `conformance/README.md` and each test file's docstring |
 | `src/data/spec-sections.json` | the spec's headings, for `<Spec s="6.1" />` links |
@@ -64,7 +64,7 @@ Hardcharger for the token-exchange example:
 
 ```bash
 ../conformance/.venv/bin/python scripts/verify_examples.py \
-  --hardcharger /path/to/hardcharger-server        # or WARP_SQL_SITE_HARDCHARGER
+  --hardcharger /path/to/hardcharger-server        # or CHARGEWIRE_SITE_HARDCHARGER
 ```
 
 `scripts/screenshots.mjs` checks the built site in Chromium and WebKit, light and dark, desktop
@@ -89,17 +89,17 @@ examples and browser checks run locally (above): they need a built server.
 
 Done, ready for the flip:
 
-- [x] DNS: `warpsql.gizmodata.com` is a `CNAME` to `gizmodata.github.io`
+- [x] DNS: `chargewire.gizmodata.com` is a `CNAME` to `gizmodata.github.io`
       (gizmodata-infrastructure-terraform `aws/dns/gizmodata_com.tf`, applied 2026-10-20), and
       gizmodata.com is a verified GitHub Pages domain of the organization.
 - [x] `public/CNAME`, the `DOCS_GA` switch, and the GA build checked on every run.
 
 At the flip (the repository public):
 
-- [ ] `gh variable set DOCS_GA --body true --repo gizmodata/warp-sql`.
-- [ ] Pages custom domain: `gh api -X PUT repos/gizmodata/warp-sql/pages -f cname=warpsql.gizmodata.com`
+- [ ] `gh variable set DOCS_GA --body true --repo gizmodata/chargewire`.
+- [ ] Pages custom domain: `gh api -X PUT repos/gizmodata/chargewire/pages -f cname=chargewire.gizmodata.com`
       (Settings → Pages → Custom domain). Wait for the DNS check and the certificate
-      (`gh api repos/gizmodata/warp-sql/pages --jq '.https_certificate.state'` says `approved`),
-      then `gh api -X PUT repos/gizmodata/warp-sql/pages -F https_enforced=true`.
+      (`gh api repos/gizmodata/chargewire/pages --jq '.https_certificate.state'` says `approved`),
+      then `gh api -X PUT repos/gizmodata/chargewire/pages -F https_enforced=true`.
 - [ ] A push to `main` that touches the site (or **site** by hand on `main`) deploys the public
       site; open every page on the live domain in Chromium and WebKit.

@@ -4,7 +4,7 @@ certificate header is no certificate.
 Two principals need two identities. Certificate sign-in gives them to any server the
 suite can start with mutual TLS (alice@example.com and bob@example.com, each its own
 principal), so these tests run on the mutual-TLS servers of test_mtls.py (marker mtls,
-WARP_SQL_TEST_SERVER_BINARY).
+CHARGEWIRE_TEST_SERVER_BINARY).
 """
 
 import base64
@@ -18,7 +18,7 @@ from cryptography.hazmat.primitives import serialization
 
 from test_discovery_auth import assert_problem
 from test_mtls import bearer, certificate_grant, certificate_token, client, new_session, optional, pki, strict  # noqa: F401
-from warp import ARROW_STREAM, read_table
+from chargewire import ARROW_STREAM, read_table
 
 pytestmark = pytest.mark.mtls
 
@@ -42,10 +42,10 @@ def test_another_principals_handles_are_not_found(pki, strict):  # noqa: F811
     with client(server=strict, pki=pki, cert=pki.alice) as alice:
         token = certificate_token(http=alice)
         session_id = new_session(http=alice, token=token)
-        base = f"/warp/v1/sessions/{session_id}"
+        base = f"/chargewire/v1/sessions/{session_id}"
         # A retained result, a prepared statement and an open ingest of alice's.
         submitted = alice.post(url=f"{base}/statements", json={"sql": "SELECT 42 AS answer"},
-                               headers={**bearer(token=token), "Warp-Retain-Result": "true"})
+                               headers={**bearer(token=token), "Chargewire-Retain-Result": "true"})
         assert submitted.status_code == 201, submitted.text
         statement_id = submitted.json()["statement_id"]
         doc = wait_done(http=alice, token=token, url=f"{base}/statements/{statement_id}")
@@ -92,11 +92,11 @@ def test_another_principals_handles_are_not_found(pki, strict):  # noqa: F811
                 assert_problem(response=response, status=404, code="session_not_found")
             except AssertionError as failure:
                 raise AssertionError(f"{what}: {failure}") from None
-        never = bob.get(url="/warp/v1/sessions/s_" + "x" * 30, headers=h)
+        never = bob.get(url="/chargewire/v1/sessions/s_" + "x" * 30, headers=h)
         assert_problem(response=never, status=404, code="session_not_found")
         # In bob's own session, alice's ids name nothing.
         own = new_session(http=bob, token=bob_token)
-        mine = f"/warp/v1/sessions/{own}"
+        mine = f"/chargewire/v1/sessions/{own}"
         assert_problem(response=bob.get(url=f"{mine}/statements/{statement_id}", headers=h),
                        status=404, code="statement_not_found")
         assert_problem(response=bob.post(url=f"{mine}/prepared/{prepared_id}/execute", headers=h, json={}),
@@ -138,7 +138,7 @@ def test_a_forwarded_certificate_header_is_no_certificate(pki, optional):  # noq
     # A connection of its own for each: a server closes one that keeps failing to sign in.
     for name, value in [*headers.items(), ("all of them", None)]:
         with client(server=optional, pki=pki, cert=None) as anonymous:
-            response = anonymous.post(url="/warp/v1/auth/token", json={"grant_type": "client_certificate"},
+            response = anonymous.post(url="/chargewire/v1/auth/token", json={"grant_type": "client_certificate"},
                                       headers=headers if value is None else {name: value})
             try:
                 assert_problem(response=response, status=401, code="certificate_required")
@@ -148,7 +148,7 @@ def test_a_forwarded_certificate_header_is_no_certificate(pki, optional):  # noq
     with client(server=optional, pki=pki, cert=pki.alice) as alice:
         token = certificate_token(http=alice)
     with client(server=optional, pki=pki, cert=None) as anonymous:
-        response = anonymous.post(url="/warp/v1/sessions", headers={**bearer(token=token), **headers}, json={})
+        response = anonymous.post(url="/chargewire/v1/sessions", headers={**bearer(token=token), **headers}, json={})
         assert_problem(response=response, status=401, code="certificate_mismatch")
     # The twin: the real certificate signs in.
     with client(server=optional, pki=pki, cert=pki.alice) as alice:

@@ -1,7 +1,7 @@
 // The operating system's requests to stop a server process, for a server's main().
 #pragma once
 
-namespace warpsql {
+namespace chargewire {
 
 // On POSIX: SIGINT and SIGTERM. On Windows: the console's Ctrl+C, Ctrl+Break, close and
 // shutdown events (Ctrl+Break is what a parent sends to a child it started in its own
@@ -27,4 +27,4 @@ class StopSignals {
   void Wake();
 };
 
-}  // namespace warpsql
+}  // namespace chargewire

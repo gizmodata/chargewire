@@ -43,23 +43,23 @@ def test_only_discovery_health_sign_in_and_the_document_need_no_token():
         **doc["components"]["securitySchemes"]["bearerAuth"], "type": "http", "scheme": "bearer"}
     open_ops = {(method.upper(), path) for path, item in doc["paths"].items()
                 for method, op in item.items() if isinstance(op, dict) and op.get("security") == []}
-    assert open_ops == {("GET", "/warp"), ("GET", "/warp/v1/health"), ("GET", "/warp/v1/openapi.json"),
-                        ("POST", "/warp/v1/auth/token"), ("POST", "/warp/v1/auth/oauth/flows"),
-                        ("POST", "/warp/v1/auth/oauth/flows/{flow_id}"),
-                        ("GET", "/warp/v1/auth/oauth/callback")}
+    assert open_ops == {("GET", "/chargewire"), ("GET", "/chargewire/v1/health"), ("GET", "/chargewire/v1/openapi.json"),
+                        ("POST", "/chargewire/v1/auth/token"), ("POST", "/chargewire/v1/auth/oauth/flows"),
+                        ("POST", "/chargewire/v1/auth/oauth/flows/{flow_id}"),
+                        ("GET", "/chargewire/v1/auth/oauth/callback")}
 
 
-# ---- GET /warp/v1/openapi.json (§3.3) ----
+# ---- GET /chargewire/v1/openapi.json (§3.3) ----
 
 def test_the_server_serves_the_document_if_discovery_says_so(server):
-    discovery = httpx.get(url=f"{server.base_url}/warp").json()
-    response = httpx.get(url=f"{server.base_url}/warp/v1/openapi.json")  # no credentials
+    discovery = httpx.get(url=f"{server.base_url}/chargewire").json()
+    response = httpx.get(url=f"{server.base_url}/chargewire/v1/openapi.json")  # no credentials
     if "openapi" not in discovery["capabilities"]:
         assert response.status_code == 404, response.text
         assert response.json()["code"] == "not_found"
         assert "openapi" not in discovery.get("links", {}), discovery
         return
-    assert discovery["links"]["openapi"] == "/warp/v1/openapi.json", discovery
+    assert discovery["links"]["openapi"] == "/chargewire/v1/openapi.json", discovery
     assert response.status_code == 200, response.text
     assert response.headers["content-type"].split(";")[0] == "application/json"
     served = response.json()
@@ -71,26 +71,26 @@ def test_the_server_serves_the_document_if_discovery_says_so(server):
     assert without_extensions(served) == without_extensions(load_document())
 
 
-def test_the_document_needs_no_token_even_with_a_bad_one(server, warp):
-    if "openapi" not in httpx.get(url=f"{server.base_url}/warp").json()["capabilities"]:
+def test_the_document_needs_no_token_even_with_a_bad_one(server, chargewire):
+    if "openapi" not in httpx.get(url=f"{server.base_url}/chargewire").json()["capabilities"]:
         pytest.skip("the server does not offer the OpenAPI document (capability openapi)")
-    for headers in [{}, {"Authorization": "Bearer forged"}, {"Authorization": f"Bearer {warp.token}"}]:
-        response = httpx.get(url=f"{server.base_url}/warp/v1/openapi.json", headers=headers)
+    for headers in [{}, {"Authorization": "Bearer forged"}, {"Authorization": f"Bearer {chargewire.token}"}]:
+        response = httpx.get(url=f"{server.base_url}/chargewire/v1/openapi.json", headers=headers)
         assert response.status_code == 200, (headers, response.text)
 
 
 def test_the_document_is_cacheable(server):
-    if "openapi" not in httpx.get(url=f"{server.base_url}/warp").json()["capabilities"]:
+    if "openapi" not in httpx.get(url=f"{server.base_url}/chargewire").json()["capabilities"]:
         pytest.skip("the server does not offer the OpenAPI document (capability openapi)")
-    response = httpx.get(url=f"{server.base_url}/warp/v1/openapi.json")
+    response = httpx.get(url=f"{server.base_url}/chargewire/v1/openapi.json")
     cache_control = response.headers.get("cache-control", "")
     assert "max-age=" in cache_control and "no-store" not in cache_control, cache_control
     etag = response.headers.get("etag")
     assert etag, response.headers
-    again = httpx.get(url=f"{server.base_url}/warp/v1/openapi.json", headers={"If-None-Match": etag})
+    again = httpx.get(url=f"{server.base_url}/chargewire/v1/openapi.json", headers={"If-None-Match": etag})
     assert again.status_code == 304, again.text
     assert again.content == b""
-    other = httpx.get(url=f"{server.base_url}/warp/v1/openapi.json", headers={"If-None-Match": '"not-it"'})
+    other = httpx.get(url=f"{server.base_url}/chargewire/v1/openapi.json", headers={"If-None-Match": '"not-it"'})
     assert other.status_code == 200
     assert other.content == response.content
 
@@ -100,8 +100,8 @@ def test_the_document_is_cacheable(server):
 # The suite's other tests pass only because their responses validate. These show the check
 # rejects a response that disagrees with the document, and says why.
 
-def real_session_response(warp) -> httpx.Response:
-    return warp.http.post(url="/warp/v1/sessions", headers=warp.headers(), json={})
+def real_session_response(chargewire) -> httpx.Response:
+    return chargewire.http.post(url="/chargewire/v1/sessions", headers=chargewire.headers(), json={})
 
 
 def check(openapi: OpenApi, response: httpx.Response, body: bytes | None = None,
@@ -113,54 +113,54 @@ def check(openapi: OpenApi, response: httpx.Response, body: bytes | None = None,
         body=response.content if body is None else body)
 
 
-def test_the_check_accepts_a_real_session_response(warp):
-    assert check(openapi=OpenApi(), response=real_session_response(warp=warp)) == []
+def test_the_check_accepts_a_real_session_response(chargewire):
+    assert check(openapi=OpenApi(), response=real_session_response(chargewire=chargewire)) == []
 
 
-def test_a_field_renamed_in_the_document_fails_a_real_response(warp):
+def test_a_field_renamed_in_the_document_fails_a_real_response(chargewire):
     doc = copy.deepcopy(load_document())
     required = doc["components"]["schemas"]["Session"]["required"]
     required[required.index("session_id")] = "session_ident"
-    problems = check(openapi=OpenApi(doc=doc), response=real_session_response(warp=warp))
+    problems = check(openapi=OpenApi(doc=doc), response=real_session_response(chargewire=chargewire))
     assert any("'session_ident' is a required property" in problem for problem in problems), problems
 
 
-def test_a_response_missing_a_field_fails(warp):
-    response = real_session_response(warp=warp)
+def test_a_response_missing_a_field_fails(chargewire):
+    response = real_session_response(chargewire=chargewire)
     body = response.json()
     del body["transaction"]
     problems = check(openapi=OpenApi(), response=response, body=json.dumps(body).encode())
     assert any("'transaction' is a required property" in problem for problem in problems), problems
 
 
-def test_a_value_outside_its_enumeration_fails(warp):
-    response = real_session_response(warp=warp)
+def test_a_value_outside_its_enumeration_fails(chargewire):
+    response = real_session_response(chargewire=chargewire)
     body = {**response.json(), "transaction": "maybe"}
     problems = check(openapi=OpenApi(), response=response, body=json.dumps(body).encode())
     assert any("'maybe' is not one of" in problem for problem in problems), problems
 
 
-def test_an_undocumented_status_fails(warp):
-    problems = check(openapi=OpenApi(), response=real_session_response(warp=warp), status=202)
+def test_an_undocumented_status_fails(chargewire):
+    problems = check(openapi=OpenApi(), response=real_session_response(chargewire=chargewire), status=202)
     assert any("status 202 is not documented" in problem for problem in problems), problems
 
 
-def test_an_undocumented_content_type_fails(warp):
-    response = real_session_response(warp=warp)
+def test_an_undocumented_content_type_fails(chargewire):
+    response = real_session_response(chargewire=chargewire)
     headers = {**{k.lower(): v for k, v in response.headers.items()}, "content-type": ARROW}
     problems = check(openapi=OpenApi(), response=response, headers=headers)
     assert any(f"content type {ARROW} is not documented" in problem for problem in problems), problems
 
 
-def test_a_missing_required_header_fails(warp):
-    response = real_session_response(warp=warp)
+def test_a_missing_required_header_fails(chargewire):
+    response = real_session_response(chargewire=chargewire)
     headers = {k.lower(): v for k, v in response.headers.items() if k.lower() != "location"}
     problems = check(openapi=OpenApi(), response=response, headers=headers)
     assert any("the required header Location is missing" in problem for problem in problems), problems
 
 
 def test_a_problem_document_must_agree_with_its_status(server):
-    response = httpx.get(url=f"{server.base_url}/warp/v1/sessions/nope")  # 401 invalid_token
+    response = httpx.get(url=f"{server.base_url}/chargewire/v1/sessions/nope")  # 401 invalid_token
     assert response.status_code == 401
     body = {**response.json(), "status": 400}
     problems = check(openapi=OpenApi(), response=response, body=json.dumps(body).encode())

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Runs every example marked `test` on the site's pages against real Warp SQL servers.
+"""Runs every example marked `test` on the site's pages against real Chargewire servers.
 
     site/scripts/verify_examples.py [--page FRAGMENT] [--list]
-        [--warp-duckdb PATH] [--hardcharger PATH]
+        [--chargewire-duckdb PATH] [--hardcharger PATH]
 
 A fenced block takes part when its info string has the word `test`:
 
@@ -23,17 +23,17 @@ block and in its expected output.
 
 Profiles (`profile=NAME`; default `default`). Each starts with user `joe`, password `s3:cret`:
 
-    default      warp-duckdb, the reference server in ../cpp
-    retention    warp-duckdb keeping results 3 seconds (--result-retention-seconds 3)
-    drain        warp-duckdb with a 30-second drain, its own for the page; SERVER_PID is its
+    default      chargewire-duckdb, the reference server in ../cpp
+    retention    chargewire-duckdb keeping results 3 seconds (--result-retention-seconds 3)
+    drain        chargewire-duckdb with a 30-second drain, its own for the page; SERVER_PID is its
                  process id, and the page is expected to stop it
-    oauth        warp-duckdb with browser sign-in through a stand-in OpenID Connect provider
+    oauth        chargewire-duckdb with browser sign-in through a stand-in OpenID Connect provider
                  (conformance/tests/idp.py) that approves every sign-in as alice@example.com
     hardcharger  Hardcharger, trusting that provider's ID tokens (token exchange); ID_TOKEN is
                  a fresh ID token for alice@example.com
 
-Needs warp-duckdb (default ../cpp/build/warp-duckdb), Hardcharger (--hardcharger or
-WARP_SQL_SITE_HARDCHARGER) for the pages that use it, curl and jq, and Python 3.12+ with the
+Needs chargewire-duckdb (default ../cpp/build/chargewire-duckdb), Hardcharger (--hardcharger or
+CHARGEWIRE_SITE_HARDCHARGER) for the pages that use it, curl and jq, and Python 3.12+ with the
 conformance suite's packages (run it with ../conformance/.venv/bin/python). A missing
 prerequisite fails the run, and so does a run in which no example ran.
 """
@@ -63,7 +63,7 @@ ELLIPSIS = "…"
 DOC_ADDRESS = "127.0.0.1:31337"
 USERNAME, PASSWORD = "joe", "s3:cret"
 OAUTH_IDENTITY = "alice@example.com"
-MARKER = "@@warp-sql-example@@"
+MARKER = "@@chargewire-example@@"
 PROFILES = ("default", "retention", "drain", "oauth", "hardcharger")
 
 
@@ -181,7 +181,7 @@ def wait_up(server: Server) -> None:
         if server.process.poll() is not None:
             raise Failure(f"the {server.profile} server exited ({server.process.returncode}):\n{server.log_tail()}")
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/warp", timeout=2) as answer:
+            with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/chargewire", timeout=2) as answer:
                 if answer.status == 200:
                     return
         except OSError:
@@ -201,7 +201,7 @@ def start(profile: str, args: argparse.Namespace, scratch: pathlib.Path) -> Serv
     page_env: dict[str, str] = {}
     if profile == "hardcharger":
         if not args.hardcharger:
-            raise Failure("the hardcharger profile needs --hardcharger PATH (or WARP_SQL_SITE_HARDCHARGER)")
+            raise Failure("the hardcharger profile needs --hardcharger PATH (or CHARGEWIRE_SITE_HARDCHARGER)")
         idp = identity_provider()
         command = [args.hardcharger, "--host", "127.0.0.1", "--port", str(port),
                    "--token-allowed-issuer", idp.issuer, "--token-allowed-audience", idp.client_id,
@@ -210,8 +210,8 @@ def start(profile: str, args: argparse.Namespace, scratch: pathlib.Path) -> Serv
                    HARDCHARGER_PRINT_QUERIES="false")
         page_env["ID_TOKEN"] = idp.id_token(email=OAUTH_IDENTITY, nonce=None)
     else:
-        command = [args.warp_duckdb, "--host", "127.0.0.1", "--port", str(port), "--username", USERNAME]
-        env["WARP_DUCKDB_PASSWORD"] = PASSWORD
+        command = [args.chargewire_duckdb, "--host", "127.0.0.1", "--port", str(port), "--username", USERNAME]
+        env["CHARGEWIRE_DUCKDB_PASSWORD"] = PASSWORD
         if profile == "retention":
             command += ["--result-retention-seconds", "3"]
         elif profile == "drain":
@@ -220,7 +220,7 @@ def start(profile: str, args: argparse.Namespace, scratch: pathlib.Path) -> Serv
             idp = identity_provider()
             command += ["--oauth-issuer", idp.issuer, "--oauth-client-id", idp.client_id,
                         "--oauth-identities", OAUTH_IDENTITY, "--oauth-provider-name", "Example IdP"]
-            env["WARP_DUCKDB_OAUTH_CLIENT_SECRET"] = idp.client_secret
+            env["CHARGEWIRE_DUCKDB_OAUTH_CLIENT_SECRET"] = idp.client_secret
     with log.open("wb") as out:
         process = subprocess.Popen(command, env=env, stdout=out, stderr=subprocess.STDOUT, cwd=home)
     server = Server(profile=profile, port=port, process=process, log=log, env=page_env, idp=idp)
@@ -258,7 +258,7 @@ def page_environment(home: pathlib.Path, servers: dict[str, Server]) -> dict[str
 
 
 def run_page(page: pathlib.Path, blocks: list[Block], args: argparse.Namespace) -> None:
-    with tempfile.TemporaryDirectory(prefix="warp-sql-site-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="chargewire-site-") as tmp:
         scratch = pathlib.Path(tmp)
         home = scratch / "home"
         home.mkdir()
@@ -310,12 +310,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--page", help="only pages whose path contains this")
     parser.add_argument("--list", action="store_true", help="list the examples and stop")
-    parser.add_argument("--warp-duckdb", default=os.environ.get("WARP_SQL_SITE_WARP_DUCKDB",
-                                                                str(REPO / "cpp" / "build" / "warp-duckdb")))
-    parser.add_argument("--hardcharger", default=os.environ.get("WARP_SQL_SITE_HARDCHARGER"))
+    parser.add_argument("--chargewire-duckdb", default=os.environ.get("CHARGEWIRE_SITE_CHARGEWIRE_DUCKDB",
+                                                                str(REPO / "cpp" / "build" / "chargewire-duckdb")))
+    parser.add_argument("--hardcharger", default=os.environ.get("CHARGEWIRE_SITE_HARDCHARGER"))
     args = parser.parse_args()
-    if not pathlib.Path(args.warp_duckdb).is_file():
-        print(f"no warp-duckdb at {args.warp_duckdb}: build ../cpp or pass --warp-duckdb", file=sys.stderr)
+    if not pathlib.Path(args.chargewire_duckdb).is_file():
+        print(f"no chargewire-duckdb at {args.chargewire_duckdb}: build ../cpp or pass --chargewire-duckdb", file=sys.stderr)
         return 1
     try:
         import pyarrow  # noqa: F401  the examples read Arrow with it

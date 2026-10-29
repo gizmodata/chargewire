@@ -1,6 +1,6 @@
 #include "signal.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 uint64_t Signal::version() const {
   std::lock_guard lock(mutex_);
@@ -36,4 +36,4 @@ Task<uint64_t> Signal::WaitChange(uint64_t seen, Clock::time_point deadline) {
   co_return version();
 }
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

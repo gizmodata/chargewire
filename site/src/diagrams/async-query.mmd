@@ -1,7 +1,7 @@
 sequenceDiagram
   participant C as Client
-  participant S as Warp SQL server
-  C->>S: POST /warp/v1/sessions/{id}/statements<br/>Prefer: respond-async, Idempotency-Key
+  participant S as Chargewire server
+  C->>S: POST /chargewire/v1/sessions/{id}/statements<br/>Prefer: respond-async, Idempotency-Key
   S-->>C: 201 statement document (queued), Location
   loop until the state is terminal
     C->>S: GET …/statements/{statement_id}<br/>Prefer: wait=10

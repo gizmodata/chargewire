@@ -11,7 +11,7 @@
 
 #include "duckdb_v2.hpp"
 
-namespace warpduckdb {
+namespace chargewire_duckdb {
 
 // The types DuckDB infers for a statement's parameters, by position and name.
 class ParameterTypes {
@@ -66,11 +66,11 @@ class ValueFactory {
   // The DuckDB type an Arrow type binds as; empty when there is none.
   LogicalType TypeFor(const arrow::DataType& type);
   Value FromJsonScalar(const boost::json::value& item);
-  // A JSON integer outside the 64-bit range (warpsql::kWideIntegerKey), exactly.
+  // A JSON integer outside the 64-bit range (chargewire::kWideIntegerKey), exactly.
   Value WideInteger(std::string_view text);
   Value FromArrow(const arrow::Array& array, int64_t row, duckdb_v2_logical_type_handle null_type);
 
   duckdb_v2_factory_handle factory_;
 };
 
-}  // namespace warpduckdb
+}  // namespace chargewire_duckdb

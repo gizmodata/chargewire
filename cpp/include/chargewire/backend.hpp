@@ -1,4 +1,4 @@
-// What an engine implements to sit behind a Warp SQL server.
+// What an engine implements to sit behind a Chargewire server.
 //
 // The SDK owns everything the protocol requires for safety and correctness:
 // authentication, binding handles to principals, retries, retention, streaming,
@@ -23,9 +23,9 @@
 #include <string_view>
 #include <vector>
 
-#include "warpsql/errors.hpp"
+#include "chargewire/errors.hpp"
 
-namespace warpsql {
+namespace chargewire {
 
 // A new id in the shape the SDK gives its own (spec §2.3): `prefix`, '_', then 32
 // random base32 characters ("q_3x..."). For an engine's ids of its own kind, so they read
@@ -242,7 +242,7 @@ class EngineSession {
   // (a liveness probe) included. Safe from any thread, while another call runs.
   virtual void CheckEnded() {}
 
-  // The timeout for this session's statements that set none (Warp-Statement-Timeout),
+  // The timeout for this session's statements that set none (Chargewire-Statement-Timeout),
   // e.g. one the session chose with SQL. nullopt: the server's default applies; zero:
   // no timeout. Safe from any thread.
   virtual std::optional<std::chrono::milliseconds> DefaultStatementTimeout();
@@ -258,7 +258,7 @@ class EngineSession {
   virtual void Commit();
   virtual void Rollback();
 
-  // The request's Warp-Query-Tag (spec §2.5), a JSON object, for the statement or ingest
+  // The request's Chargewire-Query-Tag (spec §2.5), a JSON object, for the statement or ingest
   // about to run in this session; null when the request carried none. Called on the
   // session's engine thread right before Execute(), ExecutePrepared() and Ingest(), and
   // with null right after they return. An engine that records statements (a query history,
@@ -270,7 +270,7 @@ class EngineSession {
   // statement's id (p_...) right before Prepare() (the id the prepare answer will carry
   // when it succeeds); empty right after they return. Called on the session's engine
   // thread. An engine that records or logs statements uses these ids, so what a client
-  // holds (from Warp-Statement-Id, an error, a prepare answer) finds its record; the
+  // holds (from Chargewire-Statement-Id, an error, a prepare answer) finds its record; the
   // default ignores them.
   virtual void SetStatementId(std::string_view id) { (void)id; }
 
@@ -356,8 +356,8 @@ class TokenService {
 // Browser sign-in (spec §4.3): the server's side of an OAuth 2.0 authorization code flow
 // with an identity provider, given as ServerOptions::browser_sign_in. The SDK keeps the
 // flows (ids, poll secrets, state, PKCE verifiers, nonces, expiry and bounds), serves
-// POST /warp/v1/auth/oauth/flows, the polls and the callback
-// (GET /warp/v1/auth/oauth/callback, which the provider's redirect URI must name), and
+// POST /chargewire/v1/auth/oauth/flows, the polls and the callback
+// (GET /chargewire/v1/auth/oauth/callback, which the provider's redirect URI must name), and
 // issues the access token; the provider knows the identity provider: its endpoints,
 // client id and secret, scopes, and how its answer maps to a principal.
 class BrowserSignInProvider {
@@ -429,4 +429,4 @@ class Authenticator {
   virtual boost::json::array GrantTypes() = 0;
 };
 
-}  // namespace warpsql
+}  // namespace chargewire

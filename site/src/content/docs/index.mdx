@@ -1,6 +1,6 @@
 ---
-title: Warp SQL
-description: "Warp SQL is an open protocol for running SQL over plain HTTP. Results, parameters and uploads are Apache Arrow IPC streams; control messages are small JSON documents. No gRPC, no protobuf."
+title: Chargewire
+description: "Chargewire is an open protocol for running SQL over plain HTTP. Results, parameters and uploads are Apache Arrow IPC streams; control messages are small JSON documents. No gRPC, no protobuf."
 template: splash
 editUrl: false
 lastUpdated: false
@@ -9,13 +9,13 @@ lastUpdated: false
 import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 import HeroBanner from '../../components/HeroBanner.astro';
 import Diagram from '../../components/Diagram.astro';
-import banner from '../../assets/warp-sql-banner.svg';
+import banner from '../../assets/chargewire-banner.svg';
 
-<HeroBanner src={banner} alt="Warp SQL: an open protocol for SQL over HTTP, powered by Apache Arrow" />
+<HeroBanner src={banner} alt="Chargewire: an open protocol for SQL over HTTP, powered by Apache Arrow" />
 
 <p class="ws-tagline not-content"><span>Run SQL from anything that speaks HTTP. Get Arrow back.</span></p>
 
-**Warp SQL** is an open protocol for running SQL against a database server over plain HTTP.
+**Chargewire** is an open protocol for running SQL against a database server over plain HTTP.
 Query results, query parameters and bulk uploads travel as
 [Apache Arrow IPC streams](https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format)
 (`application/vnd.apache.arrow.stream`), so every Arrow library reads them directly. Control
@@ -67,15 +67,15 @@ with every later 1.x server. See [Versioning and compatibility](/versioning/).
 ## A quick look
 
 Sign in, open a session, run a query and read the Arrow result. These commands run against
-`warp-duckdb`, the reference server, listening on `127.0.0.1:31337` with user `joe`:
+`chargewire-duckdb`, the reference server, listening on `127.0.0.1:31337` with user `joe`:
 
 ```bash test
-WARP=http://127.0.0.1:31337
-TOKEN=$(curl -s $WARP/warp/v1/auth/token -H 'Content-Type: application/json' \
+CHARGEWIRE=http://127.0.0.1:31337
+TOKEN=$(curl -s $CHARGEWIRE/chargewire/v1/auth/token -H 'Content-Type: application/json' \
   -d '{"grant_type": "password", "username": "joe", "password": "s3:cret"}' | jq -r .access_token)
-SESSION=$(curl -s $WARP/warp/v1/sessions -H "Authorization: Bearer $TOKEN" \
+SESSION=$(curl -s $CHARGEWIRE/chargewire/v1/sessions -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
-curl -s $WARP/warp/v1/sessions/$SESSION/statements -H "Authorization: Bearer $TOKEN" \
+curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -H 'Accept: application/vnd.apache.arrow.stream' \
   -d '{"sql": "SELECT 42 AS answer, ? AS greeting", "parameters": ["hello"]}' -o result.arrows
 python3 -c "import pyarrow.ipc as ipc; print(ipc.open_stream('result.arrows').read_all().to_pylist())"
@@ -85,21 +85,21 @@ python3 -c "import pyarrow.ipc as ipc; print(ipc.open_stream('result.arrows').re
 [{'answer': 42, 'greeting': 'hello'}]
 ```
 
-Every server describes itself at `GET /warp` (no credentials needed), so a client knows which
+Every server describes itself at `GET /chargewire` (no credentials needed), so a client knows which
 optional features it may use:
 
 ```bash test
-curl -s http://127.0.0.1:31337/warp | jq .
+curl -s http://127.0.0.1:31337/chargewire | jq .
 ```
 
 ```json output
 {
-  "protocol": "warp-sql",
+  "protocol": "chargewire",
   "protocol_versions": [
     "1"
   ],
   "server": {
-    "name": "warp-duckdb",
+    "name": "chargewire-duckdb",
     "version": "1.0.2 (DuckDB …)"
   },
   "capabilities": [
@@ -119,7 +119,7 @@ curl -s http://127.0.0.1:31337/warp | jq .
     ]
   },
   "links": {
-    "openapi": "/warp/v1/openapi.json"
+    "openapi": "/chargewire/v1/openapi.json"
   }
 }
 ```
@@ -135,9 +135,9 @@ you can run.
 
 <CardGrid>
 	<LinkCard title="The specification" href="/specification/" description="The protocol's definition: every endpoint, header, document and error code. Version 1, specification 1.0.2." />
-	<LinkCard title="OpenAPI reference" href="/reference/openapi/" description="Every JSON endpoint and schema as an OpenAPI 3.1 document, in Swagger UI. Servers also serve it at GET /warp/v1/openapi.json." />
+	<LinkCard title="OpenAPI reference" href="/reference/openapi/" description="Every JSON endpoint and schema as an OpenAPI 3.1 document, in Swagger UI. Servers also serve it at GET /chargewire/v1/openapi.json." />
 	<LinkCard title="Flows" href="/flows/sign-in/" description="Sign-in, sessions, queries, partitions, prepared statements, ingest, cancel, errors and shutdown, step by step." />
 	<LinkCard title="Conformance" href="/conformance/" description="A black-box test suite any server can run, and what it does not test yet." />
-	<LinkCard title="Implementations" href="/implementations/" description="Servers and clients that speak Warp SQL: ADBC (Go, Python), JDBC, JavaScript and C++." />
+	<LinkCard title="Implementations" href="/implementations/" description="Servers and clients that speak Chargewire: ADBC (Go, Python), JDBC, JavaScript and C++." />
 	<LinkCard title="Endpoints" href="/reference/endpoints/" description="All 38 endpoints of version 1 on one page, each with its section and OpenAPI operation." />
 </CardGrid>

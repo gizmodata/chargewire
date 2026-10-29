@@ -12,19 +12,19 @@ DUCKDB_COMMIT=d54cbbe3df17e8e5ce68312f483b4155836112aa
 DUCKDB_VERSION_NAME=v2.0.0
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# WARPSQL_DEPS_DIR lets another project build these into its own directory.
-DEPS="${WARPSQL_DEPS_DIR:-$HERE/.deps}"
+# CHARGEWIRE_DEPS_DIR lets another project build these into its own directory.
+DEPS="${CHARGEWIRE_DEPS_DIR:-$HERE/.deps}"
 SRC="$DEPS/duckdb"
 BUILD="$DEPS/duckdb-build"
 PREFIX="$DEPS/duckdb-install"
 
-# WARPSQL_DUCKDB_EXTENSION_CONFIGS: extension config files (CMake files of
+# CHARGEWIRE_DUCKDB_EXTENSION_CONFIGS: extension config files (CMake files of
 # duckdb_extension_load() calls, ';'-separated) whose extensions are built into libduckdb,
 # on top of the ones DuckDB always builds in (core_functions, parquet, json, icu). Empty
 # (the default, and the reference server's choice): no others; the rest load at run time.
 EXTENSION_ARGS=(-DBUILD_EXTENSIONS="")
-if [ -n "${WARPSQL_DUCKDB_EXTENSION_CONFIGS:-}" ]; then
-  EXTENSION_ARGS+=(-DDUCKDB_EXTENSION_CONFIGS="$WARPSQL_DUCKDB_EXTENSION_CONFIGS")
+if [ -n "${CHARGEWIRE_DUCKDB_EXTENSION_CONFIGS:-}" ]; then
+  EXTENSION_ARGS+=(-DDUCKDB_EXTENSION_CONFIGS="$CHARGEWIRE_DUCKDB_EXTENSION_CONFIGS")
 fi
 
 mkdir -p "$DEPS"

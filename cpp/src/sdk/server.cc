@@ -1,4 +1,4 @@
-#include "warpsql/server.hpp"
+#include "chargewire/server.hpp"
 
 #include <openssl/crypto.h>
 
@@ -8,7 +8,7 @@
 #include "http.hpp"
 #include "json.hpp"
 
-namespace warpsql {
+namespace chargewire {
 
 using namespace detail;
 
@@ -104,8 +104,8 @@ class Server::Impl {
           io_, health_options, limits_,
           [this](Request& request) -> Task<Response> {
             if (request.method == http::verb::get &&
-                (request.path == "/warp/v1/health" || request.path == "/health")) {
-              request.path = "/warp/v1/health";
+                (request.path == "/chargewire/v1/health" || request.path == "/health")) {
+              request.path = "/chargewire/v1/health";
               co_return co_await api_.Handle(request);
             }
             co_return ProblemResponse(Error(ErrorCode::kNotFound, "this port serves /health only"),
@@ -316,4 +316,4 @@ bool Server::EndSession(const std::string& session_id, const Error& why) { retur
 
 void InitializeProcess() { OPENSSL_init_crypto(OPENSSL_INIT_NO_ATEXIT, nullptr); }
 
-}  // namespace warpsql
+}  // namespace chargewire

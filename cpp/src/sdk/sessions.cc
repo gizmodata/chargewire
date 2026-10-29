@@ -4,7 +4,7 @@
 
 #include "ids.hpp"
 
-namespace warpsql {
+namespace chargewire {
 
 // Defaults for the optional EngineSession methods: "not implemented" (spec §11).
 StatementOutcome EngineSession::Execute(std::string_view, const boost::json::value&) {
@@ -67,9 +67,9 @@ void EngineSession::Rollback() {
   throw Error(ErrorCode::kNotImplemented, "this server does not support transactions");
 }
 
-}  // namespace warpsql
+}  // namespace chargewire
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 Session::Session(std::string id, Principal owner, EngineStrand strand)
     : id_(std::move(id)),
@@ -530,4 +530,4 @@ std::size_t SessionRegistry::size() const {
   return sessions_.size();
 }
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

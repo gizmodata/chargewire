@@ -1,9 +1,9 @@
-# Warp SQL Protocol, version 1
+# Chargewire Protocol, version 1
 
 **Status:** 1.0.2 (2026-10-26). Version 1 is stable: from here on it changes only by
 addition (§12).
 
-Warp SQL is an open protocol for running SQL against a database server over plain
+Chargewire is an open protocol for running SQL against a database server over plain
 HTTP, with results and bulk data carried in the
 [Apache Arrow IPC stream format](https://arrow.apache.org/docs/format/Columnar.html#ipc-streaming-format).
 It does for HTTP what Arrow Flight SQL does for gRPC: a small set of operations that
@@ -37,7 +37,7 @@ in [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
   session, settings) is done in SQL through this protocol, not with extra
   endpoints.
 - **Defining SQL.** The SQL dialect is the engine's.
-- **Replacing ADBC, JDBC or ODBC.** Those are client APIs; Warp SQL is a wire
+- **Replacing ADBC, JDBC or ODBC.** Those are client APIs; Chargewire is a wire
   protocol their drivers can speak.
 
 ## 2. Conventions
@@ -54,9 +54,9 @@ in [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119).
   it trusts for clients, and MUST NOT take an identity from a certificate it has not
   verified. A server that checks revocation and finds a client certificate revoked
   refuses the handshake (TLS alert `certificate_revoked`).
-- All endpoints live under a base path. This document writes it as `/warp`; a
+- All endpoints live under a base path. This document writes it as `/chargewire`; a
   server MAY mount the protocol under another prefix and MUST say so in its
-  documentation. Version 1 operations are under `/warp/v1`.
+  documentation. Version 1 operations are under `/chargewire/v1`.
 
 ### 2.2 Media types
 
@@ -100,15 +100,15 @@ they don't know.
 | `Authorization` | all except §3 | `Bearer <access token>` (§4) |
 | `Idempotency-Key` | submit, execute, ingest | Makes a retried request safe (§6.7) |
 | `Prefer` | submit, execute, status | `wait=<seconds>` and `respond-async` ([RFC 7240](https://www.rfc-editor.org/rfc/rfc7240)) |
-| `Warp-Statement-Timeout` | submit, execute | Milliseconds before the server cancels the statement |
-| `Warp-Retain-Result` | submit, execute | `true` or `false`: keep the result for re-reading (§6.5) |
-| `Warp-Query-Tag` | submit, execute, ingest | A JSON object the server may record with the statement, for observability (below) |
-| `Warp-IPC-Compression` | any request that returns Arrow | The Arrow buffer compression the client accepts, in its order of preference: `lz4_frame`, `zstd`, `none` (§8.2) |
-| `Warp-Result-Partitions` | submit, execute | The most partitions the client reads at once (§6.10) |
-| `Warp-Result-Order` | submit, execute | `preserve` or `any`: whether the client needs rows in order (§6.10) |
-| `Warp-Result-Locations` | submit, execute | `remote`: the client can read partitions held by other servers (§6.2, capability `result_locations`) |
+| `Chargewire-Statement-Timeout` | submit, execute | Milliseconds before the server cancels the statement |
+| `Chargewire-Retain-Result` | submit, execute | `true` or `false`: keep the result for re-reading (§6.5) |
+| `Chargewire-Query-Tag` | submit, execute, ingest | A JSON object the server may record with the statement, for observability (below) |
+| `Chargewire-IPC-Compression` | any request that returns Arrow | The Arrow buffer compression the client accepts, in its order of preference: `lz4_frame`, `zstd`, `none` (§8.2) |
+| `Chargewire-Result-Partitions` | submit, execute | The most partitions the client reads at once (§6.10) |
+| `Chargewire-Result-Order` | submit, execute | `preserve` or `any`: whether the client needs rows in order (§6.10) |
+| `Chargewire-Result-Locations` | submit, execute | `remote`: the client can read partitions held by other servers (§6.2, capability `result_locations`) |
 
-`Warp-Query-Tag` carries a JSON object, serialized in ASCII (any other character
+`Chargewire-Query-Tag` carries a JSON object, serialized in ASCII (any other character
 written as a `\u` escape) and at most 4,096 bytes long, such as
 `{"job":"nightly-load","run":"2026-10-19"}`. It labels the statement (or ingest) the
 request creates, so it can be found in the server's logs, query history or audit trail; a
@@ -125,10 +125,10 @@ Large` (code `headers_too_large`). The limit SHOULD be configurable.
 
 | Header | On | Meaning |
 |---|---|---|
-| `Warp-Request-Id` | every response | The `request_id` of this request (§11), also in the server's logs |
-| `Warp-Statement-Id` | statement responses | The statement the response belongs to, on the error response for a statement that failed or was cancelled (§6.1) too |
-| `Warp-IPC-Compression` | Arrow responses | The Arrow buffer compression used: `lz4_frame`, `zstd` or `none` (§8.2) |
-| `Warp-Result-Partitions`, `Warp-Result-Order` | streamed results | How a split result is spread over partitions (§6.10); both MUST be present when the result has more than one partition |
+| `Chargewire-Request-Id` | every response | The `request_id` of this request (§11), also in the server's logs |
+| `Chargewire-Statement-Id` | statement responses | The statement the response belongs to, on the error response for a statement that failed or was cancelled (§6.1) too |
+| `Chargewire-IPC-Compression` | Arrow responses | The Arrow buffer compression used: `lz4_frame`, `zstd` or `none` (§8.2) |
+| `Chargewire-Result-Partitions`, `Chargewire-Result-Order` | streamed results | How a split result is spread over partitions (§6.10); both MUST be present when the result has more than one partition |
 | `Retry-After` | `429`, `503` | When retrying can help: the seconds to wait, as an integer (the delta-seconds form of [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110#field.retry-after); servers MUST NOT send the date form) |
 
 ### 2.7 Names for extensions
@@ -141,17 +141,17 @@ that names its implementation or engine, in lower case, followed by `_`
 never define a name that begins with a prefix an implementation uses this way, so an
 extension can't collide with a name the protocol adds. A client ignores an extension name
 it doesn't know, as it ignores any unknown name (§12). Headers whose names begin with
-`Warp-` are the protocol's; a server's own headers take other names.
+`Chargewire-` are the protocol's; a server's own headers take other names.
 
 ## 3. Discovery and health
 
 These endpoints need no authentication.
 
-### 3.1 `GET /warp`
+### 3.1 `GET /chargewire`
 
 ```json
 {
-  "protocol": "warp-sql",
+  "protocol": "chargewire",
   "protocol_versions": ["1"],
   "server": {"name": "Example SQL Server", "version": "3.2.1"},
   "capabilities": ["prepared_statements", "transactions", "ingest", "long_poll",
@@ -159,13 +159,13 @@ These endpoints need no authentication.
                    "partitioned_ingest", "mtls_identity", "oauth_browser", "openapi"],
   "auth": {"grant_types": ["password", "token_exchange", "client_certificate"],
            "oauth_browser": {"provider": "Okta"}},
-  "links": {"openapi": "/warp/v1/openapi.json"}
+  "links": {"openapi": "/chargewire/v1/openapi.json"}
 }
 ```
 
 `capabilities` lists the optional features the server supports. A client MUST NOT use an
 optional feature the server does not list, and ignores names it doesn't know.
-`auth.grant_types` lists the grants of `POST /warp/v1/auth/token` (§4.1); `auth.oauth_browser`
+`auth.grant_types` lists the grants of `POST /chargewire/v1/auth/token` (§4.1); `auth.oauth_browser`
 describes browser sign-in (§4.3) when the server offers it, and `links` (optional) says where
 the server's optional documents are (§3.3). The capabilities of version 1:
 
@@ -177,24 +177,24 @@ the server's optional documents are (§3.3). The capabilities of version 1:
 | `partitioned_ingest` | §8.3 | `POST …/ingests` and the rest of partitioned ingest |
 | `long_poll` | §6.3 | `Prefer: wait` honoured on a statement's status |
 | `ipc_compression_lz4_frame`, `ipc_compression_zstd` | §8.2 | Arrow buffer compression with that codec, in both directions |
-| `result_partitions` | §6.10 | Results split over several partitions on this server, read concurrently (`Warp-Result-Partitions`, `Warp-Result-Order`) |
-| `result_locations` | §6.2 | Partitions held by other servers (`Warp-Result-Locations: remote`, non-null `location`) |
+| `result_partitions` | §6.10 | Results split over several partitions on this server, read concurrently (`Chargewire-Result-Partitions`, `Chargewire-Result-Order`) |
+| `result_locations` | §6.2 | Partitions held by other servers (`Chargewire-Result-Locations: remote`, non-null `location`) |
 | `mtls_identity` | §4.4 | The `client_certificate` grant: signing in with a TLS client certificate |
 | `oauth_browser` | §4.3 | Browser sign-in for clients that cannot take a redirect themselves |
-| `openapi` | §3.3 | `GET /warp/v1/openapi.json`, the OpenAPI description, and `links.openapi` in discovery |
+| `openapi` | §3.3 | `GET /chargewire/v1/openapi.json`, the OpenAPI description, and `links.openapi` in discovery |
 
 Everything else in this document is core: every server implements it. A feature added
 after 1.0 that a client must ask for, or that changes what a request means, comes with a
 capability of its own (§12).
 
-### 3.2 `GET /warp/v1/health`
+### 3.2 `GET /chargewire/v1/health`
 
 `200` with `{"status": "serving"}` when the server accepts new work, otherwise `503`
 with `{"status": "not_serving", "reason": "draining" | "starting" | "check_failed"}`.
 A server MAY run a configurable health query to decide; if that query hangs, the
 endpoint MUST still answer (`503`, `check_failed`) within a bounded time.
 
-### 3.3 `GET /warp/v1/openapi.json` (optional capability `openapi`)
+### 3.3 `GET /chargewire/v1/openapi.json` (optional capability `openapi`)
 
 The [OpenAPI 3.1](https://spec.openapis.org/oas/v3.1.1) description of the protocol version
 the server implements: the document published with this specification (`openapi.yaml`, next
@@ -214,20 +214,20 @@ A server MAY offer it. One that does lists `openapi` in `capabilities` and gives
 discovery's `links` (a path on the server's origin, base path included, or an absolute URL):
 
 ```json
-"links": {"openapi": "/warp/v1/openapi.json"}
+"links": {"openapi": "/chargewire/v1/openapi.json"}
 ```
 
 A server without the capability answers `404` with code `not_found`.
 
 ## 4. Authentication
 
-### 4.1 `POST /warp/v1/auth/token`
+### 4.1 `POST /chargewire/v1/auth/token`
 
 Exchanges a credential for an access token. The credential travels in a JSON body,
 never in a URL.
 
 ```http
-POST /warp/v1/auth/token
+POST /chargewire/v1/auth/token
 Content-Type: application/json
 
 {"grant_type": "password", "username": "joe", "password": "s3:cret"}
@@ -315,7 +315,7 @@ web pages all use the same flow:
 Okta"); a client without one says "single sign-on". A server without the capability
 answers the endpoints below with `501` and code `not_implemented`.
 
-#### 4.3.1 `POST /warp/v1/auth/oauth/flows`
+#### 4.3.1 `POST /chargewire/v1/auth/oauth/flows`
 
 Needs no authentication. The body is optional: no body, `{}`, or
 
@@ -352,12 +352,12 @@ configured number pending at once in all, and SHOULD also bound them per client 
 Beyond either limit it answers `429` with code `rate_limited` and `Retry-After`. A
 `return_to` that §4.3.3 does not allow gets `400` with code `invalid_return_to`.
 
-#### 4.3.2 Polling: `POST /warp/v1/auth/oauth/flows/{flow_id}`
+#### 4.3.2 Polling: `POST /chargewire/v1/auth/oauth/flows/{flow_id}`
 
 The poll secret travels in the JSON body, never in the URL or a header:
 
 ```http
-POST /warp/v1/auth/oauth/flows/f_q3Xv…
+POST /chargewire/v1/auth/oauth/flows/f_q3Xv…
 Content-Type: application/json
 
 {"poll_secret": "Wb1n…"}
@@ -401,7 +401,7 @@ flow id in the URL's **fragment**:
 
 ```http
 HTTP/1.1 303 See Other
-Location: /ui/#warp_oauth_flow=f_q3Xv…
+Location: /ui/#chargewire_oauth_flow=f_q3Xv…
 ```
 
 The page reads the fragment, removes it from the address bar, polls the flow once with the
@@ -428,7 +428,7 @@ failed.
 #### 4.3.4 The callback and the identity provider
 
 The callback is where the identity provider sends the browser: an endpoint of the server
-under its base path, `GET /warp/v1/auth/oauth/callback` unless the server documents
+under its base path, `GET /chargewire/v1/auth/oauth/callback` unless the server documents
 another. Clients never call it; it appears to them only as the `redirect_uri` inside
 `authorize_url`. Operators register the callback's public URL with the identity provider
 as the client's redirect URI.
@@ -473,7 +473,7 @@ the capability lists `mtls_identity` in `capabilities` and `client_certificate` 
 presents its certificate, and asks for a token with no password:
 
 ```http
-POST /warp/v1/auth/token
+POST /chargewire/v1/auth/token
 Content-Type: application/json
 
 {"grant_type": "client_certificate"}
@@ -549,7 +549,7 @@ what it holds back) and close a connection after a few failed authentications, a
 also record client certificates its handshake refuses.
 
 **Proxies.** The certificate is only seen by whoever ends TLS. Deployments MUST end TLS
-at the Warp SQL server (a TCP or TLS-passthrough load balancer) for this grant, or have
+at the Chargewire server (a TCP or TLS-passthrough load balancer) for this grant, or have
 the proxy verify the client certificate and pass it on in a way the server is configured
 to trust. A server MUST NOT trust a forwarded-certificate header unless it is explicitly
 configured to, and then only from the proxies it names.
@@ -566,7 +566,7 @@ A session is the server-side state of one client connection: current catalog and
 schema, settings, temporary objects, an open transaction. Every statement runs in a
 session.
 
-### 5.1 `POST /warp/v1/sessions`
+### 5.1 `POST /chargewire/v1/sessions`
 
 ```json
 {"options": {"catalog": "lake", "schema": "analytics", "autocommit": true}}
@@ -606,7 +606,7 @@ again once an `aborted` one is rolled back).
 The session belongs to the principal the access token identifies (§9.1), for its
 whole life.
 
-### 5.2 `GET /warp/v1/sessions/{session_id}`
+### 5.2 `GET /chargewire/v1/sessions/{session_id}`
 
 Returns the session document above, with the session's current options and
 transaction: a change made through SQL (`USE other_schema`, `BEGIN`) shows here too, once
@@ -616,7 +616,7 @@ liveness probe: for a session the server ended (§5.6) it answers `401` `session
 with the `reason`, as every other request naming the session does, and it does not wait
 for a statement the session is running.
 
-### 5.3 `PATCH /warp/v1/sessions/{session_id}`
+### 5.3 `PATCH /chargewire/v1/sessions/{session_id}`
 
 Sets options. Body `{"options": {…}}`. The server applies each option on its own, so one
 bad option doesn't stop the others, and answers `200` with every option the session has
@@ -643,15 +643,15 @@ Standard options:
 A server MAY support more options, named as §2.7 says (`duckdb_arrow_lossless_conversion`);
 names it does not support get `unknown_option`.
 
-### 5.4 `DELETE /warp/v1/sessions/{session_id}`
+### 5.4 `DELETE /chargewire/v1/sessions/{session_id}`
 
 Ends the session, cancels its running statements, and frees its retained results.
 `204`.
 
 ### 5.5 Transactions
 
-With `autocommit` false, `POST /warp/v1/sessions/{session_id}/commit` and
-`POST /warp/v1/sessions/{session_id}/rollback` end the current transaction (`204`)
+With `autocommit` false, `POST /chargewire/v1/sessions/{session_id}/commit` and
+`POST /chargewire/v1/sessions/{session_id}/rollback` end the current transaction (`204`)
 and the next statement starts a new one. SQL transaction statements (`BEGIN`,
 `COMMIT`, `ROLLBACK`) also work, as the engine allows; with `autocommit` false a SQL
 `COMMIT` or `ROLLBACK` starts the next transaction too, as the calls do. The session
@@ -706,10 +706,10 @@ it alive too (an unretained result's last batches go out after its statement has
 
 ## 6. Statements
 
-### 6.1 Submit: `POST /warp/v1/sessions/{session_id}/statements`
+### 6.1 Submit: `POST /chargewire/v1/sessions/{session_id}/statements`
 
 ```http
-POST /warp/v1/sessions/s_8f3k…/statements
+POST /chargewire/v1/sessions/s_8f3k…/statements
 Authorization: Bearer eyJ…
 Content-Type: application/json
 Accept: application/json
@@ -747,12 +747,12 @@ How the server answers depends on `Accept` and `Prefer`:
 
 - **Streamed (one round trip).** With `Accept: application/vnd.apache.arrow.stream`
   and no `respond-async`, a query's result streams in the response body: `200`,
-  `Content-Type: application/vnd.apache.arrow.stream`, and `Warp-Statement-Id`
+  `Content-Type: application/vnd.apache.arrow.stream`, and `Chargewire-Statement-Id`
   naming the statement. A statement that returns no rows (DML, DDL) answers
   `200` with a JSON statement document (§6.2) instead; clients MUST check
   `Content-Type`.
 - **Status document.** Otherwise the server answers `201` with the statement
-  document (§6.2) and `Location: /warp/v1/sessions/{session_id}/statements/{statement_id}`.
+  document (§6.2) and `Location: /chargewire/v1/sessions/{session_id}/statements/{statement_id}`.
   With `Prefer: wait=N` the server MAY hold the response up to N seconds for the
   statement to finish; with `Prefer: respond-async` it SHOULD answer as soon as the
   statement is accepted. Without either, the wait is the server's choice.
@@ -762,7 +762,7 @@ error response (§11), not a statement document. So is a statement that has fail
 been cancelled by the time the server answers its submission, whether or not it had
 produced rows: the response is the error response for the statement's error
 (`execution_error`, `statement_cancelled`, `statement_timeout`, …), with
-`Warp-Statement-Id` naming the statement, never a success status with a `failed` or
+`Chargewire-Statement-Id` naming the statement, never a success status with a `failed` or
 `cancelled` document. The problem document of a cancelled statement also carries its
 `cancel_reason` (§6.2).
 
@@ -844,17 +844,17 @@ only once the partition is complete and are `null` before that.
 
 **Partitions on other servers** (capability `result_locations`). A partition's `location`
 MUST be `null` unless the request that created the statement carried
-`Warp-Result-Locations: remote`, so a client that doesn't follow locations never meets
+`Chargewire-Result-Locations: remote`, so a client that doesn't follow locations never meets
 one. To a client that sent it, a server with the capability MAY give a partition the base
 URL of another server that holds it: an absolute URL of the same form as a server's base
-(`https://worker-3.example:31337/warp`). The client reads the partition at
+(`https://worker-3.example:31337/chargewire`). The client reads the partition at
 `{location}/v1/sessions/{session_id}/statements/{statement_id}/result?partition={index}`,
 with the coordinator's session and statement ids and the same access token, concurrently
 with the others (§6.10). The partitions' locations are in the statement document: on the
 streamed path (§6.1), whose response is partition 0 from this server, a client that sent
 the header reads the document (§6.3) for the locations of partitions 1 to `k - 1`.
 
-### 6.3 Status: `GET /warp/v1/sessions/{session_id}/statements/{statement_id}`
+### 6.3 Status: `GET /chargewire/v1/sessions/{session_id}/statements/{statement_id}`
 
 Returns the statement document. With `Prefer: wait=N` (capability `long_poll`) the
 server MAY hold the response until the state changes or N seconds pass, whichever is
@@ -884,7 +884,7 @@ A **retained** result can be read again, and from any batch, until it expires; a
 unretained result can be read once, from batch 0, while the statement's session
 lives.
 
-- `Warp-Retain-Result: true|false` on submit asks; without it the server decides
+- `Chargewire-Retain-Result: true|false` on submit asks; without it the server decides
   (servers SHOULD retain for `respond-async` submissions and SHOULD NOT for
   streamed submissions). A server MAY decline to retain a result it was asked to keep
   (for example one that keeps no results at all); it MUST NOT retain one it was asked
@@ -941,7 +941,7 @@ whose response was lost, including DML.
   result is freed and its id forgotten (`204`). A query still running is cancelled; a
   statement that changes data runs to the end with its rows discarded, as when its
   reader goes away (§6.5). To stop a write, cancel it.
-- `POST /warp/v1/sessions/{session_id}/cancel`: cancels every statement of the session
+- `POST /chargewire/v1/sessions/{session_id}/cancel`: cancels every statement of the session
   that is queued or running when the request arrives; `202` with
   `{"cancelled": ["q_…", …]}` (possibly empty). This is for a client that has no
   statement id yet, because its submit's answer hasn't arrived (`Prefer: wait`, or a
@@ -950,7 +950,7 @@ whose response was lost, including DML.
 
 ### 6.9 Timeouts
 
-`Warp-Statement-Timeout: <ms>` limits how long the statement may run. When it
+`Chargewire-Statement-Timeout: <ms>` limits how long the statement may run. When it
 expires the server cancels the statement (`cancel_reason: timeout`, error code
 `statement_timeout`). A server MAY enforce a maximum of its own.
 
@@ -962,8 +962,8 @@ faster. It asks for that when it submits (or executes a prepared statement):
 
 | Request header | Meaning |
 |---|---|
-| `Warp-Result-Partitions: <n>` | The client reads up to `n` partitions of the result at once (1 to 256). Without it, or with `1`, the result has one partition. |
-| `Warp-Result-Order: preserve` or `any` | `any`: the client does not need the rows in result order. Default `preserve`. |
+| `Chargewire-Result-Partitions: <n>` | The client reads up to `n` partitions of the result at once (1 to 256). Without it, or with `1`, the result has one partition. |
+| `Chargewire-Result-Order: preserve` or `any` | `any`: the client does not need the rows in result order. Default `preserve`. |
 
 The server MAY then split the result into `k` partitions, 1 ≤ `k` ≤ `n`; it keeps a
 small result in one (a result that turns out to have fewer than two batches, for
@@ -986,8 +986,8 @@ more than 1, says how the rows are spread over them in `partition_order`:
 
 On the streamed path (§6.1) the `200` Arrow response is partition 0, and its headers say
 how the result is split: when `k` is more than 1 the response MUST carry both
-`Warp-Result-Partitions: <k>` and `Warp-Result-Order: interleaved` or `any`; for one
-partition it carries neither. A client MUST NOT guess a missing `Warp-Result-Order`. The client reads partitions 1 to
+`Chargewire-Result-Partitions: <k>` and `Chargewire-Result-Order: interleaved` or `any`; for one
+partition it carries neither. A client MUST NOT guess a missing `Chargewire-Result-Order`. The client reads partitions 1 to
 `k - 1` with `GET …/statements/{statement_id}/result?partition=<i>` (§6.4), each on its own connection, all at
 once. Until the server has decided how to split a running statement's result, its
 document lists partition 0 only and has no `partition_order`; a client that reads the
@@ -1017,7 +1017,7 @@ client that sends them must still check how many partitions the result has.
 
 Capability: `prepared_statements`.
 
-### 7.1 `POST /warp/v1/sessions/{session_id}/prepared`
+### 7.1 `POST /chargewire/v1/sessions/{session_id}/prepared`
 
 Body `{"sql": "INSERT INTO t VALUES (?, ?)"}`. `201` with:
 
@@ -1058,7 +1058,7 @@ prepare time: a privilege revoked between prepare and execute applies.
 
 Capability: `ingest`.
 
-### 8.1 `POST /warp/v1/sessions/{session_id}/ingest`
+### 8.1 `POST /chargewire/v1/sessions/{session_id}/ingest`
 
 Query parameters:
 
@@ -1111,12 +1111,12 @@ Two independent layers, both optional:
 
   A server with a codec's capability MUST be able to produce and read it.
 
-  A client accepts compression with the `Warp-IPC-Compression` request header: a
+  A client accepts compression with the `Chargewire-IPC-Compression` request header: a
   comma-separated list of codec names in its order of preference, optionally ending in
-  `none` (`Warp-IPC-Compression: lz4_frame, zstd`). The server uses the first codec in
+  `none` (`Chargewire-IPC-Compression: lz4_frame, zstd`). The server uses the first codec in
   the list that it supports, ignoring names it doesn't know; it sends uncompressed Arrow
   when the header is absent, names no codec it supports, or reaches `none` first. The
-  response's `Warp-IPC-Compression` header names what it used: `lz4_frame`, `zstd` or
+  response's `Chargewire-IPC-Compression` header names what it used: `lz4_frame`, `zstd` or
   `none`. The same header on each partition's request (§6.10) applies to that
   partition. Within a compressed stream a server MAY leave a buffer uncompressed (Arrow's
   uncompressed length `-1`) when compressing it would save little; clients MUST read
@@ -1134,7 +1134,7 @@ Capability: `partitioned_ingest`. One TCP connection carries what one network fl
 allows; a client with a large upload can send it over several connections at once
 into one ingest, which the server commits as one transaction.
 
-1. **Open** with `POST /warp/v1/sessions/{session_id}/ingests` and the target as a JSON
+1. **Open** with `POST /chargewire/v1/sessions/{session_id}/ingests` and the target as a JSON
    body: `{"table": …, "catalog": …, "schema": …, "mode": …, "temporary": …}` (the
    fields mean what §8.1's query parameters mean). The answer is `201` with
    `{"ingest_id": "i_…", "state": "open", "parts": []}` and a `Location`. An
@@ -1313,7 +1313,7 @@ existence of objects they cannot see.
 
 These endpoints serve driver metadata calls (ADBC `GetObjects`, JDBC
 `DatabaseMetaData`). They are `GET` requests under
-`/warp/v1/sessions/{session_id}/metadata/` that return Arrow streams. **Their result
+`/chargewire/v1/sessions/{session_id}/metadata/` that return Arrow streams. **Their result
 schemas are exactly those of the matching Arrow Flight SQL commands**, so existing
 driver code that consumes Flight SQL metadata works unchanged. Filter patterns use
 SQL `LIKE` syntax (`%`, `_`, `\` escape), as in Flight SQL.
@@ -1336,10 +1336,10 @@ an IPC message, with the same per-field metadata keys Flight SQL defines
 nullable unless the column can't hold NULL (`NOT NULL`, primary key), and decimal
 columns carry `…:PRECISION` and `…:SCALE`. `…:PRECISION` counts decimal digits for every
 numeric type (10 for a 32-bit integer), as JDBC's and ODBC's column size does; a column's
-comment is `…:REMARKS`. Flight SQL has no key for a column's default, so Warp SQL adds
-`WARP:SQL:COLUMN_DEFAULT`: the default's SQL text. Ordering follows the Flight SQL definitions.
+comment is `…:REMARKS`. Flight SQL has no key for a column's default, so Chargewire adds
+`CHARGEWIRE:SQL:COLUMN_DEFAULT`: the default's SQL text. Ordering follows the Flight SQL definitions.
 
-`GET /warp/v1/sessions/{session_id}/metadata/server-info` returns JSON rather than
+`GET /chargewire/v1/sessions/{session_id}/metadata/server-info` returns JSON rather than
 Flight SQL's `SqlInfo` union: one object of facts about the server. The protocol's keys
 are Flight SQL's `SqlInfo` names, taken exactly this way: drop a leading `FLIGHT_SQL_`,
 then write the rest in lower case (`FLIGHT_SQL_SERVER_NAME` becomes `server_name`,
@@ -1368,7 +1368,7 @@ Every error response is a problem document:
 
 ```json
 {
-  "type": "urn:warp-sql:error:permission_denied",
+  "type": "urn:chargewire:error:permission_denied",
   "title": "Permission denied",
   "status": 403,
   "code": "permission_denied",
@@ -1378,7 +1378,7 @@ Every error response is a problem document:
 }
 ```
 
-`code` is the stable, machine-readable part, and `type` is `urn:warp-sql:error:` followed
+`code` is the stable, machine-readable part, and `type` is `urn:chargewire:error:` followed
 by it. `title` is a short, human-readable summary of the code ("Permission denied"), the
 same for every error with that code; `detail` is for people too, says what happened in
 this case, and may change. Clients decide on `code`, never on `title` or `detail`.
@@ -1450,7 +1450,7 @@ running statements finish within its grace period, and then cancel what remains
 
 ## 12. Versioning
 
-The major version is in the path (`/warp/v1`). Within a major version, changes are
+The major version is in the path (`/chargewire/v1`). Within a major version, changes are
 additive only: new endpoints, new optional fields, new capabilities, new error codes, new
 values of enumerated fields. A change that would break a v1 client gets a new major
 version, and a server MAY serve several majors at once.
@@ -1502,18 +1502,18 @@ its README lists the ones it doesn't test yet.
 
 Every endpoint of version 1, under the base path (§2.1). The OpenAPI document (§3.3) has
 exactly these; the conformance suite checks that the two lists agree. `…` stands for
-`/warp/v1/sessions/{session_id}`.
+`/chargewire/v1/sessions/{session_id}`.
 
 | Method | Path | Section | Capability |
 |---|---|---|---|
-| `GET` | `/warp` | §3.1 | |
-| `GET` | `/warp/v1/health` | §3.2 | |
-| `GET` | `/warp/v1/openapi.json` | §3.3 | `openapi` |
-| `POST` | `/warp/v1/auth/token` | §4.1 | |
-| `POST` | `/warp/v1/auth/oauth/flows` | §4.3.1 | `oauth_browser` |
-| `POST` | `/warp/v1/auth/oauth/flows/{flow_id}` | §4.3.2 | `oauth_browser` |
-| `GET` | `/warp/v1/auth/oauth/callback` | §4.3.4 | `oauth_browser` |
-| `POST` | `/warp/v1/sessions` | §5.1 | |
+| `GET` | `/chargewire` | §3.1 | |
+| `GET` | `/chargewire/v1/health` | §3.2 | |
+| `GET` | `/chargewire/v1/openapi.json` | §3.3 | `openapi` |
+| `POST` | `/chargewire/v1/auth/token` | §4.1 | |
+| `POST` | `/chargewire/v1/auth/oauth/flows` | §4.3.1 | `oauth_browser` |
+| `POST` | `/chargewire/v1/auth/oauth/flows/{flow_id}` | §4.3.2 | `oauth_browser` |
+| `GET` | `/chargewire/v1/auth/oauth/callback` | §4.3.4 | `oauth_browser` |
+| `POST` | `/chargewire/v1/sessions` | §5.1 | |
 | `GET` | `…` | §5.2 | |
 | `PATCH` | `…` | §5.3 | |
 | `DELETE` | `…` | §5.4 | |

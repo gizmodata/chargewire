@@ -8,7 +8,7 @@ import starlightLlmsTxt from 'starlight-llms-txt';
 // custom domain, the private preview on GitHub Pages, localhost). DOCS_GA=true is the one
 // switch between the private preview and the public site (README, "Private preview and GA"):
 // without it every page says noindex and carries the preview banner.
-const site = process.env.DOCS_SITE ?? 'https://warpsql.gizmodata.com';
+const site = process.env.DOCS_SITE ?? 'https://chargewire.gizmodata.com';
 const base = process.env.DOCS_BASE ?? '/';
 const indexable = process.env.DOCS_GA === 'true';
 
@@ -18,15 +18,15 @@ export default defineConfig({
 	trailingSlash: 'always',
 	integrations: [
 		starlight({
-			title: 'Warp SQL',
+			title: 'Chargewire',
 			description:
-				'Warp SQL is an open protocol for running SQL over plain HTTP, with Apache Arrow IPC streams for results, parameters and uploads.',
-			logo: { src: './src/assets/warp-sql-mark.svg', alt: '' },
+				'Chargewire is an open protocol for running SQL over plain HTTP, with Apache Arrow IPC streams for results, parameters and uploads.',
+			logo: { src: './src/assets/chargewire-mark.svg', alt: '' },
 			favicon: '/favicon.svg',
 			customCss: ['./src/styles/theme.css'],
-			editLink: { baseUrl: 'https://github.com/gizmodata/warp-sql/edit/main/site/' },
+			editLink: { baseUrl: 'https://github.com/gizmodata/chargewire/edit/main/site/' },
 			lastUpdated: true,
-			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/gizmodata/warp-sql' }],
+			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/gizmodata/chargewire' }],
 			components: {
 				Footer: './src/components/Footer.astro',
 				Banner: './src/components/Banner.astro',
@@ -45,7 +45,7 @@ export default defineConfig({
 				// validator doesn't know: links to it are excluded and checked by the build's
 				// own page list instead (scripts/generate.mjs --check-links).
 				starlightLinksValidator({ errorOnLocalLinks: false, exclude: ['/reference/openapi/', '/reference/openapi/**', '/openapi.yaml', '/openapi.json'] }),
-				starlightLlmsTxt({ projectName: 'Warp SQL' }),
+				starlightLlmsTxt({ projectName: 'Chargewire' }),
 			],
 			sidebar: [
 				{ label: 'Overview', link: '/' },

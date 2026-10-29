@@ -16,7 +16,7 @@
 
 #include "forwarded.hpp"
 #include "security_events.hpp"
-#include "warpsql/server.hpp"
+#include "chargewire/server.hpp"
 
 namespace {
 
@@ -25,10 +25,10 @@ namespace beast = boost::beast;
 namespace http = boost::beast::http;
 namespace json = boost::json;
 
-using warpsql::IpNetwork;
-using warpsql::ParseIpNetwork;
-using warpsql::detail::ForwardedClient;
-using warpsql::detail::PeerHost;
+using chargewire::IpNetwork;
+using chargewire::ParseIpNetwork;
+using chargewire::detail::ForwardedClient;
+using chargewire::detail::PeerHost;
 
 std::vector<IpNetwork> Networks(const std::vector<std::string>& texts) {
   std::vector<IpNetwork> out;
@@ -176,41 +176,41 @@ TEST(PeerHost, EveryFormThePeerTakes) {
   EXPECT_EQ(PeerHost("[2001:db8::7]"), "2001:db8::7");
   EXPECT_EQ(PeerHost("203.0.113.9"), "203.0.113.9");
   EXPECT_EQ(PeerHost("::1:5"), "::1");  // unbracketed: address:port
-  EXPECT_EQ(warpsql::detail::FormatPeer(net::ip::make_address("::1"), 5), "[::1]:5");
-  EXPECT_EQ(warpsql::detail::FormatPeer(net::ip::make_address("10.0.0.1"), 5), "10.0.0.1:5");
+  EXPECT_EQ(chargewire::detail::FormatPeer(net::ip::make_address("::1"), 5), "[::1]:5");
+  EXPECT_EQ(chargewire::detail::FormatPeer(net::ip::make_address("10.0.0.1"), 5), "10.0.0.1:5");
   // The security-event limiter keys a forwarded IPv6 client by its /64, as a direct one.
-  warpsql::SecurityEvent direct, forwarded;
+  chargewire::SecurityEvent direct, forwarded;
   direct.code = forwarded.code = "client_certificate_refused";
   direct.peer = "[2001:db8:1:2::7]:443";
   forwarded.peer = "[2001:db8:1:2::8]";
-  EXPECT_EQ(warpsql::detail::SourceKey(direct), "2001:db8:1:2::/64");
-  EXPECT_EQ(warpsql::detail::SourceKey(forwarded), "2001:db8:1:2::/64");
+  EXPECT_EQ(chargewire::detail::SourceKey(direct), "2001:db8:1:2::/64");
+  EXPECT_EQ(chargewire::detail::SourceKey(forwarded), "2001:db8:1:2::/64");
 }
 
 // ---- Against a server ----
 
-class Engine : public warpsql::Backend {
+class Engine : public chargewire::Backend {
  public:
-  warpsql::ServerIdentity Identity() override { return {"forwarded-test", "0"}; }
-  std::unique_ptr<warpsql::EngineSession> OpenSession(const warpsql::Principal&, const std::string&,
+  chargewire::ServerIdentity Identity() override { return {"forwarded-test", "0"}; }
+  std::unique_ptr<chargewire::EngineSession> OpenSession(const chargewire::Principal&, const std::string&,
                                                       const json::object&) override {
-    return std::make_unique<warpsql::EngineSession>();
+    return std::make_unique<chargewire::EngineSession>();
   }
 };
 
-class AnyPassword : public warpsql::Authenticator {
+class AnyPassword : public chargewire::Authenticator {
  public:
   json::array GrantTypes() override { return {"password"}; }
-  warpsql::Principal AuthenticatePassword(std::string_view username, std::string_view) override {
-    return warpsql::Principal{.name = std::string(username)};
+  chargewire::Principal AuthenticatePassword(std::string_view username, std::string_view) override {
+    return chargewire::Principal{.name = std::string(username)};
   }
 };
 
-class FakeProvider : public warpsql::BrowserSignInProvider {
+class FakeProvider : public chargewire::BrowserSignInProvider {
  public:
   std::string DisplayName() override { return "Fake IdP"; }
   std::string AuthorizeUrl(const Authorization& a) override { return "https://idp.example/authorize?state=" + a.state; }
-  warpsql::Principal CompleteSignIn(const Callback&) override { throw std::runtime_error("unused"); }
+  chargewire::Principal CompleteSignIn(const Callback&) override { throw std::runtime_error("unused"); }
 };
 
 struct Answer {
@@ -243,11 +243,11 @@ Answer Send(uint16_t port, http::verb method, const std::string& target, const s
 class ProxiedServer {
  public:
   explicit ProxiedServer(std::vector<std::string> trusted) {
-    warpsql::ServerOptions options;
+    chargewire::ServerOptions options;
     options.trusted_proxies = Networks(trusted);
     options.browser_sign_in = std::make_shared<FakeProvider>();
     options.max_browser_sign_ins_per_address = 2;
-    server = std::make_unique<warpsql::Server>(options, std::make_shared<Engine>(), std::make_shared<AnyPassword>());
+    server = std::make_unique<chargewire::Server>(options, std::make_shared<Engine>(), std::make_shared<AnyPassword>());
     server->Start();
     port = server->port();
   }
@@ -256,14 +256,14 @@ class ProxiedServer {
     server->Wait();
   }
   // Signs in and opens a session with these extra headers; returns the session's activity.
-  warpsql::SessionActivity OpenSession(const std::vector<std::pair<std::string, std::string>>& headers) {
-    const Answer token = Send(port, http::verb::post, "/warp/v1/auth/token",
+  chargewire::SessionActivity OpenSession(const std::vector<std::pair<std::string, std::string>>& headers) {
+    const Answer token = Send(port, http::verb::post, "/chargewire/v1/auth/token",
                               R"({"grant_type": "password", "username": "alice", "password": "x"})", headers);
     EXPECT_EQ(token.status, 200) << token.body;  // a forwarding header changes nothing about signing in
     auto with_auth = headers;
     with_auth.emplace_back("Authorization",
                            "Bearer " + std::string(json::parse(token.body).at("access_token").as_string()));
-    const Answer session = Send(port, http::verb::post, "/warp/v1/sessions", "{}", with_auth);
+    const Answer session = Send(port, http::verb::post, "/chargewire/v1/sessions", "{}", with_auth);
     EXPECT_EQ(session.status, 201) << session.body;
     const std::string id(json::parse(session.body).at("session_id").as_string());
     for (auto& activity : server->Sessions()) {
@@ -273,10 +273,10 @@ class ProxiedServer {
     return {};
   }
   int NewFlow(const std::vector<std::pair<std::string, std::string>>& headers) {
-    return Send(port, http::verb::post, "/warp/v1/auth/oauth/flows", "", headers).status;
+    return Send(port, http::verb::post, "/chargewire/v1/auth/oauth/flows", "", headers).status;
   }
 
-  std::unique_ptr<warpsql::Server> server;
+  std::unique_ptr<chargewire::Server> server;
   uint16_t port = 0;
 };
 

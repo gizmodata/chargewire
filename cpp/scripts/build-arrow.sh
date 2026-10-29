@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds Arrow C++ with only what a Warp SQL server would use from it: the IPC
+# Builds Arrow C++ with only what a Chargewire server would use from it: the IPC
 # format and its ZSTD/LZ4 codecs. No Flight (so no gRPC/protobuf/abseil), no
 # compute, no Parquet, no filesystems. For comparing against nanoarrow.
 set -euo pipefail
@@ -7,8 +7,8 @@ set -euo pipefail
 ARROW_TAG=apache-arrow-26.0.0
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# WARPSQL_DEPS_DIR lets another project build these into its own directory.
-DEPS="${WARPSQL_DEPS_DIR:-$HERE/.deps}"
+# CHARGEWIRE_DEPS_DIR lets another project build these into its own directory.
+DEPS="${CHARGEWIRE_DEPS_DIR:-$HERE/.deps}"
 SRC="$DEPS/arrow"
 BUILD="$DEPS/arrow-build"
 PREFIX="$DEPS/arrow-install"

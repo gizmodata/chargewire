@@ -18,9 +18,9 @@
 
 #include "common.hpp"
 #include "signal.hpp"
-#include "warpsql/backend.hpp"
+#include "chargewire/backend.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 struct IngestMessageLimit;
 inline constexpr std::size_t kDefaultMaxIngestMessageBytes = 64 * 1024 * 1024;
@@ -60,7 +60,7 @@ std::shared_ptr<arrow::io::InputStream> QueueInput(std::shared_ptr<ByteQueue> qu
 // unsupported_arrow_type. Safe to read from several threads (IngestBatches): reading
 // the next message is serialized, decoding and validating it is not. A schema with
 // dictionaries is read one batch at a time, as dictionaries are stream state.
-class ValidatedReader : public warpsql::IngestBatches {
+class ValidatedReader : public chargewire::IngestBatches {
  public:
   // Reads the schema message; throws bad_request if the input isn't an IPC stream.
   explicit ValidatedReader(std::shared_ptr<arrow::io::InputStream> input,
@@ -154,4 +154,4 @@ class Completion {
   Signal signal_;
 };
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

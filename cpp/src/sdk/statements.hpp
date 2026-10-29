@@ -16,9 +16,9 @@
 
 #include "common.hpp"
 #include "signal.hpp"
-#include "warpsql/errors.hpp"
+#include "chargewire/errors.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 enum class StatementState { kQueued, kRunning, kSucceeded, kFailed, kCancelled };
 
@@ -235,4 +235,4 @@ class IdempotencyStore {
   std::map<std::pair<std::string, std::string>, Entry> entries_;
 };
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-#include "warpsql/server.hpp"
+#include "chargewire/server.hpp"
 
 namespace {
 
@@ -24,11 +24,11 @@ namespace beast = boost::beast;
 namespace http = boost::beast::http;
 namespace json = boost::json;
 
-using warpsql::Principal;
+using chargewire::Principal;
 
-class OneRowSession : public warpsql::EngineSession {
+class OneRowSession : public chargewire::EngineSession {
  public:
-  warpsql::StatementOutcome Execute(std::string_view, const json::value&) override {
+  chargewire::StatementOutcome Execute(std::string_view, const json::value&) override {
     arrow::Int64Builder builder;
     (void)builder.Append(1);
     std::shared_ptr<arrow::Array> values;
@@ -39,10 +39,10 @@ class OneRowSession : public warpsql::EngineSession {
   }
 };
 
-class Engine : public warpsql::Backend {
+class Engine : public chargewire::Backend {
  public:
-  warpsql::ServerIdentity Identity() override { return {"session-authority-test", "0"}; }
-  std::unique_ptr<warpsql::EngineSession> OpenSession(const Principal&, const std::string&,
+  chargewire::ServerIdentity Identity() override { return {"session-authority-test", "0"}; }
+  std::unique_ptr<chargewire::EngineSession> OpenSession(const Principal&, const std::string&,
                                                       const json::object&) override {
     return std::make_unique<OneRowSession>();
   }
@@ -50,7 +50,7 @@ class Engine : public warpsql::Backend {
 
 // The password names the authority: "full" and "readonly" are two authorities of one user;
 // "legacy" sets none (a backend that predates authority_key).
-class AuthorityByPassword : public warpsql::Authenticator {
+class AuthorityByPassword : public chargewire::Authenticator {
  public:
   json::array GrantTypes() override { return {"password"}; }
   Principal AuthenticatePassword(std::string_view username, std::string_view password) override {
@@ -74,9 +74,9 @@ struct Answer {
 class SessionAuthority : public ::testing::Test {
  protected:
   void SetUp() override {
-    warpsql::ServerOptions options;
+    chargewire::ServerOptions options;
     options.host = "127.0.0.1";
-    server_ = std::make_unique<warpsql::Server>(options, std::make_shared<Engine>(),
+    server_ = std::make_unique<chargewire::Server>(options, std::make_shared<Engine>(),
                                                 std::make_shared<AuthorityByPassword>());
     server_->Start();
   }
@@ -109,7 +109,7 @@ class SessionAuthority : public ::testing::Test {
   }
 
   std::string SignIn(const std::string& password) {
-    const Answer answer = Send(http::verb::post, "/warp/v1/auth/token", "",
+    const Answer answer = Send(http::verb::post, "/chargewire/v1/auth/token", "",
                                json::serialize(json::object{{"grant_type", "password"},
                                                             {"username", "alice"},
                                                             {"password", password}}));
@@ -117,7 +117,7 @@ class SessionAuthority : public ::testing::Test {
     return std::string(json::parse(answer.body).at("access_token").as_string());
   }
   std::string OpenSession(const std::string& token) {
-    const Answer answer = Send(http::verb::post, "/warp/v1/sessions", token, "{}");
+    const Answer answer = Send(http::verb::post, "/chargewire/v1/sessions", token, "{}");
     EXPECT_EQ(answer.status, 201) << answer.body;
     return std::string(json::parse(answer.body).at("session_id").as_string());
   }
@@ -125,7 +125,7 @@ class SessionAuthority : public ::testing::Test {
   std::string Submit(const std::string& token, const std::string& session, const std::string& key = {}) {
     std::vector<std::pair<std::string, std::string>> headers;
     if (!key.empty()) headers.emplace_back("Idempotency-Key", key);
-    const Answer answer = Send(http::verb::post, "/warp/v1/sessions/" + session + "/statements", token,
+    const Answer answer = Send(http::verb::post, "/chargewire/v1/sessions/" + session + "/statements", token,
                                R"({"sql": "SELECT 1"})", headers);
     EXPECT_TRUE(answer.status == 200 || answer.status == 201 || answer.status == 202) << answer.body;
     return std::string(json::parse(answer.body).at("statement_id").as_string());
@@ -134,7 +134,7 @@ class SessionAuthority : public ::testing::Test {
   // Every route of `session` (statement `statement` of it): what `token` gets on each.
   std::vector<std::pair<std::string, Answer>> EveryRoute(const std::string& token, const std::string& session,
                                                          const std::string& statement) {
-    const std::string s = "/warp/v1/sessions/" + session;
+    const std::string s = "/chargewire/v1/sessions/" + session;
     const std::string q = s + "/statements/" + statement;
     std::vector<std::pair<std::string, Answer>> out;
     auto add = [&](std::string name, Answer answer) { out.emplace_back(std::move(name), std::move(answer)); };
@@ -155,7 +155,7 @@ class SessionAuthority : public ::testing::Test {
     return out;
   }
 
-  std::unique_ptr<warpsql::Server> server_;
+  std::unique_ptr<chargewire::Server> server_;
 };
 
 TEST_F(SessionAuthority, ATokenOfTheSameNameWithAnotherAuthorityGetsSessionNotFoundOnEveryRoute) {
@@ -168,8 +168,8 @@ TEST_F(SessionAuthority, ATokenOfTheSameNameWithAnotherAuthorityGetsSessionNotFo
     EXPECT_EQ(answer.code(), "session_not_found") << route << ": " << answer.body;
   }
   // And the session, its statement and its result are all still there for their owner.
-  EXPECT_EQ(Send(http::verb::get, "/warp/v1/sessions/" + session, full).status, 200);
-  const Answer result = Send(http::verb::get, "/warp/v1/sessions/" + session + "/statements/" + statement + "/result",
+  EXPECT_EQ(Send(http::verb::get, "/chargewire/v1/sessions/" + session, full).status, 200);
+  const Answer result = Send(http::verb::get, "/chargewire/v1/sessions/" + session + "/statements/" + statement + "/result",
                              full, {}, {{"Accept", "application/vnd.apache.arrow.stream"}});
   EXPECT_EQ(result.status, 200) << result.body;
 }
@@ -193,9 +193,9 @@ TEST_F(SessionAuthority, ANewTokenWithTheSameAuthorityReachesTheSession) {
 // A backend that sets no authority_key keeps handles by name, as before it existed.
 TEST_F(SessionAuthority, WithoutAnAuthorityKeyHandlesBelongToTheName) {
   const std::string session = OpenSession(SignIn("legacy"));
-  EXPECT_EQ(Send(http::verb::get, "/warp/v1/sessions/" + session, SignIn("legacy")).status, 200);
+  EXPECT_EQ(Send(http::verb::get, "/chargewire/v1/sessions/" + session, SignIn("legacy")).status, 200);
   // ... but an empty key is an authority of its own: a token that has one doesn't match it.
-  const Answer other = Send(http::verb::get, "/warp/v1/sessions/" + session, SignIn("full"));
+  const Answer other = Send(http::verb::get, "/chargewire/v1/sessions/" + session, SignIn("full"));
   EXPECT_EQ(other.status, 404) << other.body;
   EXPECT_EQ(other.code(), "session_not_found");
 }
@@ -210,7 +210,7 @@ TEST_F(SessionAuthority, AnIdempotencyKeyIsScopedToTheAuthority) {
   const std::string readonly_session = OpenSession(readonly);
   const std::string original = Submit(full, full_session, "key-1");
   EXPECT_EQ(Submit(full, full_session, "key-1"), original);  // the owner's retry: replayed
-  const Answer other = Send(http::verb::post, "/warp/v1/sessions/" + readonly_session + "/statements", readonly,
+  const Answer other = Send(http::verb::post, "/chargewire/v1/sessions/" + readonly_session + "/statements", readonly,
                             R"({"sql": "SELECT 1"})", {{"Idempotency-Key", "key-1"}});
   ASSERT_LT(other.status, 300) << other.body;
   EXPECT_NE(std::string(json::parse(other.body).at("statement_id").as_string()), original) << other.body;

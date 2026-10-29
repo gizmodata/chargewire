@@ -1,4 +1,4 @@
-"""A minimal Warp SQL client for the conformance tests: plain HTTP calls, nothing
+"""A minimal Chargewire client for the conformance tests: plain HTTP calls, nothing
 hidden, so a failing test points at the protocol rather than at a driver."""
 
 import io
@@ -19,7 +19,7 @@ def read_batches(content: bytes) -> list[pa.RecordBatch]:
     return list(ipc.open_stream(source=io.BytesIO(initial_bytes=content)))
 
 
-class Warp:
+class Chargewire:
     def __init__(self, base_url: str, username: str, password: str, verify=True,
                  grant: str = "password"):
         """`verify`: httpx's TLS setting (an ssl.SSLContext for mutual TLS). `grant`:
@@ -37,7 +37,7 @@ class Warp:
 
     def login(self, username: str | None = None, password: str | None = None) -> str:
         response = self.http.post(
-            url="/warp/v1/auth/token",
+            url="/chargewire/v1/auth/token",
             json={"grant_type": "password",
                   "username": self.username if username is None else username,
                   "password": self.password if password is None else password})
@@ -45,7 +45,7 @@ class Warp:
         return response.json()["access_token"]
 
     def login_with_certificate(self) -> str:
-        response = self.http.post(url="/warp/v1/auth/token", json={"grant_type": "client_certificate"})
+        response = self.http.post(url="/chargewire/v1/auth/token", json={"grant_type": "client_certificate"})
         assert response.status_code == 200, response.text
         return response.json()["access_token"]
 
@@ -55,13 +55,13 @@ class Warp:
     # ---- Sessions ----
 
     def new_session(self, options: dict | None = None) -> str:
-        response = self.http.post(url="/warp/v1/sessions", headers=self.headers(),
+        response = self.http.post(url="/chargewire/v1/sessions", headers=self.headers(),
                                   json={"options": options or {}})
         assert response.status_code == 201, response.text
         return response.json()["session_id"]
 
     def session_url(self, session_id: str) -> str:
-        return f"/warp/v1/sessions/{session_id}"
+        return f"/chargewire/v1/sessions/{session_id}"
 
     # ---- Statements ----
 

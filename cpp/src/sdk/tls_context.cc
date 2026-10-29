@@ -16,7 +16,7 @@
 
 #include "ids.hpp"
 
-namespace warpsql {
+namespace chargewire {
 
 ClientIdentitySource ParseClientIdentitySource(std::string_view name) {
   if (name == "san_email") return ClientIdentitySource::kSanEmail;
@@ -58,9 +58,9 @@ std::string_view ClientIdentitySourceName(ClientIdentitySource source) {
   return "san_email";
 }
 
-}  // namespace warpsql
+}  // namespace chargewire
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 namespace ssl = net::ssl;
 
@@ -371,7 +371,7 @@ TlsContext::Current TlsContext::Build(uint64_t generation) const {
   // Resumed sessions keep their verified certificate; OpenSSL needs a session id context
   // for that with client verification on. Each context (each CRL generation) has its own
   // ticket keys and session cache, so a session from before a CRL reload is not resumed.
-  static constexpr unsigned char kSessionContext[] = "warpsql";
+  static constexpr unsigned char kSessionContext[] = "chargewire";
   SSL_CTX_set_session_id_context(native, kSessionContext, sizeof(kSessionContext) - 1);
   if (!options_.client_crl_file.empty()) {
     X509_STORE* store = SSL_CTX_get_cert_store(native);
@@ -538,4 +538,4 @@ std::string EscapeForDisplay(std::string_view text) {
 
 bool SameIdentityName(std::string_view a, std::string_view b) { return CertificateIdentitiesMatch(a, b); }
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

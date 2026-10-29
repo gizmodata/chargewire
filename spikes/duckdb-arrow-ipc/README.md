@@ -1,6 +1,6 @@
 # Spike: DuckDB 2.0 + Arrow IPC, without gRPC
 
-**Question:** can a Warp SQL server move every DuckDB type in and out as Arrow IPC
+**Question:** can a Chargewire server move every DuckDB type in and out as Arrow IPC
 through DuckDB's public C API only, and which Arrow library should do the IPC:
 nanoarrow or Arrow C++ (built with IPC only, no Flight)?
 
@@ -44,12 +44,12 @@ union); both builds refuse them with DuckDB's error and never store them as text
 
 ## What it built
 
-`warp-spike`, a small C++20 tool that does what a Warp SQL server does with data:
+`chargewire-spike`, a small C++20 tool that does what a Chargewire server does with data:
 
 | Command | Path |
 |---|---|
 | `export` | SQL → DuckDB v2 C API (`duckdb_v2_statement_execute_arrow`, `…_to_arrow_c_stream`) → IPC writer |
-| `ingest` | IPC reader (validating) → `warp_upload()` table function (DuckDB's v2 Arrow importer) → `CREATE TABLE … AS` / `INSERT INTO … SELECT * FROM warp_upload()` |
+| `ingest` | IPC reader (validating) → `chargewire_upload()` table function (DuckDB's v2 Arrow importer) → `CREATE TABLE … AS` / `INSERT INTO … SELECT * FROM chargewire_upload()` |
 | `copy` | IPC reader → IPC writer |
 
 The IPC layer is one file per library (`src/ipc_arrow.cc`, `src/ipc.cc`), behind
@@ -104,8 +104,8 @@ uv venv .venv && uv pip install --python .venv/bin/python \
 cd check && ../.venv/bin/python -m pytest -q
 ```
 
-For the nanoarrow comparison, build with `-DWARP_IPC_LIBRARY=nanoarrow` into another
-directory and point the harness at it with `WARP_SPIKE_TOOL=<dir>/warp-spike`.
+For the nanoarrow comparison, build with `-DCHARGEWIRE_IPC_LIBRARY=nanoarrow` into another
+directory and point the harness at it with `CHARGEWIRE_SPIKE_TOOL=<dir>/chargewire-spike`.
 
 Pinned versions, all the newest available on 2026-10-16:
 

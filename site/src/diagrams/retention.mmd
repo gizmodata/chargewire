@@ -1,7 +1,7 @@
 sequenceDiagram
   participant C as Client
-  participant S as Warp SQL server
-  C->>S: POST …/statements, Warp-Retain-Result: true
+  participant S as Chargewire server
+  C->>S: POST …/statements, Chargewire-Retain-Result: true
   S-->>C: statement document, result.retained: true, expires_at
   C->>S: GET …/result
   S--xC: connection drops after batch 4

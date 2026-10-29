@@ -7,7 +7,7 @@
 #include "ipc.hpp"
 #include "json.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 namespace {
 
@@ -633,4 +633,4 @@ void IdempotencyStore::Sweep() {
   std::erase_if(entries_, [now](const auto& item) { return item.second.expires <= now; });
 }
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

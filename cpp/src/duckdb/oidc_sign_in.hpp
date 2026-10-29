@@ -1,20 +1,20 @@
-// warp-duckdb's browser sign-in (spec §4.3): an OpenID Connect provider, found by its
+// chargewire-duckdb's browser sign-in (spec §4.3): an OpenID Connect provider, found by its
 // issuer's discovery document, as a confidential client. For testing and development:
 // the ID token comes straight from the token endpoint and is checked for issuer,
 // audience, expiry and nonce, not by signature (OpenID Connect Core §3.1.3.7 allows this
 // over verified TLS; an http:// issuer is accepted only on a loopback address). Who may
 // sign in is a fixed list of identities (the ID token's email, else its sub), and each
-// signs in as the administrator, as everyone does on warp-duckdb.
+// signs in as the administrator, as everyone does on chargewire-duckdb.
 #pragma once
 
 #include <string>
 #include <vector>
 
-#include "warpsql/backend.hpp"
+#include "chargewire/backend.hpp"
 
-namespace warpduckdb {
+namespace chargewire_duckdb {
 
-class OidcBrowserSignIn : public warpsql::BrowserSignInProvider {
+class OidcBrowserSignIn : public chargewire::BrowserSignInProvider {
  public:
   struct Options {
     std::string issuer;
@@ -30,7 +30,7 @@ class OidcBrowserSignIn : public warpsql::BrowserSignInProvider {
 
   std::string DisplayName() override { return options_.provider_name; }
   std::string AuthorizeUrl(const Authorization& authorization) override;
-  warpsql::Principal CompleteSignIn(const Callback& callback) override;
+  chargewire::Principal CompleteSignIn(const Callback& callback) override;
 
  private:
   Options options_;
@@ -38,4 +38,4 @@ class OidcBrowserSignIn : public warpsql::BrowserSignInProvider {
   std::string token_endpoint_;
 };
 
-}  // namespace warpduckdb
+}  // namespace chargewire_duckdb

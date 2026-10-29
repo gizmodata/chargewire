@@ -13,15 +13,15 @@
 #include <arrow/api.h>
 
 #include "statements.hpp"
-#include "warpsql/errors.hpp"
+#include "chargewire/errors.hpp"
 
 namespace {
 
-using warpsql::Error;
-using warpsql::ErrorCode;
-using warpsql::detail::ReadStep;
-using warpsql::detail::Statement;
-using warpsql::detail::WallClock;
+using chargewire::Error;
+using chargewire::ErrorCode;
+using chargewire::detail::ReadStep;
+using chargewire::detail::Statement;
+using chargewire::detail::WallClock;
 
 constexpr int kBatches = 3;
 

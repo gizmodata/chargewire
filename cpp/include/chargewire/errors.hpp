@@ -6,7 +6,7 @@
 #include <string>
 #include <string_view>
 
-namespace warpsql {
+namespace chargewire {
 
 enum class ErrorCode {
   kBadRequest,
@@ -99,14 +99,14 @@ class Error : public std::runtime_error {
     return *this;
   }
 
-  // A session_ended error and its reason (spec §5.6, warpsql::reason).
+  // A session_ended error and its reason (spec §5.6, chargewire::reason).
   static Error SessionEnded(std::string reason, std::string detail) {
     Error error(ErrorCode::kSessionEnded, std::move(detail));
     error.reason_ = std::move(reason);
     return error;
   }
   // An invalid_token error that says why the token no longer stands (spec §4.2,
-  // warpsql::reason). Only for a token the server issued and verified: a token it can't
+  // chargewire::reason). Only for a token the server issued and verified: a token it can't
   // tell is its own (malformed, forged, tampered, unknown) gets a plain
   // Error(kInvalidToken), so a reason never tells anyone but the token's holder about
   // its principal.
@@ -141,4 +141,4 @@ class Error : public std::runtime_error {
   std::string cancel_reason_;
 };
 
-}  // namespace warpsql
+}  // namespace chargewire

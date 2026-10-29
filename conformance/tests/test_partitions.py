@@ -8,7 +8,7 @@ import httpx
 import pyarrow as pa
 
 from test_discovery_auth import assert_problem
-from warp import ARROW_STREAM, read_batches
+from chargewire import ARROW_STREAM, read_batches
 
 EOS = b"\xff\xff\xff\xff\x00\x00\x00\x00"
 ROWS = 1_000_000
@@ -16,9 +16,9 @@ BIG = f"SELECT i, i * 2 AS j FROM range({ROWS}) t(i)"
 
 
 def partition_headers(n: int, order: str | None = None) -> dict[str, str]:
-    headers = {"Warp-Result-Partitions": str(n)}
+    headers = {"Chargewire-Result-Partitions": str(n)}
     if order:
-        headers["Warp-Result-Order"] = order
+        headers["Chargewire-Result-Order"] = order
     return headers
 
 
@@ -45,17 +45,17 @@ def read_complete(content: bytes) -> list[pa.RecordBatch]:
 class Partitions:
     """Reads partitions of a result, each on its own connection."""
 
-    def __init__(self, warp, session_id: str, statement_id: str):
-        self.warp = warp
-        self.url = f"{warp.statement_url(session_id, statement_id)}/result"
+    def __init__(self, chargewire, session_id: str, statement_id: str):
+        self.chargewire = chargewire
+        self.url = f"{chargewire.statement_url(session_id, statement_id)}/result"
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=32)
 
     def get(self, index: int, from_batch: int | None = None, **headers) -> httpx.Response:
         params = {"partition": str(index)}
         if from_batch is not None:
             params["from_batch"] = str(from_batch)
-        with httpx.Client(base_url=self.warp.http.base_url, timeout=120) as client:
-            response = client.get(url=self.url, params=params, headers=self.warp.headers(**headers))
+        with httpx.Client(base_url=self.chargewire.http.base_url, timeout=120) as client:
+            response = client.get(url=self.url, params=params, headers=self.chargewire.headers(**headers))
             response.read()
             return response
 
@@ -63,29 +63,29 @@ class Partitions:
         return list(self.pool.map(self.get, indexes))
 
 
-def streamed(warp, session_id: str, sql: str, **headers):
-    request = warp.http.build_request(
-        method="POST", url=f"{warp.session_url(session_id)}/statements",
-        headers=warp.headers(Accept=ARROW_STREAM, **headers), json={"sql": sql})
-    response = warp.http.send(request=request, stream=True)
+def streamed(chargewire, session_id: str, sql: str, **headers):
+    request = chargewire.http.build_request(
+        method="POST", url=f"{chargewire.session_url(session_id)}/statements",
+        headers=chargewire.headers(Accept=ARROW_STREAM, **headers), json={"sql": sql})
+    response = chargewire.http.send(request=request, stream=True)
     assert response.status_code == 200, response.read()
     assert response.headers["content-type"].startswith(ARROW_STREAM)
     return response
 
 
-def read_streamed_split(warp, session_id: str, sql: str, n: int, order: str | None = None):
+def read_streamed_split(chargewire, session_id: str, sql: str, n: int, order: str | None = None):
     """Submits on the streamed path and reads every partition at once. Returns the
     partition count, the order the server chose, and each partition's batches."""
-    response = streamed(warp, session_id, sql, **partition_headers(n=n, order=order))
-    statement_id = response.headers["warp-statement-id"]
-    k = int(response.headers.get("warp-result-partitions", "1"))
-    chosen = response.headers.get("warp-result-order")
+    response = streamed(chargewire, session_id, sql, **partition_headers(n=n, order=order))
+    statement_id = response.headers["chargewire-statement-id"]
+    k = int(response.headers.get("chargewire-result-partitions", "1"))
+    chosen = response.headers.get("chargewire-result-order")
     assert 1 <= k <= n
     # §6.10: both headers when the result is split, neither when it isn't.
-    assert (chosen is None) == (k == 1) and (("warp-result-partitions" in response.headers) == (k > 1)), response.headers
+    assert (chosen is None) == (k == 1) and (("chargewire-result-partitions" in response.headers) == (k > 1)), response.headers
     if k > 1:
         assert chosen in ("interleaved", "any"), chosen
-    reader = Partitions(warp=warp, session_id=session_id, statement_id=statement_id)
+    reader = Partitions(chargewire=chargewire, session_id=session_id, statement_id=statement_id)
     others = reader.pool.submit(reader.get_many, range(1, k))
     try:
         first = response.read()
@@ -97,21 +97,21 @@ def read_streamed_split(warp, session_id: str, sql: str, n: int, order: str | No
     return k, chosen, [read_complete(first)] + [read_complete(r.content) for r in rest], statement_id
 
 
-def test_discovery_lists_result_partitions(warp):
-    assert "result_partitions" in warp.http.get(url="/warp").json()["capabilities"]
+def test_discovery_lists_result_partitions(chargewire):
+    assert "result_partitions" in chargewire.http.get(url="/chargewire").json()["capabilities"]
 
 
-def test_a_client_that_does_not_ask_gets_one_partition(warp, session_id):
-    response = streamed(warp, session_id, BIG)
+def test_a_client_that_does_not_ask_gets_one_partition(chargewire, session_id):
+    response = streamed(chargewire, session_id, BIG)
     try:
-        assert "warp-result-partitions" not in response.headers
+        assert "chargewire-result-partitions" not in response.headers
         assert len(read_complete(response.read())) > 1
     finally:
         response.close()
 
 
-def test_interleaved_partitions_rebuild_the_result_in_order(warp, session_id):
-    k, order, parts, _ = read_streamed_split(warp, session_id, BIG + " ORDER BY i DESC", n=4)
+def test_interleaved_partitions_rebuild_the_result_in_order(chargewire, session_id):
+    k, order, parts, _ = read_streamed_split(chargewire, session_id, BIG + " ORDER BY i DESC", n=4)
     assert k > 1, "a million rows over several batches should be split"
     assert order == "interleaved"
     rebuilt = pa.Table.from_batches(batches=interleave(parts))
@@ -120,25 +120,25 @@ def test_interleaved_partitions_rebuild_the_result_in_order(warp, session_id):
     assert rebuilt.column("j").to_pylist() == [2 * i for i in range(ROWS - 1, -1, -1)]
 
 
-def test_any_order_partitions_hold_every_row_once(warp, session_id):
-    k, order, parts, _ = read_streamed_split(warp, session_id, BIG, n=6, order="any")
+def test_any_order_partitions_hold_every_row_once(chargewire, session_id):
+    k, order, parts, _ = read_streamed_split(chargewire, session_id, BIG, n=6, order="any")
     assert k > 1
     assert order == "any"
     values = sorted(v for part in parts for b in part for v in b.column("i").to_pylist())
     assert values == list(range(ROWS))
 
 
-def test_each_partition_uses_the_compression_its_request_accepts(warp, session_id):
-    response = streamed(warp, session_id, BIG + " ORDER BY i",
-                        **partition_headers(n=4), **{"Warp-IPC-Compression": "lz4_frame"})
-    statement_id = response.headers["warp-statement-id"]
-    k = int(response.headers.get("warp-result-partitions", "1"))
+def test_each_partition_uses_the_compression_its_request_accepts(chargewire, session_id):
+    response = streamed(chargewire, session_id, BIG + " ORDER BY i",
+                        **partition_headers(n=4), **{"Chargewire-IPC-Compression": "lz4_frame"})
+    statement_id = response.headers["chargewire-statement-id"]
+    k = int(response.headers.get("chargewire-result-partitions", "1"))
     assert k > 1
-    assert response.headers["warp-ipc-compression"] == "lz4_frame"
-    reader = Partitions(warp=warp, session_id=session_id, statement_id=statement_id)
+    assert response.headers["chargewire-ipc-compression"] == "lz4_frame"
+    reader = Partitions(chargewire=chargewire, session_id=session_id, statement_id=statement_id)
     # Partition 1 asks for zstd, the others for nothing: each gets what it asked for.
     accepts = {1: "zstd"}
-    others = [reader.pool.submit(reader.get, i, None, **({"Warp-IPC-Compression": accepts[i]} if i in accepts else {}))
+    others = [reader.pool.submit(reader.get, i, None, **({"Chargewire-IPC-Compression": accepts[i]} if i in accepts else {}))
               for i in range(1, k)]
     try:
         first = response.read()
@@ -147,46 +147,46 @@ def test_each_partition_uses_the_compression_its_request_accepts(warp, session_i
     rest = [f.result(timeout=120) for f in others]
     for i, r in enumerate(rest, start=1):
         assert r.status_code == 200, r.text
-        assert r.headers["warp-ipc-compression"] == accepts.get(i, "none")
+        assert r.headers["chargewire-ipc-compression"] == accepts.get(i, "none")
     parts = [read_complete(first)] + [read_complete(r.content) for r in rest]
     rebuilt = pa.Table.from_batches(batches=interleave(parts))
     assert rebuilt.column("i").to_pylist() == list(range(ROWS))
 
 
-def test_every_type_and_null_survive_the_split(warp, session_id):
+def test_every_type_and_null_survive_the_split(chargewire, session_id):
     sql = ("SELECT i, CASE WHEN i % 7 = 0 THEN NULL ELSE i::INTEGER END AS n, "
            "CASE WHEN i % 5 = 0 THEN NULL ELSE 'row ' || i END AS s, i / 3.0 AS d, "
            "(i % 1000)::DECIMAL(18, 3) AS dec, DATE '2026-01-01' + (i % 400)::INTEGER AS dt, "
            "TIMESTAMP '2026-01-01' + to_seconds(i) AS ts, i % 2 = 0 AS b, "
            "[i, NULL, i + 1] AS l, {'a': i, 'b': CASE WHEN i % 3 = 0 THEN NULL ELSE 'x' END} AS st, "
            "encode('b' || i) AS bin FROM range(300000) t(i) ORDER BY i")
-    whole = warp.query(session_id=session_id, sql=sql)
-    k, _, parts, _ = read_streamed_split(warp, session_id, sql, n=5)
+    whole = chargewire.query(session_id=session_id, sql=sql)
+    k, _, parts, _ = read_streamed_split(chargewire, session_id, sql, n=5)
     assert k > 1
     rebuilt = pa.Table.from_batches(batches=interleave(parts), schema=whole.schema)
     assert rebuilt.equals(whole)
 
 
-def test_a_small_result_stays_in_one_partition(warp, session_id):
-    response = streamed(warp, session_id, "SELECT 42 AS answer", **partition_headers(n=8))
+def test_a_small_result_stays_in_one_partition(chargewire, session_id):
+    response = streamed(chargewire, session_id, "SELECT 42 AS answer", **partition_headers(n=8))
     try:
-        assert "warp-result-partitions" not in response.headers
+        assert "chargewire-result-partitions" not in response.headers
         assert pa.Table.from_batches(batches=read_complete(response.read())).to_pylist() == [{"answer": 42}]
     finally:
         response.close()
 
 
-def test_retained_partitions_are_reread_and_resumed(warp, session_id):
-    response = warp.submit(session_id=session_id, sql=BIG,
+def test_retained_partitions_are_reread_and_resumed(chargewire, session_id):
+    response = chargewire.submit(session_id=session_id, sql=BIG,
                            headers={"Prefer": "respond-async", **partition_headers(n=3)})
     assert response.status_code == 201, response.text
     statement_id = response.json()["statement_id"]
-    doc = warp.wait_done(session_id=session_id, statement_id=statement_id)
+    doc = chargewire.wait_done(session_id=session_id, statement_id=statement_id)
     result = doc["result"]
     k = len(result["partitions"])
     assert k > 1 and result["partition_order"] == "interleaved" and result["retained"] is True
     assert sum(p["rows"] for p in result["partitions"]) == ROWS
-    reader = Partitions(warp=warp, session_id=session_id, statement_id=statement_id)
+    reader = Partitions(chargewire=chargewire, session_id=session_id, statement_id=statement_id)
     first = [read_complete(r.content) for r in reader.get_many(range(k))]
     again = [read_complete(r.content) for r in reader.get_many(range(k))]
     for p, part in enumerate(first):
@@ -202,16 +202,16 @@ def test_retained_partitions_are_reread_and_resumed(warp, session_id):
     assert_problem(response=reader.get(k), status=404, code="partition_not_found")
 
 
-def test_unretained_partition_is_read_once(warp, session_id):
-    response = warp.submit(session_id=session_id, sql=BIG,
-                           headers={"Prefer": "respond-async", "Warp-Retain-Result": "false",
+def test_unretained_partition_is_read_once(chargewire, session_id):
+    response = chargewire.submit(session_id=session_id, sql=BIG,
+                           headers={"Prefer": "respond-async", "Chargewire-Retain-Result": "false",
                                     **partition_headers(n=2)})
     statement_id = response.json()["statement_id"]
-    reader = Partitions(warp=warp, session_id=session_id, statement_id=statement_id)
+    reader = Partitions(chargewire=chargewire, session_id=session_id, statement_id=statement_id)
     # Wait for the split, then read both partitions at once, then once more.
     deadline = time.monotonic() + 30
     while True:
-        doc = warp.status(session_id=session_id, statement_id=statement_id, wait=1)
+        doc = chargewire.status(session_id=session_id, statement_id=statement_id, wait=1)
         if doc["result"] and (doc["result"].get("partition_order") or doc["state"] == "succeeded"):
             break
         assert time.monotonic() < deadline
@@ -223,16 +223,16 @@ def test_unretained_partition_is_read_once(warp, session_id):
     assert_problem(response=reader.get(1, from_batch=1), status=409, code="result_not_resumable")
 
 
-def test_small_results_split_into_complete_streams(warp, session_id):
+def test_small_results_split_into_complete_streams(chargewire, session_id):
     # The server's batch size, from an unsplit result.
-    probe = warp.query(session_id=session_id, sql=BIG)
+    probe = chargewire.query(session_id=session_id, sql=BIG)
     batch_rows = probe.to_batches()[0].num_rows
     # Two to five batches' worth of rows, up to eight partitions: a server may make fewer
     # partitions than batches (spec §6.10), or more, and then some partitions get no
     # batch. Either way every partition is a complete stream and the rows are exact.
     for batches in (2, 3, 5):
         sql = f"SELECT i FROM range({batches * batch_rows}) t(i)"
-        k, _, parts, _ = read_streamed_split(warp, session_id, sql, n=8)
+        k, _, parts, _ = read_streamed_split(chargewire, session_id, sql, n=8)
         rows = [v for b in interleave(parts) for v in b.column("i").to_pylist()]
         assert rows == list(range(batches * batch_rows)), batches
         got = sum(len(part) for part in parts)
@@ -251,11 +251,11 @@ def read_until_cut(response: httpx.Response) -> bytes:
     return bytes(body)
 
 
-def open_partition(warp, session_id, statement_id, index):
-    client = httpx.Client(base_url=warp.http.base_url, timeout=120)
+def open_partition(chargewire, session_id, statement_id, index):
+    client = httpx.Client(base_url=chargewire.http.base_url, timeout=120)
     request = client.build_request(
-        method="GET", url=f"{warp.statement_url(session_id, statement_id)}/result",
-        params={"partition": str(index)}, headers=warp.headers())
+        method="GET", url=f"{chargewire.statement_url(session_id, statement_id)}/result",
+        params={"partition": str(index)}, headers=chargewire.headers())
     response = client.send(request=request, stream=True)
     assert response.status_code == 200, response.read()
     return client, response
@@ -270,25 +270,25 @@ def slow_query():
     return "SELECT i, i % 7 AS m FROM range(3000000000) t(i) WHERE i % 3 = 0"
 
 
-def all_open(warp, session_id, sql, n):
-    response = streamed(warp, session_id, sql, **partition_headers(n=n))
-    statement_id = response.headers["warp-statement-id"]
-    k = int(response.headers.get("warp-result-partitions", "1"))
+def all_open(chargewire, session_id, sql, n):
+    response = streamed(chargewire, session_id, sql, **partition_headers(n=n))
+    statement_id = response.headers["chargewire-statement-id"]
+    k = int(response.headers.get("chargewire-result-partitions", "1"))
     assert k > 1
-    opened = [open_partition(warp, session_id, statement_id, i) for i in range(1, k)]
+    opened = [open_partition(chargewire, session_id, statement_id, i) for i in range(1, k)]
     return statement_id, response, opened
 
 
-def test_cancel_ends_every_partition_incomplete(warp, session_id):
-    statement_id, first, opened = all_open(warp, session_id, slow_query(), n=3)
+def test_cancel_ends_every_partition_incomplete(chargewire, session_id):
+    statement_id, first, opened = all_open(chargewire, session_id, slow_query(), n=3)
     bodies = []
     readers = [threading.Thread(target=lambda r=r: bodies.append(read_until_cut(r)))
                for r in [first] + [resp for _, resp in opened]]
     for t in readers:
         t.start()
     time.sleep(1)
-    cancelled = warp.http.post(url=f"{warp.statement_url(session_id, statement_id)}/cancel",
-                               headers=warp.headers())
+    cancelled = chargewire.http.post(url=f"{chargewire.statement_url(session_id, statement_id)}/cancel",
+                               headers=chargewire.headers())
     assert cancelled.status_code == 202
     for t in readers:
         t.join(timeout=60)
@@ -297,12 +297,12 @@ def test_cancel_ends_every_partition_incomplete(warp, session_id):
         client.close()
     assert len(bodies) == len(opened) + 1
     assert not any(body.endswith(EOS) for body in bodies), "a partition ended cleanly after a cancel"
-    doc = warp.wait_done(session_id=session_id, statement_id=statement_id)
+    doc = chargewire.wait_done(session_id=session_id, statement_id=statement_id)
     assert doc["state"] == "cancelled"
 
 
-def test_one_reader_leaving_cancels_the_whole_result(warp, session_id):
-    statement_id, first, opened = all_open(warp, session_id, slow_query(), n=3)
+def test_one_reader_leaving_cancels_the_whole_result(chargewire, session_id):
+    statement_id, first, opened = all_open(chargewire, session_id, slow_query(), n=3)
     bodies = []
     readers = [threading.Thread(target=lambda r=r: bodies.append(read_until_cut(r)))
                for r in [first] + [resp for _, resp in opened[1:]]]
@@ -319,23 +319,23 @@ def test_one_reader_leaving_cancels_the_whole_result(warp, session_id):
     for c, _ in opened[1:]:
         c.close()
     assert not any(body.endswith(EOS) for body in bodies)
-    doc = warp.wait_done(session_id=session_id, statement_id=statement_id, timeout=30)
+    doc = chargewire.wait_done(session_id=session_id, statement_id=statement_id, timeout=30)
     assert doc["state"] == "cancelled" and doc["cancel_reason"] == "client", doc
 
 
-def test_a_failure_mid_stream_fails_every_partition(warp, session_id):
-    response = streamed(warp, session_id, FAIL, **partition_headers(n=4))
-    statement_id = response.headers["warp-statement-id"]
-    k = int(response.headers.get("warp-result-partitions", "1"))
+def test_a_failure_mid_stream_fails_every_partition(chargewire, session_id):
+    response = streamed(chargewire, session_id, FAIL, **partition_headers(n=4))
+    statement_id = response.headers["chargewire-statement-id"]
+    k = int(response.headers.get("chargewire-result-partitions", "1"))
     assert k > 1
-    reader = Partitions(warp=warp, session_id=session_id, statement_id=statement_id)
+    reader = Partitions(chargewire=chargewire, session_id=session_id, statement_id=statement_id)
 
     def read_partition(index):
-        client = httpx.Client(base_url=warp.http.base_url, timeout=120)
+        client = httpx.Client(base_url=chargewire.http.base_url, timeout=120)
         try:
             request = client.build_request(
-                method="GET", url=f"{warp.statement_url(session_id, statement_id)}/result",
-                params={"partition": str(index)}, headers=warp.headers())
+                method="GET", url=f"{chargewire.statement_url(session_id, statement_id)}/result",
+                params={"partition": str(index)}, headers=chargewire.headers())
             opened = client.send(request=request, stream=True)
             if opened.status_code != 200:
                 # Asked for after the failure: the statement's error, never rows (§6.10).
@@ -351,14 +351,14 @@ def test_a_failure_mid_stream_fails_every_partition(warp, session_id):
         others = pool.map(read_partition, range(1, k))
         bodies = [read_until_cut(response)] + list(others)
     assert not any(body.endswith(EOS) for body in bodies), "a partition ended cleanly after a failure"
-    doc = warp.wait_done(session_id=session_id, statement_id=statement_id)
+    doc = chargewire.wait_done(session_id=session_id, statement_id=statement_id)
     assert doc["state"] == "failed" and doc["error"]["code"] == "execution_error"
     problem = assert_problem(response=reader.get(0), status=422, code="execution_error")
     assert problem["detail"] == doc["error"]["detail"], (problem, doc)
 
 
-def test_bad_partition_headers_are_refused(warp, session_id):
-    for headers in ({"Warp-Result-Partitions": "0"}, {"Warp-Result-Partitions": "999"},
-                    {"Warp-Result-Partitions": "two"}, {"Warp-Result-Order": "sorted"}):
-        response = warp.submit(session_id=session_id, sql="SELECT 1", arrow=True, headers=headers)
+def test_bad_partition_headers_are_refused(chargewire, session_id):
+    for headers in ({"Chargewire-Result-Partitions": "0"}, {"Chargewire-Result-Partitions": "999"},
+                    {"Chargewire-Result-Partitions": "two"}, {"Chargewire-Result-Order": "sorted"}):
+        response = chargewire.submit(session_id=session_id, sql="SELECT 1", arrow=True, headers=headers)
         assert_problem(response=response, status=400, code="bad_request")

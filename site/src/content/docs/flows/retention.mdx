@@ -1,6 +1,6 @@
 ---
 title: Retention and resumption
-description: "Retained Warp SQL results can be read again and resumed from any batch until they expire; unretained results are read once. Warp-Retain-Result, from_batch, 409 and 410."
+description: "Retained Chargewire results can be read again and resumed from any batch until they expire; unretained results are read once. Chargewire-Retain-Result, from_batch, 409 and 410."
 ---
 
 import Diagram from '../../../components/Diagram.astro';
@@ -13,7 +13,7 @@ again.
 
 <Diagram name="retention" alt="A retained result's download drops after batch 4; the client resumes with from_batch=5, reads the whole result again, and after expires_at gets 410 result_expired." />
 
-`Warp-Retain-Result: true` or `false` on the submit asks; without it the server decides
+`Chargewire-Retain-Result: true` or `false` on the submit asks; without it the server decides
 (it should retain for `respond-async` submits and not for streamed ones). A server may decline
 to retain; it never retains a result it was asked not to. The statement document says what it
 chose (`retained`) and until when (`expires_at`).
@@ -21,13 +21,13 @@ chose (`retained`) and until when (`expires_at`).
 These commands run against a server that keeps results for 3 seconds:
 
 ```bash test profile=retention
-WARP=http://127.0.0.1:31337
-TOKEN=$(curl -s $WARP/warp/v1/auth/token -H 'Content-Type: application/json' \
+CHARGEWIRE=http://127.0.0.1:31337
+TOKEN=$(curl -s $CHARGEWIRE/chargewire/v1/auth/token -H 'Content-Type: application/json' \
   -d '{"grant_type": "password", "username": "joe", "password": "s3:cret"}' | jq -r .access_token)
 AUTH="Authorization: Bearer $TOKEN"
-SESSION=$(curl -s $WARP/warp/v1/sessions -H "$AUTH" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
-STATEMENT=$(curl -s $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
-  -H 'Prefer: wait=30' -H 'Warp-Retain-Result: true' \
+SESSION=$(curl -s $CHARGEWIRE/chargewire/v1/sessions -H "$AUTH" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
+STATEMENT=$(curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
+  -H 'Prefer: wait=30' -H 'Chargewire-Retain-Result: true' \
   -d '{"sql": "SELECT i FROM range(1000000) t(i)"}' | tee doc.json | jq -r .statement_id)
 jq -c '.result | {retained, batches: .partitions[0].batches, rows: .partitions[0].rows}' doc.json
 ```
@@ -43,7 +43,7 @@ still begins with the schema. A client that read batches 0 to 4 before its conne
 asks for the rest:
 
 ```bash test profile=retention
-curl -s "$WARP/warp/v1/sessions/$SESSION/statements/$STATEMENT/result?from_batch=5" -H "$AUTH" -o rest.arrows
+curl -s "$CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements/$STATEMENT/result?from_batch=5" -H "$AUTH" -o rest.arrows
 python3 -c "
 import pyarrow.ipc as ipc
 rest = ipc.open_stream('rest.arrows').read_all()
@@ -61,9 +61,9 @@ way when the result expires is delivered in full; a read that starts after it ge
 `410 result_expired`:
 
 ```bash test profile=retention
-curl -s -o /dev/null -w '%{http_code}\n' $WARP/warp/v1/sessions/$SESSION/statements/$STATEMENT/result -H "$AUTH"
+curl -s -o /dev/null -w '%{http_code}\n' $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements/$STATEMENT/result -H "$AUTH"
 sleep 4
-curl -s $WARP/warp/v1/sessions/$SESSION/statements/$STATEMENT/result -H "$AUTH" | jq -c '{status, code}'
+curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements/$STATEMENT/result -H "$AUTH" | jq -c '{status, code}'
 ```
 
 ```text output
@@ -79,10 +79,10 @@ should cancel the statement, unless it changes data: a write is never undone bec
 reader went away.
 
 ```bash test profile=retention
-ONCE=$(curl -s $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
-  -H 'Prefer: wait=30' -H 'Warp-Retain-Result: false' -d '{"sql": "SELECT 1 AS one"}' | jq -r .statement_id)
-curl -s -o /dev/null -w '%{http_code}\n' $WARP/warp/v1/sessions/$SESSION/statements/$ONCE/result -H "$AUTH"
-curl -s $WARP/warp/v1/sessions/$SESSION/statements/$ONCE/result -H "$AUTH" | jq -c '{status, code}'
+ONCE=$(curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
+  -H 'Prefer: wait=30' -H 'Chargewire-Retain-Result: false' -d '{"sql": "SELECT 1 AS one"}' | jq -r .statement_id)
+curl -s -o /dev/null -w '%{http_code}\n' $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements/$ONCE/result -H "$AUTH"
+curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements/$ONCE/result -H "$AUTH" | jq -c '{status, code}'
 ```
 
 ```text output

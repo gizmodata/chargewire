@@ -9,9 +9,9 @@
 #include <unordered_map>
 
 #include "common.hpp"
-#include "warpsql/backend.hpp"
+#include "chargewire/backend.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 // The default TokenService: random tokens, kept (as SHA-256) in memory.
 class TokenStore : public TokenService {
@@ -42,4 +42,4 @@ class TokenStore : public TokenService {
 // The token from an "Authorization: Bearer <token>" header, or empty.
 std::string_view BearerToken(std::string_view authorization);
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

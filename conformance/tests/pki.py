@@ -115,8 +115,8 @@ class Pki:
 
     def __init__(self, directory: Path):
         self.directory = directory
-        self.ca = Authority(directory=directory, common_name="warp-test-client-ca")
-        self.other_ca = Authority(directory=directory, common_name="warp-test-other-ca")
+        self.ca = Authority(directory=directory, common_name="chargewire-test-client-ca")
+        self.other_ca = Authority(directory=directory, common_name="chargewire-test-other-ca")
         self.server = self.ca.issue(file_name="server", common_name="localhost", server=True,
                                     sans=[x509.DNSName("localhost"),
                                           x509.IPAddress(ipaddress.ip_address("127.0.0.1"))])

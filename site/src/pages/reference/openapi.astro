@@ -25,9 +25,9 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 <StarlightPage
 	frontmatter={{
 		title: 'OpenAPI reference',
-		description: `Every Warp SQL endpoint, request, response, header and error as an OpenAPI 3.1 document (version ${doc.info.version}), in Swagger UI.`,
+		description: `Every Chargewire endpoint, request, response, header and error as an OpenAPI 3.1 document (version ${doc.info.version}), in Swagger UI.`,
 		tableOfContents: false,
-		editUrl: 'https://github.com/gizmodata/warp-sql/edit/main/spec/openapi.yaml',
+		editUrl: 'https://github.com/gizmodata/chargewire/edit/main/spec/openapi.yaml',
 	}}
 >
 	<p>
@@ -40,10 +40,10 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 		<li>
 			Download it: <a href={`${base}/openapi.yaml`} download>openapi.yaml</a> or{' '}
 			<a href={`${base}/openapi.json`} download>openapi.json</a>{' '}
-			(the source is <a href="https://github.com/gizmodata/warp-sql/blob/main/spec/openapi.yaml"><code>spec/openapi.yaml</code></a>).
+			(the source is <a href="https://github.com/gizmodata/chargewire/blob/main/spec/openapi.yaml"><code>spec/openapi.yaml</code></a>).
 		</li>
 		<li>
-			Servers with capability <code>openapi</code> serve the same document at <code>GET /warp/v1/openapi.json</code>,
+			Servers with capability <code>openapi</code> serve the same document at <code>GET /chargewire/v1/openapi.json</code>,
 			without credentials (<Spec s="3.3" />). The conformance suite checks every response it gets against it.
 		</li>
 	</ul>
@@ -51,7 +51,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 		<ol>
 			<li>Set <strong>origin</strong> under <em>Servers</em> to your server's scheme, host and port.</li>
 			<li>
-				Open <code>POST /warp/v1/auth/token</code>, choose <em>Try it out</em>, sign in, and copy the
+				Open <code>POST /chargewire/v1/auth/token</code>, choose <em>Try it out</em>, sign in, and copy the
 				<code>access_token</code>.
 			</li>
 			<li>Choose <strong>Authorize</strong> and paste the token; every request then carries it as a bearer token.</li>

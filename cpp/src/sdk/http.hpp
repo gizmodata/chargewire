@@ -1,5 +1,5 @@
 // HTTP/1.1 (optionally over TLS) on Boost.Beast, with one coroutine per connection.
-// It knows nothing about Warp SQL: a Handler turns each Request into a Response.
+// It knows nothing about Chargewire: a Handler turns each Request into a Response.
 #pragma once
 
 #include <functional>
@@ -11,9 +11,9 @@
 #include <vector>
 
 #include "common.hpp"
-#include "warpsql/server.hpp"
+#include "chargewire/server.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 // A request body read on demand, for bodies too large to hold in memory (ingest).
 class BodySource {
@@ -123,4 +123,4 @@ class HttpServer {
   std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

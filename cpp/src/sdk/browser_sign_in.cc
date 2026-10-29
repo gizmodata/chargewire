@@ -7,7 +7,7 @@
 
 #include "ids.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 namespace {
 
@@ -172,4 +172,4 @@ void BrowserFlows::EraseLocked(std::unordered_map<std::string, Flow>::iterator i
   flows_.erase(it);
 }
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

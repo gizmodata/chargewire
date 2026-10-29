@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(warp_arrow_ipc_spike LANGUAGES C CXX)
+project(chargewire_arrow_ipc_spike LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -30,18 +30,18 @@ find_library(DUCKDB_LIBRARY duckdb PATHS "${DUCKDB_PREFIX}/lib" NO_DEFAULT_PATH 
 # Which library writes and reads Arrow IPC: Arrow C++ built by scripts/build-arrow.sh
 # (the plan, IPC only, no Flight) or nanoarrow (for comparison). Both use nanoarrow's
 # small C++ helpers for the Arrow C data interface.
-set(WARP_IPC_LIBRARY "arrow" CACHE STRING "arrow (the plan) or nanoarrow")
+set(CHARGEWIRE_IPC_LIBRARY "arrow" CACHE STRING "arrow (the plan) or nanoarrow")
 
-if(WARP_IPC_LIBRARY STREQUAL "arrow")
+if(CHARGEWIRE_IPC_LIBRARY STREQUAL "arrow")
   find_package(Arrow CONFIG REQUIRED PATHS "${CMAKE_CURRENT_SOURCE_DIR}/.deps/arrow-install"
                NO_DEFAULT_PATH)
-  add_executable(warp-spike src/main.cc src/database.cc src/ipc_arrow.cc)
-  target_link_libraries(warp-spike PRIVATE nanoarrow::nanoarrow Arrow::arrow_static)
+  add_executable(chargewire-spike src/main.cc src/database.cc src/ipc_arrow.cc)
+  target_link_libraries(chargewire-spike PRIVATE nanoarrow::nanoarrow Arrow::arrow_static)
 else()
-  add_executable(warp-spike src/main.cc src/database.cc src/ipc.cc)
-  target_link_libraries(warp-spike PRIVATE nanoarrow::nanoarrow_ipc)
+  add_executable(chargewire-spike src/main.cc src/database.cc src/ipc.cc)
+  target_link_libraries(chargewire-spike PRIVATE nanoarrow::nanoarrow_ipc)
 endif()
-target_include_directories(warp-spike PRIVATE "${DUCKDB_PREFIX}/include")
-target_link_libraries(warp-spike PRIVATE "${DUCKDB_LIBRARY}")
-set_target_properties(warp-spike PROPERTIES BUILD_RPATH "${DUCKDB_PREFIX}/lib")
-target_compile_options(warp-spike PRIVATE -Wall -Wextra)
+target_include_directories(chargewire-spike PRIVATE "${DUCKDB_PREFIX}/include")
+target_link_libraries(chargewire-spike PRIVATE "${DUCKDB_LIBRARY}")
+set_target_properties(chargewire-spike PROPERTIES BUILD_RPATH "${DUCKDB_PREFIX}/lib")
+target_compile_options(chargewire-spike PRIVATE -Wall -Wextra)

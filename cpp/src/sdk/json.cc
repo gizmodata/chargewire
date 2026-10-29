@@ -6,7 +6,7 @@
 
 #include "platform.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 namespace {
 
@@ -121,7 +121,7 @@ std::string Rfc3339(WallClock::time_point time) {
 json::object Problem(ErrorCode code, std::string_view detail, std::string_view request_id) {
   const std::string_view name = CodeName(code);
   json::object problem{
-      {"type", std::format("urn:warp-sql:error:{}", name)},
+      {"type", std::format("urn:chargewire:error:{}", name)},
       {"title", CodeTitle(code)},
       {"status", HttpStatus(code)},
       {"code", name},
@@ -185,4 +185,4 @@ Response ProblemResponse(const Error& error, std::string_view request_id) {
   return response;
 }
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

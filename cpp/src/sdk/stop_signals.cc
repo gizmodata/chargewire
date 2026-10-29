@@ -1,4 +1,4 @@
-#include "warpsql/stop_signals.hpp"
+#include "chargewire/stop_signals.hpp"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -13,7 +13,7 @@
 #include <csignal>
 #endif
 
-namespace warpsql {
+namespace chargewire {
 
 #ifdef _WIN32
 
@@ -120,4 +120,4 @@ void StopSignals::Wake() { kill(getpid(), SIGTERM); }
 
 #endif
 
-}  // namespace warpsql
+}  // namespace chargewire

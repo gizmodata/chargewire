@@ -9,7 +9,7 @@ accept = ["200..=299", "403", "429"]   # some sites refuse bots (403) or rate-li
 exclude = [
   # gizmodata's repositories are excluded by site.yml while they are internal (DOCS_GA unset).
   # The site's own address.
-  '^https://warpsql\.gizmodata\.com',
+  '^https://chargewire\.gizmodata\.com',
   # Example hosts in prose and examples.
   '^https?://(localhost|127\.0\.0\.1)',
   '\.example(\.(com|org))?([:/]|$)',

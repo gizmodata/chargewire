@@ -1,6 +1,6 @@
 ---
 title: Sign-in
-description: "How a Warp SQL client gets an access token: with a password, by exchanging an identity provider's token, or through browser sign-in with a poll secret and return_to."
+description: "How a Chargewire client gets an access token: with a password, by exchanging an identity provider's token, or through browser sign-in with a poll secret and return_to."
 ---
 
 import Diagram from '../../../components/Diagram.astro';
@@ -8,7 +8,7 @@ import Spec from '../../../components/Spec.astro';
 
 Every request except discovery, health, sign-in and the OpenAPI document carries
 `Authorization: Bearer <access token>` (<Spec s="4.2" />). A client gets the token from
-`POST /warp/v1/auth/token` (<Spec s="4.1" />), or, where a person signs in with the server's
+`POST /chargewire/v1/auth/token` (<Spec s="4.1" />), or, where a person signs in with the server's
 identity provider, from a browser sign-in flow (<Spec s="4.3" />). Discovery says which a server
 offers: `auth.grant_types` for the token endpoint, and capability `oauth_browser` for the flow.
 
@@ -24,8 +24,8 @@ Because the user name and the password are separate JSON fields, a password may 
 character, `:` included:
 
 ```bash test
-WARP=http://127.0.0.1:31337
-curl -s $WARP/warp/v1/auth/token -H 'Content-Type: application/json' \
+CHARGEWIRE=http://127.0.0.1:31337
+curl -s $CHARGEWIRE/chargewire/v1/auth/token -H 'Content-Type: application/json' \
   -d '{"grant_type": "password", "username": "joe", "password": "s3:cret"}' \
   | jq '{token_type, expires_in, access_token: (.access_token[0:8] + "…")}'
 ```
@@ -42,7 +42,7 @@ A wrong user name or password gets `401 invalid_credentials`, and the error neve
 of the two was wrong:
 
 ```bash test
-curl -s $WARP/warp/v1/auth/token -H 'Content-Type: application/json' \
+curl -s $CHARGEWIRE/chargewire/v1/auth/token -H 'Content-Type: application/json' \
   -d '{"grant_type": "password", "username": "joe", "password": "guess"}' | jq '{status, code, detail}'
 ```
 
@@ -60,14 +60,14 @@ document's `reason` says why it stopped working (`token_expired`, `token_revoked
 `credentials_changed`, `principal_dropped`), so a client knows whether signing in again can help:
 
 ```bash test
-curl -s -i $WARP/warp/v1/sessions -H 'Authorization: Bearer forged' \
+curl -s -i $CHARGEWIRE/chargewire/v1/sessions -H 'Authorization: Bearer forged' \
   -H 'Content-Type: application/json' -d '{}' | tr -d '\r' | grep -E '^(HTTP|WWW-Authenticate|\{)'
 ```
 
 ```text output
 HTTP/1.1 401 Unauthorized
 WWW-Authenticate: Bearer
-{"type":"urn:warp-sql:error:invalid_token","title":"Invalid access token","status":401,"code":"invalid_token",…}
+{"type":"urn:chargewire:error:invalid_token","title":"Invalid access token","status":401,"code":"invalid_token",…}
 ```
 
 ## Token exchange
@@ -76,13 +76,13 @@ WWW-Authenticate: Bearer
 
 A client that already holds a token from an identity provider the server trusts (an OpenID
 Connect ID token, say) exchanges it for the server's own access token. The server validates
-it and maps it to a principal. `warp-duckdb` doesn't offer this grant; this runs against
+it and maps it to a principal. `chargewire-duckdb` doesn't offer this grant; this runs against
 Hardcharger, configured to trust a stand-in identity provider whose ID token is in `$ID_TOKEN`:
 
 ```bash test profile=hardcharger
-WARP=http://127.0.0.1:31337
-curl -s $WARP/warp | jq -c .auth
-curl -s $WARP/warp/v1/auth/token -H 'Content-Type: application/json' \
+CHARGEWIRE=http://127.0.0.1:31337
+curl -s $CHARGEWIRE/chargewire | jq -c .auth
+curl -s $CHARGEWIRE/chargewire/v1/auth/token -H 'Content-Type: application/json' \
   -d "{\"grant_type\": \"token_exchange\", \"subject_token\": \"$ID_TOKEN\"}" \
   | jq -c '{token_type, expires_in}'
 ```
@@ -107,12 +107,12 @@ pages all use the same three steps: create a flow, let the person sign in in a b
 the flow. The server is the identity provider's client; its client id and secret never reach
 the client.
 
-This runs against `warp-duckdb` with a stand-in provider that approves every sign-in at once.
+This runs against `chargewire-duckdb` with a stand-in provider that approves every sign-in at once.
 Discovery names the provider for the sign-in button:
 
 ```bash test profile=oauth
-WARP=http://127.0.0.1:31337
-curl -s $WARP/warp | jq -c '.auth'
+CHARGEWIRE=http://127.0.0.1:31337
+curl -s $CHARGEWIRE/chargewire | jq -c '.auth'
 ```
 
 ```text output
@@ -125,7 +125,7 @@ nowhere else (not in `authorize_url`, the callback, any redirect, or the server'
 whoever sees the URL or the flow id can't collect the token:
 
 ```bash test profile=oauth
-curl -s $WARP/warp/v1/auth/oauth/flows -H 'Content-Type: application/json' \
+curl -s $CHARGEWIRE/chargewire/v1/auth/oauth/flows -H 'Content-Type: application/json' \
   -d '{"return_to": "/ui/"}' > flow.json
 FLOW=$(jq -r .flow_id flow.json)
 SECRET=$(jq -r .poll_secret flow.json)
@@ -143,7 +143,7 @@ jq '{flow_id, poll_interval_s, expires_at}' flow.json
 Until the person has signed in, a poll says `pending`. The poll secret travels in the body:
 
 ```bash test profile=oauth
-curl -s $WARP/warp/v1/auth/oauth/flows/$FLOW -H 'Content-Type: application/json' \
+curl -s $CHARGEWIRE/chargewire/v1/auth/oauth/flows/$FLOW -H 'Content-Type: application/json' \
   -d "{\"poll_secret\": \"$SECRET\"}"
 ```
 
@@ -163,7 +163,7 @@ curl -s -D - -o /dev/null "$CALLBACK" | tr -d '\r' | grep -E '^(HTTP|Location)'
 
 ```text output
 HTTP/1.1 303 See Other
-Location: /ui/#warp_oauth_flow=f_…
+Location: /ui/#chargewire_oauth_flow=f_…
 ```
 
 A page reads the flow id from the fragment, removes it from the address bar, and polls with
@@ -175,9 +175,9 @@ once; after that (or after `expires_at`, or with a wrong poll secret) the flow i
 `404 flow_not_found`:
 
 ```bash test profile=oauth
-curl -s $WARP/warp/v1/auth/oauth/flows/$FLOW -H 'Content-Type: application/json' \
+curl -s $CHARGEWIRE/chargewire/v1/auth/oauth/flows/$FLOW -H 'Content-Type: application/json' \
   -d "{\"poll_secret\": \"$SECRET\"}" | jq -c '{state, token_type, expires_in}'
-curl -s $WARP/warp/v1/auth/oauth/flows/$FLOW -H 'Content-Type: application/json' \
+curl -s $CHARGEWIRE/chargewire/v1/auth/oauth/flows/$FLOW -H 'Content-Type: application/json' \
   -d "{\"poll_secret\": \"$SECRET\"}" | jq -c '{status, code}'
 ```
 

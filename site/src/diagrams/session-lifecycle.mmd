@@ -1,15 +1,15 @@
 sequenceDiagram
   participant C as Client
-  participant S as Warp SQL server
-  C->>S: POST /warp/v1/sessions {"options": {…}}
+  participant S as Chargewire server
+  C->>S: POST /chargewire/v1/sessions {"options": {…}}
   S-->>C: 201 session_id, options, transaction, idle_timeout_s
-  C->>S: PATCH /warp/v1/sessions/{id} {"options": {…}}
+  C->>S: PATCH /chargewire/v1/sessions/{id} {"options": {…}}
   S-->>C: 200 every option, and "errors" by option name
   C->>S: statements, results, prepared statements, ingest
   S-->>C: …
-  C->>S: GET /warp/v1/sessions/{id}
+  C->>S: GET /chargewire/v1/sessions/{id}
   S-->>C: 200 current options and transaction (a cheap liveness probe)
-  C->>S: DELETE /warp/v1/sessions/{id}
+  C->>S: DELETE /chargewire/v1/sessions/{id}
   S-->>C: 204, running statements cancelled, retained results freed
-  C->>S: GET /warp/v1/sessions/{id}
+  C->>S: GET /chargewire/v1/sessions/{id}
   S-->>C: 404 session_not_found (never re-created)

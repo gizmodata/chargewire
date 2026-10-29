@@ -7,7 +7,7 @@ import pyarrow.ipc as ipc
 import pytest
 
 from test_discovery_auth import assert_problem
-from warp import read_table
+from chargewire import read_table
 
 TEXT = pa.utf8()
 SCHEMAS = {
@@ -30,32 +30,32 @@ KEYS = pa.schema([
     pa.field("delete_rule", pa.uint8(), nullable=False)])
 
 
-def metadata(warp, session_id: str, kind: str, **params) -> pa.Table:
-    response = warp.http.get(url=f"{warp.session_url(session_id)}/metadata/{kind}", params=params,
-                             headers=warp.headers())
+def metadata(chargewire, session_id: str, kind: str, **params) -> pa.Table:
+    response = chargewire.http.get(url=f"{chargewire.session_url(session_id)}/metadata/{kind}", params=params,
+                             headers=chargewire.headers())
     assert response.status_code == 200, response.text
     return read_table(content=response.content)
 
 
 @pytest.fixture
-def keyed(warp, session_id):
-    warp.execute(session_id=session_id,
+def keyed(chargewire, session_id):
+    chargewire.execute(session_id=session_id,
                  sql="CREATE TABLE IF NOT EXISTS meta_parent (a INTEGER, b INTEGER, PRIMARY KEY (a, b))")
-    warp.execute(session_id=session_id,
+    chargewire.execute(session_id=session_id,
                  sql="CREATE TABLE IF NOT EXISTS meta_child (x INTEGER, y INTEGER, "
                      "FOREIGN KEY (x, y) REFERENCES meta_parent (a, b))")
     return session_id
 
 
 @pytest.mark.parametrize("kind", list(SCHEMAS))
-def test_metadata_schemas_match_flight_sql(warp, keyed, kind):
+def test_metadata_schemas_match_flight_sql(chargewire, keyed, kind):
     params = {"table": "meta_parent"} if kind == "primary-keys" else {}
-    table = metadata(warp=warp, session_id=keyed, kind=kind, **params)
+    table = metadata(chargewire=chargewire, session_id=keyed, kind=kind, **params)
     assert table.schema.equals(SCHEMAS[kind]), table.schema
 
 
-def test_tables_filters_and_schema(warp, keyed):
-    table = metadata(warp=warp, session_id=keyed, kind="tables", table_name_filter_pattern="meta\\_%",
+def test_tables_filters_and_schema(chargewire, keyed):
+    table = metadata(chargewire=chargewire, session_id=keyed, kind="tables", table_name_filter_pattern="meta\\_%",
                      include_schema="true")
     assert sorted(table.column("table_name").to_pylist()) == ["meta_child", "meta_parent"]
     assert table.schema.field("table_schema").type == pa.binary()
@@ -64,8 +64,8 @@ def test_tables_filters_and_schema(warp, keyed):
     assert b"ARROW:FLIGHT:SQL:TYPE_NAME" in schema.field(0).metadata
 
 
-def test_primary_keys_in_order(warp, keyed):
-    table = metadata(warp=warp, session_id=keyed, kind="primary-keys", table="meta_parent")
+def test_primary_keys_in_order(chargewire, keyed):
+    table = metadata(chargewire=chargewire, session_id=keyed, kind="primary-keys", table="meta_parent")
     assert table.select(["column_name", "key_sequence"]).to_pylist() == [
         {"column_name": "a", "key_sequence": 1}, {"column_name": "b", "key_sequence": 2}]
 
@@ -75,8 +75,8 @@ def test_primary_keys_in_order(warp, keyed):
     ("exported-keys", {"table": "meta_parent"}),
     ("cross-reference", {"pk_table": "meta_parent", "fk_table": "meta_child"}),
 ])
-def test_foreign_keys(warp, keyed, kind, params):
-    table = metadata(warp=warp, session_id=keyed, kind=kind, **params)
+def test_foreign_keys(chargewire, keyed, kind, params):
+    table = metadata(chargewire=chargewire, session_id=keyed, kind=kind, **params)
     assert table.schema.equals(KEYS), table.schema
     pairs = table.select(["pk_column_name", "fk_column_name", "key_sequence"]).to_pylist()
     assert pairs == [{"pk_column_name": "a", "fk_column_name": "x", "key_sequence": 1},
@@ -89,8 +89,8 @@ SERVER_INFO_TYPES = {"server_name": str, "server_version": str, "server_arrow_ve
                      "sql_transactions_supported": bool}
 
 
-def test_server_info_is_json(warp, session_id):
-    response = warp.http.get(url=f"{warp.session_url(session_id)}/metadata/server-info", headers=warp.headers())
+def test_server_info_is_json(chargewire, session_id):
+    response = chargewire.http.get(url=f"{chargewire.session_url(session_id)}/metadata/server-info", headers=chargewire.headers())
     assert response.status_code == 200
     info = response.json()
     assert info["server_name"]
@@ -103,28 +103,28 @@ def test_server_info_is_json(warp, session_id):
     # prefixed (§2.7), so none of these unprefixed names.
     assert not {"protocol", "protocol_version", "engine", "engine_version", "read_only",
                 "transactions_supported", "instance_id"} & set(info), info
-    discovery = warp.http.get(url="/warp").json()
+    discovery = chargewire.http.get(url="/chargewire").json()
     assert info["server_name"] == discovery["server"]["name"]
     assert info["server_version"] == discovery["server"]["version"]
     assert info["sql_transactions_supported"] == ("transactions" in discovery["capabilities"]), (info, discovery)
 
 
-def test_unknown_metadata_kind(warp, session_id):
-    response = warp.http.get(url=f"{warp.session_url(session_id)}/metadata/nonsense", headers=warp.headers())
+def test_unknown_metadata_kind(chargewire, session_id):
+    response = chargewire.http.get(url=f"{chargewire.session_url(session_id)}/metadata/nonsense", headers=chargewire.headers())
     assert_problem(response=response, status=404, code="not_found")
 
 
-def test_metadata_filters_are_values_not_sql(warp, keyed):
-    table = metadata(warp=warp, session_id=keyed, kind="tables",
+def test_metadata_filters_are_values_not_sql(chargewire, keyed):
+    table = metadata(chargewire=chargewire, session_id=keyed, kind="tables",
                      table_name_filter_pattern="x' OR '1'='1")
     assert table.num_rows == 0
 
 
-def test_table_schema_reports_nullability_and_decimal_precision(warp, session_id):
-    warp.execute(session_id=session_id,
+def test_table_schema_reports_nullability_and_decimal_precision(chargewire, session_id):
+    chargewire.execute(session_id=session_id,
                  sql="CREATE TABLE meta_columns (a INTEGER PRIMARY KEY, b VARCHAR NOT NULL, "
                      "c DECIMAL(10, 3))")
-    table = metadata(warp=warp, session_id=session_id, kind="tables",
+    table = metadata(chargewire=chargewire, session_id=session_id, kind="tables",
                      table_name_filter_pattern="meta\\_columns", include_schema="true")
     schema = ipc.read_schema(pa.py_buffer(table.column("table_schema")[0].as_py()))
     assert [(field.name, field.nullable) for field in schema] == [("a", False), ("b", False), ("c", True)]
@@ -132,35 +132,35 @@ def test_table_schema_reports_nullability_and_decimal_precision(warp, session_id
     assert (c[b"ARROW:FLIGHT:SQL:PRECISION"], c[b"ARROW:FLIGHT:SQL:SCALE"]) == (b"10", b"3")
 
 
-def test_keys_of_every_table_in_one_request(warp, keyed):
-    primary = metadata(warp=warp, session_id=keyed, kind="primary-keys")
+def test_keys_of_every_table_in_one_request(chargewire, keyed):
+    primary = metadata(chargewire=chargewire, session_id=keyed, kind="primary-keys")
     assert {"meta_parent"} <= set(primary.column("table_name").to_pylist())
-    imported = metadata(warp=warp, session_id=keyed, kind="imported-keys")
+    imported = metadata(chargewire=chargewire, session_id=keyed, kind="imported-keys")
     assert {("meta_parent", "meta_child")} <= set(
         zip(imported.column("pk_table_name").to_pylist(), imported.column("fk_table_name").to_pylist()))
 
 
-def test_table_schema_reports_digits_comments_and_defaults(warp, session_id):
-    warp.execute(session_id=session_id,
+def test_table_schema_reports_digits_comments_and_defaults(chargewire, session_id):
+    chargewire.execute(session_id=session_id,
                  sql="CREATE TABLE meta_described (a INTEGER, b BIGINT, c VARCHAR DEFAULT 'x')")
-    warp.execute(session_id=session_id, sql="COMMENT ON COLUMN meta_described.a IS 'the a'")
-    table = metadata(warp=warp, session_id=session_id, kind="tables",
+    chargewire.execute(session_id=session_id, sql="COMMENT ON COLUMN meta_described.a IS 'the a'")
+    table = metadata(chargewire=chargewire, session_id=session_id, kind="tables",
                      table_name_filter_pattern="meta\\_described", include_schema="true")
     schema = ipc.read_schema(pa.py_buffer(table.column("table_schema")[0].as_py()))
     a, b, c = (schema.field(name).metadata for name in ("a", "b", "c"))
     # PRECISION is in decimal digits, as JDBC's COLUMN_SIZE (not DuckDB's 32 bits).
     assert (a[b"ARROW:FLIGHT:SQL:PRECISION"], b[b"ARROW:FLIGHT:SQL:PRECISION"]) == (b"10", b"19")
     assert a[b"ARROW:FLIGHT:SQL:REMARKS"] == b"the a"
-    assert c[b"WARP:SQL:COLUMN_DEFAULT"] == b"'x'"
+    assert c[b"CHARGEWIRE:SQL:COLUMN_DEFAULT"] == b"'x'"
 
 
-def test_type_info_lists_types_in_flight_sql_form(warp, session_id):
-    every = metadata(warp=warp, session_id=session_id, kind="type-info")
+def test_type_info_lists_types_in_flight_sql_form(chargewire, session_id):
+    every = metadata(chargewire=chargewire, session_id=session_id, kind="type-info")
     assert every.schema.names[:3] == ["type_name", "data_type", "column_size"]
     assert every.schema.field("create_params").type == pa.list_(pa.field("item", pa.string(), nullable=False))
     codes = every.column("data_type").to_pylist()
     assert codes == sorted(codes), "ordered by data_type"
     assert {"integer", "varchar", "boolean"} <= set(every.column("type_name").to_pylist())
-    integers = metadata(warp=warp, session_id=session_id, kind="type-info", data_type="4")
+    integers = metadata(chargewire=chargewire, session_id=session_id, kind="type-info", data_type="4")
     assert set(integers.column("data_type").to_pylist()) == {4}
     assert "integer" in integers.column("type_name").to_pylist()

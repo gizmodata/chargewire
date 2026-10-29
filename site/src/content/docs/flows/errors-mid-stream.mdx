@@ -1,6 +1,6 @@
 ---
 title: Errors mid-stream
-description: "Once a Warp SQL result stream has started, its status can't change: a failure ends the body without the Arrow end-of-stream marker, and the statement document says why."
+description: "Once a Chargewire result stream has started, its status can't change: a failure ends the body without the Arrow end-of-stream marker, and the statement document says why."
 ---
 
 import Diagram from '../../../components/Diagram.astro';
@@ -16,11 +16,11 @@ marker: the continuation token `0xFFFFFFFF` followed by a zero length.
 <Diagram name="errors-mid-stream" alt="The server answers 200 and streams batches; the statement fails part way; the body ends without the end-of-stream marker; the client reads the statement document, which says failed with execution_error." />
 
 ```bash test
-WARP=http://127.0.0.1:31337
-TOKEN=$(curl -s $WARP/warp/v1/auth/token -H 'Content-Type: application/json' \
+CHARGEWIRE=http://127.0.0.1:31337
+TOKEN=$(curl -s $CHARGEWIRE/chargewire/v1/auth/token -H 'Content-Type: application/json' \
   -d '{"grant_type": "password", "username": "joe", "password": "s3:cret"}' | jq -r .access_token)
 AUTH="Authorization: Bearer $TOKEN"
-SESSION=$(curl -s $WARP/warp/v1/sessions -H "$AUTH" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
+SESSION=$(curl -s $CHARGEWIRE/chargewire/v1/sessions -H "$AUTH" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
 ```
 
 A query that fails at its 3,000,000th row, after the first batches have gone out. `curl` notices
@@ -28,11 +28,11 @@ that the body was cut (exit status 18), but an Arrow reader may not: a stream re
 the end of its input reads what it got as the whole result. Check the marker:
 
 ```bash test
-curl -s -D headers.txt $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" \
+curl -s -D headers.txt $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements -H "$AUTH" \
   -H 'Content-Type: application/json' -H 'Accept: application/vnd.apache.arrow.stream' \
   -d "{\"sql\": \"SELECT CASE WHEN i < 3000000 THEN i ELSE error('boom') END AS v FROM range(10000000) t(i)\"}" \
   -o result.arrows || echo "curl exit status: $?"
-STATEMENT=$(tr -d '\r' < headers.txt | awk 'tolower($1) == "warp-statement-id:" {print $2}')
+STATEMENT=$(tr -d '\r' < headers.txt | awk 'tolower($1) == "chargewire-statement-id:" {print $2}')
 if [ "$(tail -c 8 result.arrows | od -An -tx1 | tr -d ' \n')" = ffffffff00000000 ]; then
   echo "complete"
 else
@@ -48,7 +48,7 @@ incomplete: the result failed
 The statement document has the error:
 
 ```bash test
-curl -s $WARP/warp/v1/sessions/$SESSION/statements/$STATEMENT -H "$AUTH" -H 'Prefer: wait=10' \
+curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements/$STATEMENT -H "$AUTH" -H 'Prefer: wait=10' \
   | jq '{state, error: (.error | {code, status, detail})}'
 ```
 
@@ -68,6 +68,6 @@ the server's own faults, so proxies and monitoring that count `5xx` count only r
 (<Spec s="11" />).
 
 When the failure comes before the answer starts, the answer is an ordinary error response with
-`Warp-Statement-Id` instead; a server may answer either way, so clients handle both. The same
+`Chargewire-Statement-Id` instead; a server may answer either way, so clients handle both. The same
 applies to every partition of a [partitioned result](/flows/partitioned-results/): if the
 statement fails, every partition still open ends without the marker.

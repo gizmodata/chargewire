@@ -1,42 +1,42 @@
-# Warp SQL conformance suite
+# Chargewire conformance suite
 
-Black-box tests of a Warp SQL server: they speak the protocol over HTTP with
-[`warp.py`](tests/warp.py), a few plain calls with nothing hidden, so a failure points at
+Black-box tests of a Chargewire server: they speak the protocol over HTTP with
+[`chargewire.py`](tests/chargewire.py), a few plain calls with nothing hidden, so a failure points at
 the protocol rather than at a driver. The suite fails, never skips, when it has no server
 to talk to.
 
 ```bash
 uv venv .venv && uv pip install --python .venv/bin/python -e .
-WARP_SQL_TEST_SERVER_BINARY=../cpp/build/warp-duckdb .venv/bin/python -m pytest -q
+CHARGEWIRE_TEST_SERVER_BINARY=../cpp/build/chargewire-duckdb .venv/bin/python -m pytest -q
 ```
 
 ## Pointing it at a server
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `WARP_SQL_TEST_SERVER_BINARY` | | A server binary to start (taking `--host`, `--port`) |
-| `WARP_SQL_TEST_SERVER_PASSWORD_ENV` | `WARP_DUCKDB_PASSWORD` | The variable it reads its administrator's password from |
-| `WARP_SQL_TEST_SERVER_USERNAME` | `warp` | That administrator's name |
-| `WARP_SQL_TEST_SERVER_LOG` | a temporary file | Where the started server's output goes |
-| `WARP_SQL_TEST_URL`, `WARP_SQL_TEST_USERNAME`, `WARP_SQL_TEST_PASSWORD` | | A running server instead (then deselect `-m "not mtls and not own_server"`) |
+| `CHARGEWIRE_TEST_SERVER_BINARY` | | A server binary to start (taking `--host`, `--port`) |
+| `CHARGEWIRE_TEST_SERVER_PASSWORD_ENV` | `CHARGEWIRE_DUCKDB_PASSWORD` | The variable it reads its administrator's password from |
+| `CHARGEWIRE_TEST_SERVER_USERNAME` | `chargewire` | That administrator's name |
+| `CHARGEWIRE_TEST_SERVER_LOG` | a temporary file | Where the started server's output goes |
+| `CHARGEWIRE_TEST_URL`, `CHARGEWIRE_TEST_USERNAME`, `CHARGEWIRE_TEST_PASSWORD` | | A running server instead (then deselect `-m "not mtls and not own_server"`) |
 
 Tests marked `mtls` and `own_server` start servers of their own, with flags that differ
-between servers; the defaults are `warp-duckdb`'s:
+between servers; the defaults are `chargewire-duckdb`'s:
 
 | Variable | Default | Hardcharger's |
 |---|---|---|
-| `WARP_SQL_TEST_SERVER_MTLS_FLAG` | `--tls-client-ca` | `--mtls-ca-cert` |
-| `WARP_SQL_TEST_SERVER_CORS_FLAG` | `--cors-origin` | `--cors-origins` |
-| `WARP_SQL_TEST_SERVER_IDLE_FLAG` | `--session-idle-timeout-seconds` | `--session-idle-timeout` |
-| `WARP_SQL_TEST_SERVER_TOKEN_LIFETIME_FLAG` | `--token-lifetime-seconds` | |
-| `WARP_SQL_TEST_SERVER_DRAIN_FLAG` | `--drain-seconds` | `--shutdown-grace-period-seconds` |
-| `WARP_SQL_TEST_SERVER_HEALTH_QUERY_FLAG` | `--health-check-query` | `--health-check-query` |
-| `WARP_SQL_TEST_SERVER_RETENTION_FLAG` | `--result-retention-seconds` | `--result-retention-seconds` |
-| `WARP_SQL_TEST_SERVER_OAUTH_ARGS`, `WARP_SQL_TEST_SERVER_OAUTH_SECRET_ENV` | see [`test_oauth_browser.py`](tests/test_oauth_browser.py) | see there |
+| `CHARGEWIRE_TEST_SERVER_MTLS_FLAG` | `--tls-client-ca` | `--mtls-ca-cert` |
+| `CHARGEWIRE_TEST_SERVER_CORS_FLAG` | `--cors-origin` | `--cors-origins` |
+| `CHARGEWIRE_TEST_SERVER_IDLE_FLAG` | `--session-idle-timeout-seconds` | `--session-idle-timeout` |
+| `CHARGEWIRE_TEST_SERVER_TOKEN_LIFETIME_FLAG` | `--token-lifetime-seconds` | |
+| `CHARGEWIRE_TEST_SERVER_DRAIN_FLAG` | `--drain-seconds` | `--shutdown-grace-period-seconds` |
+| `CHARGEWIRE_TEST_SERVER_HEALTH_QUERY_FLAG` | `--health-check-query` | `--health-check-query` |
+| `CHARGEWIRE_TEST_SERVER_RETENTION_FLAG` | `--result-retention-seconds` | `--result-retention-seconds` |
+| `CHARGEWIRE_TEST_SERVER_OAUTH_ARGS`, `CHARGEWIRE_TEST_SERVER_OAUTH_SECRET_ENV` | see [`test_oauth_browser.py`](tests/test_oauth_browser.py) | see there |
 
 [`test_authorization.py`](tests/test_authorization.py) needs a server with SQL privileges
-and the `WARP_SQL_TEST_AUTHZ_*` variables its docstring describes; on a server without
-privileges (`warp-duckdb`) it skips, saying so.
+and the `CHARGEWIRE_TEST_AUTHZ_*` variables its docstring describes; on a server without
+privileges (`chargewire-duckdb`) it skips, saying so.
 
 ## Every response against the OpenAPI document
 
@@ -55,16 +55,16 @@ method and path and checks:
 - a path or method outside the document gets a `404` or `405` problem document.
 
 The end of a run says how many of the document's operations had responses checked (all 38
-against `warp-duckdb`). [`test_openapi.py`](tests/test_openapi.py) also checks that the
+against `chargewire-duckdb`). [`test_openapi.py`](tests/test_openapi.py) also checks that the
 document is valid OpenAPI 3.1, that it and the spec's Appendix B list the same 38 endpoints
 (and that every endpoint a section names is in Appendix B), which endpoints need no token,
-the served document (`GET /warp/v1/openapi.json`, spec §3.3: unauthenticated, cacheable, the
+the served document (`GET /chargewire/v1/openapi.json`, spec §3.3: unauthenticated, cacheable, the
 published document apart from `servers` and `x-` fields), and that the check itself rejects
 a real response broken on purpose (a renamed or missing field, an unknown enumeration value,
 an undocumented status, content type or missing header, a problem document that disagrees
 with its status).
 
-`WARP_SQL_TEST_OPENAPI` names another copy of the document to check against. A test that
+`CHARGEWIRE_TEST_OPENAPI` names another copy of the document to check against. A test that
 must see a response the document doesn't describe takes `@pytest.mark.openapi_unchecked`
 (none does).
 
@@ -87,9 +87,9 @@ These MUSTs bind clients, not servers, so a server suite can't test them: §3.1 
 listed features), §4.1 (tokens are opaque), §5.6 (a new token after `session_ended` for the
 token reasons), §6.1 (check `Content-Type`), §6.2 (a `failed` or `cancelled` document is an
 error), §6.6 (an incomplete stream is a failed result), §6.10 (read every partition to its
-end, all at once, and never guess a missing `Warp-Result-Order`), §8.2 (read buffers left
+end, all at once, and never guess a missing `Chargewire-Result-Order`), §8.2 (read buffers left
 uncompressed), §8.3 (no reliance on row order after a partitioned ingest) and §12 (ignore
 what is unknown, accept unknown enumeration values). The drivers' own suites test them.
 
-§2.1's "say so in its documentation" (a base path other than `/warp`) and §4.4's "end TLS
+§2.1's "say so in its documentation" (a base path other than `/chargewire`) and §4.4's "end TLS
 at the server" are about documentation and deployment.

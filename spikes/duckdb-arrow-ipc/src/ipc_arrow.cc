@@ -13,7 +13,7 @@
 #include "duckdb_v2.hpp"  // for Error
 #include "ipc.hpp"
 
-namespace warp {
+namespace chargewire {
 
 namespace {
 
@@ -92,4 +92,4 @@ nanoarrow::UniqueArrayStream ReadIpcStream(std::FILE* in) {
   return rows;
 }
 
-}  // namespace warp
+}  // namespace chargewire

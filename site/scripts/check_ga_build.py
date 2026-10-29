@@ -12,7 +12,7 @@ import re
 import sys
 from pathlib import Path
 
-DOMAIN = "warpsql.gizmodata.com"
+DOMAIN = "chargewire.gizmodata.com"
 FORBIDDEN = [
     re.compile(p, re.I) for p in (
         r"private preview",

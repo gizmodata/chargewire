@@ -2,7 +2,7 @@
 
 #include "ids.hpp"
 
-namespace warpsql {
+namespace chargewire {
 
 // Defaults for the optional Authenticator methods: "not supported".
 Principal Authenticator::AuthenticatePassword(std::string_view, std::string_view) {
@@ -18,9 +18,9 @@ Principal Authenticator::AuthenticateCertificate(std::string_view, const ClientC
               "certificate sign-in is not enabled on this server");
 }
 
-}  // namespace warpsql
+}  // namespace chargewire
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 TokenService::Issued TokenStore::Issue(const Principal& principal) {
   std::string token = NewSecret();
@@ -63,4 +63,4 @@ std::string_view BearerToken(std::string_view authorization) {
   return authorization.substr(kScheme.size());
 }
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

@@ -1,6 +1,6 @@
 ---
 title: Graceful shutdown
-description: "How a Warp SQL server drains: health reports not_serving, new sessions and statements get 503 server_draining with Retry-After, and running statements may finish."
+description: "How a Chargewire server drains: health reports not_serving, new sessions and statements get 503 server_draining with Retry-After, and running statements may finish."
 ---
 
 import Diagram from '../../../components/Diagram.astro';
@@ -17,12 +17,12 @@ These commands run against a server of their own with a 30-second grace period; 
 its process id.
 
 ```bash test profile=drain
-WARP=http://127.0.0.1:31337
-TOKEN=$(curl -s $WARP/warp/v1/auth/token -H 'Content-Type: application/json' \
+CHARGEWIRE=http://127.0.0.1:31337
+TOKEN=$(curl -s $CHARGEWIRE/chargewire/v1/auth/token -H 'Content-Type: application/json' \
   -d '{"grant_type": "password", "username": "joe", "password": "s3:cret"}' | jq -r .access_token)
 AUTH="Authorization: Bearer $TOKEN"
-SESSION=$(curl -s $WARP/warp/v1/sessions -H "$AUTH" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
-curl -s $WARP/warp/v1/health
+SESSION=$(curl -s $CHARGEWIRE/chargewire/v1/sessions -H "$AUTH" -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
+curl -s $CHARGEWIRE/chargewire/v1/health
 ```
 
 ```json output
@@ -32,11 +32,11 @@ curl -s $WARP/warp/v1/health
 A long query is running when the operator stops the server:
 
 ```bash test profile=drain
-STATEMENT=$(curl -s $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
+STATEMENT=$(curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
   -H 'Prefer: respond-async' -d '{"sql": "SELECT sum(i) AS total FROM range(6000000000) t(i)"}' | jq -r .statement_id)
 kill -TERM "$SERVER_PID"
 sleep 0.5
-curl -s -i $WARP/warp/v1/health | tr -d '\r' | grep -E '^(HTTP|\{)'
+curl -s -i $CHARGEWIRE/chargewire/v1/health | tr -d '\r' | grep -E '^(HTTP|\{)'
 ```
 
 ```text output
@@ -48,21 +48,21 @@ New work is refused, with how long to wait before trying again (an integer numbe
 <Spec s="2.6" />):
 
 ```bash test profile=drain
-curl -s -i $WARP/warp/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
+curl -s -i $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"sql": "SELECT 1"}' | tr -d '\r' | grep -E '^(HTTP|Retry-After|\{)' | sed 's/,"request_id".*/,…}/'
 ```
 
 ```text output
 HTTP/1.1 503 Service Unavailable
 Retry-After: …
-{"type":"urn:warp-sql:error:server_draining","title":"Server shutting down","status":503,"code":"server_draining","detail":"the server is shutting down",…}
+{"type":"urn:chargewire:error:server_draining","title":"Server shutting down","status":503,"code":"server_draining","detail":"the server is shutting down",…}
 ```
 
 The statement that was running finishes, and its result can still be read:
 
 ```bash test profile=drain
-curl -s $WARP/warp/v1/sessions/$SESSION/statements/$STATEMENT -H "$AUTH" -H 'Prefer: wait=30' | jq -r .state
-curl -s $WARP/warp/v1/sessions/$SESSION/statements/$STATEMENT/result -H "$AUTH" -o total.arrows
+curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements/$STATEMENT -H "$AUTH" -H 'Prefer: wait=30' | jq -r .state
+curl -s $CHARGEWIRE/chargewire/v1/sessions/$SESSION/statements/$STATEMENT/result -H "$AUTH" -o total.arrows
 python3 -c "import pyarrow.ipc as ipc; print(ipc.open_stream('total.arrows').read_all().to_pylist())"
 ```
 

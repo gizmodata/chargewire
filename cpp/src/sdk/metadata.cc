@@ -4,7 +4,7 @@
 
 #include <arrow/api.h>
 
-namespace warpsql {
+namespace chargewire {
 
 namespace {
 
@@ -78,9 +78,9 @@ std::shared_ptr<arrow::Schema> MetadataSchema(MetadataKind kind, bool include_sc
   return nullptr;
 }
 
-}  // namespace warpsql
+}  // namespace chargewire
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 std::shared_ptr<arrow::Table> ConformMetadata(MetadataKind kind, bool include_schema,
                                               arrow::RecordBatchReader& rows) {
@@ -116,4 +116,4 @@ std::shared_ptr<arrow::Table> ConformMetadata(MetadataKind kind, bool include_sc
   return *table;
 }
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

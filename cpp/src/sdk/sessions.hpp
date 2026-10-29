@@ -11,9 +11,9 @@
 #include "common.hpp"
 #include "ingests.hpp"
 #include "statements.hpp"
-#include "warpsql/backend.hpp"
+#include "chargewire/backend.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 using EngineStrand = net::strand<net::thread_pool::executor_type>;
 
@@ -191,4 +191,4 @@ class SessionRegistry {
   std::map<std::string, Ended> ended_;
 };
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

@@ -1,6 +1,6 @@
 #include "ids.hpp"
 
-#include "warpsql/backend.hpp"
+#include "chargewire/backend.hpp"
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -9,7 +9,7 @@
 #include <array>
 #include <stdexcept>
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 namespace {
 
@@ -76,10 +76,10 @@ std::string Base64(std::string_view data) {
   return out;
 }
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail
 
-namespace warpsql {
+namespace chargewire {
 
 std::string NewId(std::string_view prefix) { return detail::NewId(prefix); }
 
-}  // namespace warpsql
+}  // namespace chargewire

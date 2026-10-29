@@ -1,7 +1,7 @@
 sequenceDiagram
   participant C as Client
-  participant S as Warp SQL server
-  C->>S: POST …/statements, Prefer: wait=30<br/>Warp-Result-Partitions: 4, Warp-Result-Order: preserve
+  participant S as Chargewire server
+  C->>S: POST …/statements, Prefer: wait=30<br/>Chargewire-Result-Partitions: 4, Chargewire-Result-Order: preserve
   S-->>C: statement document: k partitions, partition_order "interleaved"
   par one connection per partition
     C->>S: GET …/result?partition=0

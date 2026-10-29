@@ -1,4 +1,4 @@
-// The Warp SQL endpoints (spec §3–§11): request in, response out.
+// The Chargewire endpoints (spec §3–§11): request in, response out.
 #pragma once
 
 #include <atomic>
@@ -14,9 +14,9 @@
 #include "security_events.hpp"
 #include "sessions.hpp"
 #include "statements.hpp"
-#include "warpsql/server.hpp"
+#include "chargewire/server.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 // Bytes of retained results each principal holds (spec §6.5).
 class RetainedQuota {
@@ -163,4 +163,4 @@ class Api {
   ServerState& state_;
 };
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

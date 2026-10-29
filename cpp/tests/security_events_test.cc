@@ -13,9 +13,9 @@
 
 namespace {
 
-using warpsql::SecurityEvent;
-using warpsql::detail::Clock;
-using warpsql::detail::SecurityEventLimiter;
+using chargewire::SecurityEvent;
+using chargewire::detail::Clock;
+using chargewire::detail::SecurityEventLimiter;
 
 SecurityEvent Event(const std::string& peer, const std::string& thumbprint,
                     const std::string& code = "certificate_mismatch") {

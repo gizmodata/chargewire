@@ -8,9 +8,9 @@
 #include <vector>
 
 #include "common.hpp"
-#include "warpsql/server.hpp"
+#include "chargewire/server.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 // An address as a socket or a forwarding header gives it, with no port or brackets;
 // an IPv4-mapped IPv6 address becomes its IPv4 address. Nullopt: not an IP address (an
@@ -35,4 +35,4 @@ std::optional<std::string> ForwardedClient(const http::fields& headers, const st
 // "10.0.0.1"). An unbracketed "::1:5" is read as address:port.
 std::string PeerHost(std::string_view peer);
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

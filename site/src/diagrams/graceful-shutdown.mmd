@@ -1,14 +1,14 @@
 sequenceDiagram
   participant C as Client
-  participant S as Warp SQL server
+  participant S as Chargewire server
   participant O as Operator
   C->>S: POST …/statements (a long query)<br/>Prefer: respond-async
   S-->>C: 201 running
   O->>S: SIGTERM
   Note over S: draining: running statements<br/>may finish within the grace period
-  C->>S: GET /warp/v1/health
+  C->>S: GET /chargewire/v1/health
   S-->>C: 503 {"status": "not_serving",<br/>"reason": "draining"}
-  C->>S: POST /warp/v1/sessions<br/>(or a new statement)
+  C->>S: POST /chargewire/v1/sessions<br/>(or a new statement)
   S-->>C: 503 server_draining, Retry-After
   C->>S: GET …/statements/{statement_id}<br/>Prefer: wait=30
   S-->>C: 200 succeeded: the result<br/>can still be read

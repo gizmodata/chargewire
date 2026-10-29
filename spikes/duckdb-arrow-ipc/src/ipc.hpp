@@ -1,4 +1,4 @@
-// Arrow IPC streams with nanoarrow: the only Arrow library a Warp SQL server needs.
+// Arrow IPC streams with nanoarrow: the only Arrow library a Chargewire server needs.
 #pragma once
 
 #include <nanoarrow/nanoarrow.hpp>
@@ -6,7 +6,7 @@
 #include <cstdio>
 #include <string_view>
 
-namespace warp {
+namespace chargewire {
 
 enum class Compression { kNone, kZstd, kLz4 };
 
@@ -20,4 +20,4 @@ void WriteIpcStream(ArrowArrayStream* rows, std::FILE* out, Compression compress
 // Compressed bodies (ZSTD, LZ4) are decompressed transparently.
 nanoarrow::UniqueArrayStream ReadIpcStream(std::FILE* in);
 
-}  // namespace warp
+}  // namespace chargewire

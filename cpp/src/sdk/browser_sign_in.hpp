@@ -12,9 +12,9 @@
 #include <unordered_map>
 
 #include "common.hpp"
-#include "warpsql/backend.hpp"
+#include "chargewire/backend.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 // Whether `return_to` is a path on the server's own origin that no browser reads as
 // another host (spec §4.3.3): at most 2048 printable ASCII characters, starting with one
@@ -22,7 +22,7 @@ namespace warpsql::detail {
 bool ValidReturnTo(std::string_view return_to);
 
 // The URL fragment a return_to redirect carries the flow id in (spec §4.3.3).
-inline constexpr std::string_view kReturnFragmentKey = "warp_oauth_flow";
+inline constexpr std::string_view kReturnFragmentKey = "chargewire_oauth_flow";
 
 class BrowserFlows {
  public:
@@ -103,4 +103,4 @@ class BrowserFlows {
   Clock::time_point last_sweep_{};
 };
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

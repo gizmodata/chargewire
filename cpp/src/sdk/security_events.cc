@@ -1,6 +1,6 @@
 #include "security_events.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 std::string SourceKey(const SecurityEvent& event) {
   std::string host = PeerHost(event.peer);
@@ -91,4 +91,4 @@ std::vector<SecurityEvent> SecurityEventLimiter::Flush(Clock::time_point now) {
   return out;
 }
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

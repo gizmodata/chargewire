@@ -11,12 +11,12 @@
 #include <string>
 #include <string_view>
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 // Arrow IPC body compression (spec §8.2).
 enum class IpcCompression { kNone, kZstd, kLz4Frame };
 
-// From the Warp-IPC-Compression request header: the codecs the client accepts, in its
+// From the Chargewire-IPC-Compression request header: the codecs the client accepts, in its
 // order of preference ("lz4_frame, zstd"). The first one this server supports wins;
 // `none`, an empty header, or only unknown names: no compression.
 IpcCompression ParseIpcCompression(std::string_view header);
@@ -76,4 +76,4 @@ std::string_view EndOfStreamMarker();
 // message and the end-of-stream marker, base64-encoded.
 std::string SchemaBase64(const std::shared_ptr<arrow::Schema>& schema);
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

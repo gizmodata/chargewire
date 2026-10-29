@@ -5,13 +5,13 @@
 
 #include <memory>
 
-#include "warpsql/backend.hpp"
+#include "chargewire/backend.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 // Reads a backend's metadata rows and returns them under the canonical schema, or
 // throws if the backend returned other column types.
 std::shared_ptr<arrow::Table> ConformMetadata(MetadataKind kind, bool include_schema,
                                               arrow::RecordBatchReader& rows);
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

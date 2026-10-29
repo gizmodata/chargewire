@@ -8,7 +8,7 @@ name: site
 #     internal link or anchor; lychee checks the external links of the built site.
 #   - pages, deploy: on a push or manual run on main, the site is built for GitHub Pages and deployed:
 #     the private preview, or, with the repository variable DOCS_GA set to true, the public
-#     site at warpsql.gizmodata.com (site/README.md, "Private preview and GA").
+#     site at chargewire.gizmodata.com (site/README.md, "Private preview and GA").
 #
 # The examples on the pages run against real servers with site/scripts/verify_examples.py,
 # and the browser checks with site/scripts/screenshots.mjs, locally: they need a built
@@ -52,7 +52,7 @@ env:
   # has no preview banner or noindex and sits at the custom domain. The deploy, and the link
   # check's exclusion of the (private until GA) gizmodata repositories, read the variable only.
   DOCS_GA: ${{ (inputs.ga || vars.DOCS_GA == 'true') && 'true' || 'false' }}
-  GA_SITE: https://warpsql.gizmodata.com
+  GA_SITE: https://chargewire.gizmodata.com
 
 jobs:
   check:
@@ -121,7 +121,7 @@ jobs:
           # The private preview's address, or the custom domain once DOCS_GA is true
           # (site/README.md, "Private preview and GA"); never the manual input here.
           DOCS_GA: ${{ vars.DOCS_GA == 'true' && 'true' || 'false' }}
-          DOCS_SITE: ${{ vars.DOCS_GA == 'true' && 'https://warpsql.gizmodata.com' || steps.pages.outputs.origin }}
+          DOCS_SITE: ${{ vars.DOCS_GA == 'true' && 'https://chargewire.gizmodata.com' || steps.pages.outputs.origin }}
           BASE_PATH: ${{ steps.pages.outputs.base_path }}
         run: |
           # The pages link to each other from the root (/specification/): the site must be

@@ -7,9 +7,9 @@
 
 #include "common.hpp"
 #include "http.hpp"
-#include "warpsql/errors.hpp"
+#include "chargewire/errors.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 inline constexpr std::string_view kJson = "application/json";
 inline constexpr std::string_view kProblemJson = "application/problem+json";
@@ -33,4 +33,4 @@ json::object Problem(ErrorCode code, std::string_view detail, std::string_view r
 Response JsonResponse(http::status status, const json::value& body);
 Response ProblemResponse(const Error& error, std::string_view request_id);
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

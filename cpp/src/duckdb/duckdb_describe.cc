@@ -7,14 +7,14 @@
 
 #include "duckdb_sql.hpp"
 
-namespace warpduckdb {
+namespace chargewire_duckdb {
 
-using warpsql::Error;
-using warpsql::ErrorCode;
+using chargewire::Error;
+using chargewire::ErrorCode;
 
 namespace {
 
-constexpr std::string_view kFunction = "warp_result_schema";
+constexpr std::string_view kFunction = "chargewire_result_schema";
 
 using Schema = Owned<duckdb_v2_schema_handle, duckdb_v2_schema_destroy>;
 using TableFunction = Owned<duckdb_v2_table_function_handle, duckdb_v2_table_function_destroy>;
@@ -31,7 +31,7 @@ struct Slot {
 
 // DuckDB binds a statement on the calling thread, and ResultArrowSchema() binds its
 // one statement on its own: this is the description that bind may make. Any other
-// statement, on any other thread (a user calling warp_result_schema()), finds none.
+// statement, on any other thread (a user calling chargewire_result_schema()), finds none.
 thread_local Slot* current_slot = nullptr;
 
 // Callbacks run inside DuckDB: report errors through the slot DuckDB hands over, never
@@ -56,7 +56,7 @@ void Bind(duckdb_v2_function_bind_info_handle, duckdb_v2_table_function_bind_inf
   Guarded(err, [&] {
     Slot* slot = current_slot;
     if (slot == nullptr || slot->columns == nullptr) {
-      throw Error(ErrorCode::kSqlError, "warp_result_schema() only describes a prepared statement's result");
+      throw Error(ErrorCode::kSqlError, "chargewire_result_schema() only describes a prepared statement's result");
     }
     idx_t count = 0;
     Call([&](auto* e) { return duckdb_v2_schema_get_count(slot->columns, &count, e); });
@@ -73,7 +73,7 @@ void Bind(duckdb_v2_function_bind_info_handle, duckdb_v2_table_function_bind_inf
     if (slot->schema.release != nullptr) slot->schema.release(&slot->schema);  // bound again
     Call([&](auto* e) { return duckdb_v2_arrow_exporter_get_schema(exporter.get(), &slot->schema, e); });
     if (count == 0) {
-      throw Error(ErrorCode::kInternalError, "warp_result_schema(): a result without columns");
+      throw Error(ErrorCode::kInternalError, "chargewire_result_schema(): a result without columns");
     }
     const duckdb_v2_identifier_t column = Str("described");
     Call([&](auto* e) { return duckdb_v2_table_function_bind_add_result_column(result, &column, types[0], e); });
@@ -118,7 +118,7 @@ std::shared_ptr<arrow::Schema> ResultArrowSchema(duckdb_v2_connection_handle con
     });
   }
   if (slot.schema.release == nullptr) {
-    throw Error(ErrorCode::kInternalError, "warp_result_schema() was not bound");
+    throw Error(ErrorCode::kInternalError, "chargewire_result_schema() was not bound");
   }
   auto schema = arrow::ImportSchema(&slot.schema);  // takes the schema over
   if (!schema.ok()) {
@@ -127,4 +127,4 @@ std::shared_ptr<arrow::Schema> ResultArrowSchema(duckdb_v2_connection_handle con
   return std::move(*schema);
 }
 
-}  // namespace warpduckdb
+}  // namespace chargewire_duckdb

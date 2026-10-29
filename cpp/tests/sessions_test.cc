@@ -14,21 +14,21 @@
 #include <arrow/api.h>
 
 #include "sessions.hpp"
-#include "warpsql/errors.hpp"
+#include "chargewire/errors.hpp"
 
 namespace {
 
-using warpsql::Error;
-using warpsql::ErrorCode;
-using warpsql::Principal;
-using warpsql::detail::CancelReason;
-using warpsql::detail::Clock;
-using warpsql::detail::IngestOperation;
-using warpsql::IngestTarget;
-using warpsql::detail::Session;
-using warpsql::detail::SessionRegistry;
-using warpsql::detail::Statement;
-using warpsql::detail::StatementState;
+using chargewire::Error;
+using chargewire::ErrorCode;
+using chargewire::Principal;
+using chargewire::detail::CancelReason;
+using chargewire::detail::Clock;
+using chargewire::detail::IngestOperation;
+using chargewire::IngestTarget;
+using chargewire::detail::Session;
+using chargewire::detail::SessionRegistry;
+using chargewire::detail::Statement;
+using chargewire::detail::StatementState;
 
 class SessionLifetime : public ::testing::Test {
  protected:
@@ -245,6 +245,6 @@ TEST(StatementDescribe, ItSaysStateRowsPartitionsReadersAndWhyItWasCancelled) {
   EXPECT_FALSE(cancelled->RequestCancel(CancelReason::kCancelled));  // queued: cancelled at once
   EXPECT_EQ(cancelled->cancel_reason(), CancelReason::kCancelled);
   EXPECT_EQ(cancelled->Describe().state, StatementState::kCancelled);
-  EXPECT_EQ(warpsql::detail::CancelReasonName(CancelReason::kKilled), "killed");
-  EXPECT_EQ(warpsql::detail::CancelReasonName(CancelReason::kCancelled), "cancelled");
+  EXPECT_EQ(chargewire::detail::CancelReasonName(CancelReason::kKilled), "killed");
+  EXPECT_EQ(chargewire::detail::CancelReasonName(CancelReason::kCancelled), "cancelled");
 }

@@ -3,7 +3,7 @@ sequenceDiagram
   participant B as Browser
   participant S as Server
   participant I as Identity provider
-  C->>S: POST /warp/v1/auth/oauth/flows<br/>{"return_to": "/ui/"}
+  C->>S: POST /chargewire/v1/auth/oauth/flows<br/>{"return_to": "/ui/"}
   S-->>C: 201 flow_id, poll_secret,<br/>authorize_url, expires_at
   C->>B: open authorize_url
   B->>I: authorize<br/>(state, PKCE, nonce)

@@ -1,4 +1,4 @@
-// One Warp SQL session on its own DuckDB connection.
+// One Chargewire session on its own DuckDB connection.
 #pragma once
 
 #include <memory>
@@ -9,41 +9,41 @@
 #include "duckdb_upload.hpp"
 #include "duckdb_v2.hpp"
 #include "duckdb_values.hpp"
-#include "warpsql/backend.hpp"
+#include "chargewire/backend.hpp"
 
-namespace warpduckdb {
+namespace chargewire_duckdb {
 
-class DuckDBSession : public warpsql::EngineSession {
+class DuckDBSession : public chargewire::EngineSession {
  public:
   // `batch_rows`: most rows per Arrow batch in results (0: DuckDB's default).
   explicit DuckDBSession(duckdb_v2_instance_handle instance, std::size_t batch_rows = 0);
   ~DuckDBSession() override;
 
-  warpsql::StatementOutcome Execute(std::string_view sql,
+  chargewire::StatementOutcome Execute(std::string_view sql,
                                     const boost::json::value& parameters) override;
-  std::unique_ptr<warpsql::PreparedStatement> Prepare(std::string_view sql) override;
-  warpsql::StatementOutcome ExecutePrepared(warpsql::PreparedStatement& statement,
-                                            const warpsql::Parameters& parameters) override;
-  int64_t Ingest(const warpsql::IngestTarget& target,
+  std::unique_ptr<chargewire::PreparedStatement> Prepare(std::string_view sql) override;
+  chargewire::StatementOutcome ExecutePrepared(chargewire::PreparedStatement& statement,
+                                            const chargewire::Parameters& parameters) override;
+  int64_t Ingest(const chargewire::IngestTarget& target,
                  std::shared_ptr<arrow::RecordBatchReader> rows) override;
-  std::shared_ptr<arrow::RecordBatchReader> Metadata(warpsql::MetadataKind kind,
-                                                     const warpsql::MetadataFilter& filter) override;
+  std::shared_ptr<arrow::RecordBatchReader> Metadata(chargewire::MetadataKind kind,
+                                                     const chargewire::MetadataFilter& filter) override;
 
   void Interrupt() override;
   std::optional<double> Progress() override;
-  warpsql::OptionErrors SetOptions(const boost::json::object& options) override;
+  chargewire::OptionErrors SetOptions(const boost::json::object& options) override;
   boost::json::object Options() override;
   bool TakeOptionsChanged() override { return std::exchange(options_changed_, false); }
   void Commit() override;
   void Rollback() override;
-  warpsql::TransactionState Transaction() override;
+  chargewire::TransactionState Transaction() override;
 
  protected:
   duckdb_v2_connection_handle connection() const { return connection_.get(); }
   // The field metadata keys that carry a column's default in table schemas
   // (metadata/tables?include_schema=true; Flight SQL has none). A server may add the key
   // its older clients read; none: not reported.
-  virtual std::vector<std::string> ColumnDefaultMetadataKeys() const { return {"WARP:SQL:COLUMN_DEFAULT"}; }
+  virtual std::vector<std::string> ColumnDefaultMetadataKeys() const { return {"CHARGEWIRE:SQL:COLUMN_DEFAULT"}; }
   // Rows of the tables metadata (catalog, schema, table, type) with each table's schema
   // added (include_schema), so a server that leaves some tables out (spec §9.4) can
   // describe only the ones it keeps.
@@ -70,10 +70,10 @@ class DuckDBSession : public warpsql::EngineSession {
   bool autocommit_ = true;
   // The transaction as the statements that ran left it (spec §5.2); Transaction() asks
   // DuckDB whether an open one has been aborted.
-  warpsql::TransactionState transaction_ = warpsql::TransactionState::kNone;
+  chargewire::TransactionState transaction_ = chargewire::TransactionState::kNone;
   bool transaction_owed_ = false;  // autocommit off, and a SQL COMMIT/ROLLBACK just ended one
   boost::json::value session_tag_ = nullptr;
   bool options_changed_ = false;  // a statement ran that can move the current catalog/schema
 };
 
-}  // namespace warpduckdb
+}  // namespace chargewire_duckdb

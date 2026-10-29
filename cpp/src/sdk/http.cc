@@ -13,7 +13,7 @@
 #include "tls_context.hpp"
 #include "tls_stream.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 namespace ssl = net::ssl;
 using tcp = net::ip::tcp;
@@ -505,7 +505,7 @@ class HttpServer::Impl {
       }
       // Answers go out in more than one write (headers, then the body), and with Nagle's
       // algorithm the second waited for the client's delayed ACK of the first: every
-      // small request took 40 ms on Linux (GET /warp, a status poll, SELECT 1).
+      // small request took 40 ms on Linux (GET /chargewire, a status poll, SELECT 1).
       socket.set_option(tcp::no_delay(true), ec);
       auto executor = socket.get_executor();
       net::co_spawn(executor, Serve(std::move(socket)), net::detached);
@@ -576,4 +576,4 @@ void HttpServer::StartAccepting() { impl_->StartAccepting(); }
 
 void HttpServer::Close() { impl_->Close(); }
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

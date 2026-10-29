@@ -10,11 +10,11 @@
 #include <cstdint>
 #include <format>
 
-namespace warpduckdb {
+namespace chargewire_duckdb {
 
 namespace json = boost::json;
-using warpsql::Error;
-using warpsql::ErrorCode;
+using chargewire::Error;
+using chargewire::ErrorCode;
 
 namespace {
 
@@ -231,9 +231,9 @@ Value ValueFactory::FromJsonScalar(const json::value& item) {
       break;
     }
     case json::kind::object:
-      if (const auto& object = item.as_object(); object.size() == 1 && object.contains(warpsql::kWideIntegerKey) &&
-                                                 object.at(warpsql::kWideIntegerKey).is_string()) {
-        return WideInteger(object.at(warpsql::kWideIntegerKey).as_string());
+      if (const auto& object = item.as_object(); object.size() == 1 && object.contains(chargewire::kWideIntegerKey) &&
+                                                 object.at(chargewire::kWideIntegerKey).is_string()) {
+        return WideInteger(object.at(chargewire::kWideIntegerKey).as_string());
       }
       [[fallthrough]];
     default:
@@ -615,4 +615,4 @@ Value ValueFactory::FromArrow(const arrow::Array& array, int64_t row,
   return value;
 }
 
-}  // namespace warpduckdb
+}  // namespace chargewire_duckdb

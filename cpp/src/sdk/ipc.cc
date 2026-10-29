@@ -14,7 +14,7 @@
 #include "ids.hpp"
 #include "vendor/lz4frame.h"  // LZ4 1.10.0's; Arrow's bundled LZ4 provides the functions
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 namespace {
 
@@ -491,4 +491,4 @@ std::string SchemaBase64(const std::shared_ptr<arrow::Schema>& schema) {
   return Base64(sink->Take());
 }
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

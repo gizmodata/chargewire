@@ -21,7 +21,7 @@
 // served document with PyYAML's reading of the same file (conformance/tests/test_openapi.py),
 // so a difference between this reader and YAML fails there.
 //
-// <out.cc> defines warpsql::OpenApiJson() and warpsql::OpenApiEtag() (openapi_document.hpp);
+// <out.cc> defines chargewire::OpenApiJson() and chargewire::OpenApiEtag() (openapi_document.hpp);
 // <out.json> is the JSON itself, for inspection.
 #include <cstdint>
 #include <cstdio>
@@ -583,7 +583,7 @@ uint64_t Fnv1a(const std::string& text) {
 std::string CppSource(const std::string& json, const std::string& source_name) {
   std::string out;
   out += "// Generated from " + source_name + " by cpp/tools/openapi_json.cc. Do not edit.\n";
-  out += "#include \"openapi_document.hpp\"\n\nnamespace warpsql {\nnamespace {\n\n";
+  out += "#include \"openapi_document.hpp\"\n\nnamespace chargewire {\nnamespace {\n\n";
   // A byte array, not a string literal: compilers cap the length of a literal.
   out += "constexpr unsigned char kJson[] = {";
   for (std::size_t i = 0; i < json.size(); i++) {
@@ -598,7 +598,7 @@ std::string CppSource(const std::string& json, const std::string& source_name) {
   char etag[40];
   std::snprintf(etag, sizeof etag, "\"%016llx\"", static_cast<unsigned long long>(Fnv1a(json)));
   out += "std::string_view OpenApiEtag() { return R\"(" + std::string(etag) + ")\"; }\n\n";
-  out += "}  // namespace warpsql\n";
+  out += "}  // namespace chargewire\n";
   return out;
 }
 

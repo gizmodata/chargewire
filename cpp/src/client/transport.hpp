@@ -1,5 +1,5 @@
 // One HTTP/1.1 connection (plain or TLS) on Boost.Beast, kept alive between requests and
-// reopened when the server has closed it. It knows nothing about Warp SQL. Not thread-safe:
+// reopened when the server has closed it. It knows nothing about Chargewire. Not thread-safe:
 // each user of the protocol that may run concurrently (a cancel from another thread) opens
 // its own Transport.
 #pragma once
@@ -19,9 +19,9 @@
 #include <boost/beast/http.hpp>
 #include <boost/beast/ssl.hpp>
 
-#include "warpsql/client.hpp"
+#include "chargewire/client.hpp"
 
-namespace warpsql::client::detail {
+namespace chargewire::client::detail {
 
 namespace net = boost::asio;
 namespace beast = boost::beast;
@@ -129,4 +129,4 @@ class Transport {
 
 std::string UrlEncode(std::string_view text);
 
-}  // namespace warpsql::client::detail
+}  // namespace chargewire::client::detail

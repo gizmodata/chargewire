@@ -9,7 +9,7 @@
 
 #include "upload.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 namespace {
 
 template <typename T> T Value(arrow::Result<T> value) {
@@ -166,4 +166,4 @@ TEST(UploadLimits, TheLimitIsPerMessageNotPerUpload) {
 }
 
 }  // namespace
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

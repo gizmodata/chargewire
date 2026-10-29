@@ -1,10 +1,10 @@
-# The OpenAPI 3.1 description of Warp SQL version 1's HTTP endpoints.
+# The OpenAPI 3.1 description of Chargewire version 1's HTTP endpoints.
 #
-# spec/warp-sql.md is the protocol's definition; this file describes the same endpoints for
+# spec/chargewire.md is the protocol's definition; this file describes the same endpoints for
 # tools (request and response schemas, headers, errors). Where they disagree, the
 # specification wins and this file has a bug. The conformance suite validates real server
 # responses against it (conformance/tests/openapi_check.py), and the SDK serves it as JSON at
-# GET /warp/v1/openapi.json (spec §3.3).
+# GET /chargewire/v1/openapi.json (spec §3.3).
 #
 # The YAML is a strict subset, so the SDK's build converts it without a YAML library
 # (cpp/tools/openapi_json.cc): block mappings and sequences, flow collections of scalars,
@@ -13,25 +13,25 @@
 # keys that would read as numbers (status codes) are quoted.
 openapi: 3.1.1
 info:
-  title: Warp SQL
+  title: Chargewire
   version: 1.0.2
   summary: SQL over HTTP, with Apache Arrow IPC streams for results, parameters and uploads.
   description: |
-    Warp SQL is an open protocol for running SQL against a database server over plain HTTP.
+    Chargewire is an open protocol for running SQL against a database server over plain HTTP.
     Control messages are small JSON documents; query results, Arrow query parameters and bulk
     uploads are Arrow IPC streams (`application/vnd.apache.arrow.stream`).
 
     This document describes the endpoints of protocol version 1 (specification 1.0.2). The
     specification is the definition: each operation names the section it comes from.
 
-    **Base path.** Endpoints live under `/warp`; a server may mount them under another
+    **Base path.** Endpoints live under `/chargewire`; a server may mount them under another
     prefix (spec §2.1).
 
     **Authentication.** Every operation except discovery, health, sign-in and this
-    document needs `Authorization: Bearer <access token>`, from `POST /warp/v1/auth/token`.
+    document needs `Authorization: Bearer <access token>`, from `POST /chargewire/v1/auth/token`.
 
     **Errors** are problem documents (`application/problem+json`, RFC 9457) with a stable
-    `code` (spec §11). Every response carries a `Warp-Request-Id` header.
+    `code` (spec §11). Every response carries a `Chargewire-Request-Id` header.
 
     **Additions.** Version 1 changes only by addition (spec §12): clients ignore fields,
     headers and capabilities they don't know and accept values of enumerated fields that
@@ -42,7 +42,7 @@ info:
     identifier: Apache-2.0
 servers:
   - url: "{origin}"
-    description: A Warp SQL server
+    description: A Chargewire server
     variables:
       origin:
         default: http://127.0.0.1:31337
@@ -74,7 +74,7 @@ tags:
     description: Driver metadata with Flight SQL's result schemas (spec §10).
 
 paths:
-  /warp:
+  /chargewire:
     get:
       tags: [Discovery]
       operationId: getDiscovery
@@ -93,7 +93,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/health:
+  /chargewire/v1/health:
     get:
       tags: [Discovery]
       operationId: getHealth
@@ -118,7 +118,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/openapi.json:
+  /chargewire/v1/openapi.json:
     get:
       tags: [Discovery]
       operationId: getOpenApi
@@ -154,7 +154,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/auth/token:
+  /chargewire/v1/auth/token:
     post:
       tags: [Authentication]
       operationId: issueToken
@@ -198,7 +198,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/auth/oauth/flows:
+  /chargewire/v1/auth/oauth/flows:
     post:
       tags: [Browser sign-in]
       operationId: createBrowserFlow
@@ -231,7 +231,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/auth/oauth/flows/{flow_id}:
+  /chargewire/v1/auth/oauth/flows/{flow_id}:
     parameters:
       - $ref: "#/components/parameters/FlowId"
     post:
@@ -264,7 +264,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/auth/oauth/callback:
+  /chargewire/v1/auth/oauth/callback:
     get:
       tags: [Browser sign-in]
       operationId: browserSignInCallback
@@ -304,7 +304,7 @@ paths:
               schema:
                 type: string
         "303":
-          description: Back to the flow's `return_to`, as `return_to#warp_oauth_flow=<flow_id>`
+          description: Back to the flow's `return_to`, as `return_to#chargewire_oauth_flow=<flow_id>`
           headers:
             Location:
               $ref: "#/components/headers/Location"
@@ -313,7 +313,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/CallbackError"
 
-  /warp/v1/sessions:
+  /chargewire/v1/sessions:
     post:
       tags: [Sessions]
       operationId: createSession
@@ -347,7 +347,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}:
+  /chargewire/v1/sessions/{session_id}:
     parameters:
       - $ref: "#/components/parameters/SessionId"
     get:
@@ -406,7 +406,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/commit:
+  /chargewire/v1/sessions/{session_id}/commit:
     parameters:
       - $ref: "#/components/parameters/SessionId"
     post:
@@ -422,7 +422,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/rollback:
+  /chargewire/v1/sessions/{session_id}/rollback:
     parameters:
       - $ref: "#/components/parameters/SessionId"
     post:
@@ -438,7 +438,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/cancel:
+  /chargewire/v1/sessions/{session_id}/cancel:
     parameters:
       - $ref: "#/components/parameters/SessionId"
     post:
@@ -460,7 +460,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/statements:
+  /chargewire/v1/sessions/{session_id}/statements:
     parameters:
       - $ref: "#/components/parameters/SessionId"
     post:
@@ -475,7 +475,7 @@ paths:
         Clients must check `Content-Type`.
 
         An error found before execution, and a statement that has failed or been cancelled by
-        the time the server answers, is an error response with `Warp-Statement-Id`.
+        the time the server answers, is an error response with `Chargewire-Statement-Id`.
       parameters:
         - $ref: "#/components/parameters/Accept"
         - $ref: "#/components/parameters/Prefer"
@@ -517,7 +517,7 @@ paths:
           headers:
             Location:
               $ref: "#/components/headers/Location"
-            Warp-Statement-Id:
+            Chargewire-Statement-Id:
               $ref: "#/components/headers/StatementId"
           content:
             application/json:
@@ -528,7 +528,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/StatementProblem"
 
-  /warp/v1/sessions/{session_id}/statements/{statement_id}:
+  /chargewire/v1/sessions/{session_id}/statements/{statement_id}:
     parameters:
       - $ref: "#/components/parameters/SessionId"
       - $ref: "#/components/parameters/StatementId"
@@ -569,7 +569,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/statements/{statement_id}/result:
+  /chargewire/v1/sessions/{session_id}/statements/{statement_id}/result:
     parameters:
       - $ref: "#/components/parameters/SessionId"
       - $ref: "#/components/parameters/StatementId"
@@ -590,7 +590,7 @@ paths:
         "200":
           description: The partition's record batches
           headers:
-            Warp-IPC-Compression:
+            Chargewire-IPC-Compression:
               $ref: "#/components/headers/IpcCompression"
             Cache-Control:
               $ref: "#/components/headers/CacheControlNoStore"
@@ -603,7 +603,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/statements/{statement_id}/cancel:
+  /chargewire/v1/sessions/{session_id}/statements/{statement_id}/cancel:
     parameters:
       - $ref: "#/components/parameters/SessionId"
       - $ref: "#/components/parameters/StatementId"
@@ -626,7 +626,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/prepared:
+  /chargewire/v1/sessions/{session_id}/prepared:
     parameters:
       - $ref: "#/components/parameters/SessionId"
     post:
@@ -657,7 +657,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/prepared/{prepared_id}:
+  /chargewire/v1/sessions/{session_id}/prepared/{prepared_id}:
     parameters:
       - $ref: "#/components/parameters/SessionId"
       - $ref: "#/components/parameters/PreparedId"
@@ -674,7 +674,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/prepared/{prepared_id}/execute:
+  /chargewire/v1/sessions/{session_id}/prepared/{prepared_id}/execute:
     parameters:
       - $ref: "#/components/parameters/SessionId"
       - $ref: "#/components/parameters/PreparedId"
@@ -716,7 +716,7 @@ paths:
           headers:
             Location:
               $ref: "#/components/headers/Location"
-            Warp-Statement-Id:
+            Chargewire-Statement-Id:
               $ref: "#/components/headers/StatementId"
           content:
             application/json:
@@ -727,7 +727,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/StatementProblem"
 
-  /warp/v1/sessions/{session_id}/ingest:
+  /chargewire/v1/sessions/{session_id}/ingest:
     parameters:
       - $ref: "#/components/parameters/SessionId"
     post:
@@ -788,7 +788,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/ingests:
+  /chargewire/v1/sessions/{session_id}/ingests:
     parameters:
       - $ref: "#/components/parameters/SessionId"
     post:
@@ -829,7 +829,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/ingests/{ingest_id}:
+  /chargewire/v1/sessions/{session_id}/ingests/{ingest_id}:
     parameters:
       - $ref: "#/components/parameters/SessionId"
       - $ref: "#/components/parameters/IngestId"
@@ -862,7 +862,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/ingests/{ingest_id}/parts/{part}:
+  /chargewire/v1/sessions/{session_id}/ingests/{ingest_id}/parts/{part}:
     parameters:
       - $ref: "#/components/parameters/SessionId"
       - $ref: "#/components/parameters/IngestId"
@@ -902,7 +902,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/ingests/{ingest_id}/commit:
+  /chargewire/v1/sessions/{session_id}/ingests/{ingest_id}/commit:
     parameters:
       - $ref: "#/components/parameters/SessionId"
       - $ref: "#/components/parameters/IngestId"
@@ -932,7 +932,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/metadata/server-info:
+  /chargewire/v1/sessions/{session_id}/metadata/server-info:
     parameters:
       - $ref: "#/components/parameters/SessionId"
     get:
@@ -952,7 +952,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/metadata/catalogs:
+  /chargewire/v1/sessions/{session_id}/metadata/catalogs:
     parameters:
       - $ref: "#/components/parameters/SessionId"
     get:
@@ -968,7 +968,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/metadata/db-schemas:
+  /chargewire/v1/sessions/{session_id}/metadata/db-schemas:
     parameters:
       - $ref: "#/components/parameters/SessionId"
     get:
@@ -987,7 +987,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/metadata/tables:
+  /chargewire/v1/sessions/{session_id}/metadata/tables:
     parameters:
       - $ref: "#/components/parameters/SessionId"
     get:
@@ -1027,7 +1027,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/metadata/table-types:
+  /chargewire/v1/sessions/{session_id}/metadata/table-types:
     parameters:
       - $ref: "#/components/parameters/SessionId"
     get:
@@ -1043,7 +1043,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/metadata/primary-keys:
+  /chargewire/v1/sessions/{session_id}/metadata/primary-keys:
     parameters:
       - $ref: "#/components/parameters/SessionId"
     get:
@@ -1063,7 +1063,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/metadata/imported-keys:
+  /chargewire/v1/sessions/{session_id}/metadata/imported-keys:
     parameters:
       - $ref: "#/components/parameters/SessionId"
     get:
@@ -1083,7 +1083,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/metadata/exported-keys:
+  /chargewire/v1/sessions/{session_id}/metadata/exported-keys:
     parameters:
       - $ref: "#/components/parameters/SessionId"
     get:
@@ -1107,7 +1107,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/metadata/cross-reference:
+  /chargewire/v1/sessions/{session_id}/metadata/cross-reference:
     parameters:
       - $ref: "#/components/parameters/SessionId"
     get:
@@ -1154,7 +1154,7 @@ paths:
         "5XX":
           $ref: "#/components/responses/Problem"
 
-  /warp/v1/sessions/{session_id}/metadata/type-info:
+  /chargewire/v1/sessions/{session_id}/metadata/type-info:
     parameters:
       - $ref: "#/components/parameters/SessionId"
     get:
@@ -1183,7 +1183,7 @@ components:
       type: http
       scheme: bearer
       description: |
-        The access token from `POST /warp/v1/auth/token` (spec §4.2). Opaque to clients.
+        The access token from `POST /chargewire/v1/auth/token` (spec §4.2). Opaque to clients.
         Credentials never come from cookies.
 
   parameters:
@@ -1246,7 +1246,7 @@ components:
         type: string
         maxLength: 255
     StatementTimeout:
-      name: Warp-Statement-Timeout
+      name: Chargewire-Statement-Timeout
       in: header
       required: false
       description: Milliseconds before the server cancels the statement (spec §6.9)
@@ -1254,14 +1254,14 @@ components:
         type: integer
         minimum: 0
     RetainResult:
-      name: Warp-Retain-Result
+      name: Chargewire-Retain-Result
       in: header
       required: false
       description: Keep the result for re-reading and resumption (spec §6.5)
       schema:
         type: boolean
     QueryTag:
-      name: Warp-Query-Tag
+      name: Chargewire-Query-Tag
       in: header
       required: false
       description: A JSON object, in ASCII and at most 4096 bytes, that labels the statement or ingest (spec §2.5)
@@ -1271,7 +1271,7 @@ components:
         examples:
           - '{"job":"nightly-load"}'
     IpcCompressionRequest:
-      name: Warp-IPC-Compression
+      name: Chargewire-IPC-Compression
       in: header
       required: false
       description: Arrow buffer codecs the client accepts, in its order of preference (spec §8.2)
@@ -1282,7 +1282,7 @@ components:
           - zstd
           - none
     ResultPartitionsRequest:
-      name: Warp-Result-Partitions
+      name: Chargewire-Result-Partitions
       in: header
       required: false
       description: The most partitions the client reads at once (spec §6.10, capability `result_partitions`)
@@ -1291,7 +1291,7 @@ components:
         minimum: 1
         maximum: 256
     ResultOrderRequest:
-      name: Warp-Result-Order
+      name: Chargewire-Result-Order
       in: header
       required: false
       description: Whether the client needs rows in result order (spec §6.10)
@@ -1300,7 +1300,7 @@ components:
         enum: [preserve, any]
         default: preserve
     ResultLocations:
-      name: Warp-Result-Locations
+      name: Chargewire-Result-Locations
       in: header
       required: false
       description: The client can read partitions held by other servers (spec §6.2, capability `result_locations`)
@@ -1445,9 +1445,9 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
     StatementProblem:
-      description: An error; for a statement that failed or was cancelled, with `Warp-Statement-Id` (spec §6.1, §11)
+      description: An error; for a statement that failed or was cancelled, with `Chargewire-Statement-Id` (spec §6.1, §11)
       headers:
-        Warp-Statement-Id:
+        Chargewire-Statement-Id:
           $ref: "#/components/headers/StatementIdOptional"
         Retry-After:
           $ref: "#/components/headers/RetryAfter"
@@ -1463,13 +1463,13 @@ components:
         statement document of a statement that returns no rows. On an idempotent replay
         (spec §6.7), the statement document in any state.
       headers:
-        Warp-Statement-Id:
+        Chargewire-Statement-Id:
           $ref: "#/components/headers/StatementId"
-        Warp-IPC-Compression:
+        Chargewire-IPC-Compression:
           $ref: "#/components/headers/IpcCompression"
-        Warp-Result-Partitions:
+        Chargewire-Result-Partitions:
           $ref: "#/components/headers/ResultPartitions"
-        Warp-Result-Order:
+        Chargewire-Result-Order:
           $ref: "#/components/headers/ResultOrder"
       content:
         application/vnd.apache.arrow.stream:
@@ -1518,7 +1518,7 @@ components:
       required: [protocol, protocol_versions, server, capabilities, auth]
       properties:
         protocol:
-          const: warp-sql
+          const: chargewire
         protocol_versions:
           type: array
           items:
@@ -1568,16 +1568,16 @@ components:
               description: This OpenAPI document, with capability `openapi`
               type: string
       example:
-        protocol: warp-sql
+        protocol: chargewire
         protocol_versions: ["1"]
         server:
-          name: warp-duckdb
+          name: chargewire-duckdb
           version: 1.0.2
         capabilities: [prepared_statements, transactions, ingest, partitioned_ingest, long_poll, ipc_compression_zstd, ipc_compression_lz4_frame, result_partitions, openapi]
         auth:
           grant_types: [password]
         links:
-          openapi: /warp/v1/openapi.json
+          openapi: /chargewire/v1/openapi.json
 
     Health:
       type: object
@@ -2083,9 +2083,9 @@ components:
       required: [type, title, status, code]
       properties:
         type:
-          description: "`urn:warp-sql:error:` followed by `code`"
+          description: "`urn:chargewire:error:` followed by `code`"
           type: string
-          pattern: "^urn:warp-sql:error:[a-z0-9_]+$"
+          pattern: "^urn:chargewire:error:[a-z0-9_]+$"
         title:
           description: A short summary of the code, for people
           type: string
@@ -2106,7 +2106,7 @@ components:
           type: string
           pattern: "^[0-9A-Z]{5}$"
         request_id:
-          description: Also in the server's logs and the Warp-Request-Id header
+          description: Also in the server's logs and the Chargewire-Request-Id header
           type: string
         reason:
           description: Why a token or session stopped standing, on `invalid_token` (spec §4.2) and `session_ended` (spec §5.6)
@@ -2129,7 +2129,7 @@ components:
           then:
             required: [cancel_reason]
       example:
-        type: "urn:warp-sql:error:permission_denied"
+        type: "urn:chargewire:error:permission_denied"
         title: Permission denied
         status: 403
         code: permission_denied

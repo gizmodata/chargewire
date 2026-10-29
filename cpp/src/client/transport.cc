@@ -25,7 +25,7 @@
 #pragma comment(lib, "crypt32.lib")
 #endif
 
-namespace warpsql::client::detail {
+namespace chargewire::client::detail {
 
 namespace {
 
@@ -508,4 +508,4 @@ Reply Transport::Exchange(http::request<http::string_body> request, const ChunkS
   return reply;
 }
 
-}  // namespace warpsql::client::detail
+}  // namespace chargewire::client::detail

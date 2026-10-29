@@ -9,7 +9,7 @@
 #include <string_view>
 #include <utility>
 
-namespace warp {
+namespace chargewire {
 
 class Error : public std::runtime_error {
  public:
@@ -96,4 +96,4 @@ using LogicalType = Owned<duckdb_v2_logical_type_handle, duckdb_v2_logical_type_
 using DataChunk = Owned<duckdb_v2_data_chunk_handle, duckdb_v2_data_chunk_destroy>;
 using TableFunction = Owned<duckdb_v2_table_function_handle, duckdb_v2_table_function_destroy>;
 
-}  // namespace warp
+}  // namespace chargewire

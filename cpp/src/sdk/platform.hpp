@@ -7,7 +7,7 @@
 
 #include <ctime>
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 // Whether the peer of a connected socket has gone (shut down its side, reset, or
 // errored), without consuming anything. Never blocks.
@@ -31,4 +31,4 @@ boost::asio::awaitable<void> EndConnection(boost::beast::tcp_stream& stream);
 // `seconds` as UTC calendar time (gmtime_r; gmtime_s on Windows).
 std::tm UtcTime(std::time_t seconds);
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

@@ -1,9 +1,9 @@
 {
-  "name": "warp-sql-site",
+  "name": "chargewire-site",
   "version": "1.0.2",
   "private": true,
   "type": "module",
-  "description": "The Warp SQL protocol's documentation site: the specification, flows, the OpenAPI reference, conformance and implementations",
+  "description": "The Chargewire protocol's documentation site: the specification, flows, the OpenAPI reference, conformance and implementations",
   "engines": {
     "node": ">=22.12"
   },

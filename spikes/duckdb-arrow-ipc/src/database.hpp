@@ -1,4 +1,4 @@
-// A DuckDB database seen the way a Warp SQL server sees it: SQL in, Arrow streams
+// A DuckDB database seen the way a Chargewire server sees it: SQL in, Arrow streams
 // out, Arrow streams in for bulk ingest. Uses only DuckDB's v2 C API.
 #pragma once
 
@@ -11,7 +11,7 @@
 
 #include "duckdb_v2.hpp"
 
-namespace warp {
+namespace chargewire {
 
 enum class IngestMode {
   kCreate,        // fail if the table exists
@@ -20,7 +20,7 @@ enum class IngestMode {
   kCreateAppend,  // create if missing, then append
 };
 
-// The stream a bulk ingest is reading, shared with the warp_upload() table function.
+// The stream a bulk ingest is reading, shared with the chargewire_upload() table function.
 struct Upload;
 
 class Database {
@@ -52,4 +52,4 @@ class Database {
   std::unique_ptr<Upload> upload_;
 };
 
-}  // namespace warp
+}  // namespace chargewire

@@ -11,12 +11,12 @@
 #include "duckdb_describe.hpp"
 #include "duckdb_sql.hpp"
 
-namespace warpduckdb {
+namespace chargewire_duckdb {
 
 namespace json = boost::json;
-using warpsql::Error;
-using warpsql::ErrorCode;
-using warpsql::MetadataKind;
+using chargewire::Error;
+using chargewire::ErrorCode;
+using chargewire::MetadataKind;
 
 namespace {
 
@@ -29,7 +29,7 @@ struct Described {
   std::shared_ptr<arrow::Schema> schema;  // when it returns rows
 };
 
-class DuckDBPrepared : public warpsql::PreparedStatement {
+class DuckDBPrepared : public chargewire::PreparedStatement {
  public:
   DuckDBPrepared(SqlStatement statement, PreparedHandle prepared, ParameterTypes types,
                  Described described, std::shared_ptr<arrow::Schema> parameter_schema)
@@ -271,7 +271,7 @@ DuckDBSession::~DuckDBSession() {
 
 // ---- Statements ----
 
-warpsql::StatementOutcome DuckDBSession::Execute(std::string_view sql,
+chargewire::StatementOutcome DuckDBSession::Execute(std::string_view sql,
                                                  const json::value& parameters) {
   auto statements = Parse(connection_.get(), sql);
   if (statements.empty()) {
@@ -316,7 +316,7 @@ warpsql::StatementOutcome DuckDBSession::Execute(std::string_view sql,
   return Outcome(result, last);
 }
 
-std::unique_ptr<warpsql::PreparedStatement> DuckDBSession::Prepare(std::string_view sql) {
+std::unique_ptr<chargewire::PreparedStatement> DuckDBSession::Prepare(std::string_view sql) {
   auto statements = Parse(connection_.get(), sql);
   if (statements.size() != 1) {
     throw Error(ErrorCode::kSqlError, "a prepared statement is exactly one SQL statement");
@@ -335,8 +335,8 @@ std::unique_ptr<warpsql::PreparedStatement> DuckDBSession::Prepare(std::string_v
 }
 
 
-warpsql::StatementOutcome DuckDBSession::ExecutePrepared(warpsql::PreparedStatement& statement,
-                                                         const warpsql::Parameters& parameters) {
+chargewire::StatementOutcome DuckDBSession::ExecutePrepared(chargewire::PreparedStatement& statement,
+                                                         const chargewire::Parameters& parameters) {
   auto& prepared = static_cast<DuckDBPrepared&>(statement);
   auto run = [&](const BoundValues& bound) {
     BeginOwedTransaction();
@@ -388,7 +388,7 @@ warpsql::StatementOutcome DuckDBSession::ExecutePrepared(warpsql::PreparedStatem
   if (!schema) {
     schema = prepared.ResultSchema();  // a query run for no parameter rows: no rows, not a count
   }
-  warpsql::StatementOutcome outcome;
+  chargewire::StatementOutcome outcome;
   if (schema) {
     auto reader = arrow::RecordBatchReader::Make(std::move(batches), schema);
     if (!reader.ok()) {
@@ -401,10 +401,10 @@ warpsql::StatementOutcome DuckDBSession::ExecutePrepared(warpsql::PreparedStatem
   return outcome;
 }
 
-int64_t DuckDBSession::Ingest(const warpsql::IngestTarget& target,
+int64_t DuckDBSession::Ingest(const chargewire::IngestTarget& target,
                               std::shared_ptr<arrow::RecordBatchReader> rows) {
   BeginOwedTransaction();
-  return warpduckdb::Ingest(connection_.get(), target, std::move(rows));
+  return chargewire_duckdb::Ingest(connection_.get(), target, std::move(rows));
 }
 
 // ---- Metadata (spec §10), with Arrow Flight SQL's result schemas ----
@@ -439,7 +439,7 @@ std::shared_ptr<arrow::RecordBatchReader> TypeInfo(std::optional<int32_t> data_t
       {"uuid", 1111, 36, true, {}, false},
       {"timestamp with time zone", 2014, 32, true, {}, false},
   };
-  const auto schema = warpsql::MetadataSchema(MetadataKind::kTypeInfo);
+  const auto schema = chargewire::MetadataSchema(MetadataKind::kTypeInfo);
   std::unique_ptr<arrow::RecordBatchBuilder> builder =
       arrow::RecordBatchBuilder::Make(schema, arrow::default_memory_pool()).ValueOrDie();
   auto text = [&](int i) { return builder->GetFieldAs<arrow::StringBuilder>(i); };
@@ -488,7 +488,7 @@ std::shared_ptr<arrow::RecordBatchReader> TypeInfo(std::optional<int32_t> data_t
 }  // namespace
 
 std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::Metadata(
-    MetadataKind kind, const warpsql::MetadataFilter& filter) {
+    MetadataKind kind, const chargewire::MetadataFilter& filter) {
   if (kind == MetadataKind::kTypeInfo) {
     return TypeInfo(filter.data_type);
   }
@@ -769,9 +769,9 @@ std::optional<double> DuckDBSession::Progress() {
   return percentage / 100.0;
 }
 
-warpsql::OptionErrors DuckDBSession::SetOptions(const json::object& options) {
+chargewire::OptionErrors DuckDBSession::SetOptions(const json::object& options) {
   BeginOwedTransaction();
-  warpsql::OptionErrors errors;
+  chargewire::OptionErrors errors;
   auto apply = [&](std::string_view key, auto&& fn) {
     const json::value* value = options.if_contains(key);
     if (value == nullptr) return;
@@ -806,7 +806,7 @@ warpsql::OptionErrors DuckDBSession::SetOptions(const json::object& options) {
       RunSql(connection_.get(), "COMMIT");
     }
     autocommit_ = on;
-    transaction_ = on ? warpsql::TransactionState::kNone : warpsql::TransactionState::kOpen;
+    transaction_ = on ? chargewire::TransactionState::kNone : chargewire::TransactionState::kOpen;
   });
   apply("session_tag", [&](const json::value& value) {
     if (!value.is_object() && !value.is_null()) {
@@ -866,20 +866,20 @@ void DuckDBSession::Rollback() { EndTransaction("ROLLBACK"); }
 void DuckDBSession::EndTransaction(std::string_view sql) {
   BeginOwedTransaction();
   RunSql(connection_.get(), sql);
-  transaction_ = warpsql::TransactionState::kNone;
+  transaction_ = chargewire::TransactionState::kNone;
   if (!autocommit_) {
     RunSql(connection_.get(), "BEGIN TRANSACTION");  // the next statement starts a new one
-    transaction_ = warpsql::TransactionState::kOpen;
+    transaction_ = chargewire::TransactionState::kOpen;
   }
 }
 
 void DuckDBSession::Ran(duckdb_v2_sql_statement_handle statement) {
   switch (TransactionEffectOf(connection_.get(), statement)) {
     case TransactionEffect::kBegin:
-      transaction_ = warpsql::TransactionState::kOpen;
+      transaction_ = chargewire::TransactionState::kOpen;
       break;
     case TransactionEffect::kEnd:
-      transaction_ = warpsql::TransactionState::kNone;
+      transaction_ = chargewire::TransactionState::kNone;
       transaction_owed_ = !autocommit_;
       break;
     case TransactionEffect::kNone:
@@ -890,15 +890,15 @@ void DuckDBSession::Ran(duckdb_v2_sql_statement_handle statement) {
 void DuckDBSession::BeginOwedTransaction() {
   if (!std::exchange(transaction_owed_, false)) return;
   RunSql(connection_.get(), "BEGIN TRANSACTION");
-  transaction_ = warpsql::TransactionState::kOpen;
+  transaction_ = chargewire::TransactionState::kOpen;
 }
 
-warpsql::TransactionState DuckDBSession::Transaction() {
+chargewire::TransactionState DuckDBSession::Transaction() {
   BeginOwedTransaction();
-  if (transaction_ == warpsql::TransactionState::kOpen && TransactionAborted(connection_.get())) {
-    transaction_ = warpsql::TransactionState::kAborted;
+  if (transaction_ == chargewire::TransactionState::kOpen && TransactionAborted(connection_.get())) {
+    transaction_ = chargewire::TransactionState::kAborted;
   }
   return transaction_;
 }
 
-}  // namespace warpduckdb
+}  // namespace chargewire_duckdb

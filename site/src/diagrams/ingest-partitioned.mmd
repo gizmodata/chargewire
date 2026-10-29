@@ -1,7 +1,7 @@
 sequenceDiagram
   participant C as Client
-  participant S as Warp SQL server
-  C->>S: POST /warp/v1/sessions/{id}/ingests {"table", "mode"}
+  participant S as Chargewire server
+  C->>S: POST /chargewire/v1/sessions/{id}/ingests {"table", "mode"}
   S-->>C: 201 {"ingest_id", "state": "open", "parts": []}
   par one connection per part
     C->>S: POST …/ingests/{ingest_id}/parts/0 (Arrow stream)

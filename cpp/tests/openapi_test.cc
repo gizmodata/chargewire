@@ -1,4 +1,4 @@
-// GET /warp/v1/openapi.json (spec §3.3): the SDK serves spec/openapi.yaml as JSON, converted
+// GET /chargewire/v1/openapi.json (spec §3.3): the SDK serves spec/openapi.yaml as JSON, converted
 // at build time, without authentication, cacheable, and advertised in discovery. Each test
 // starts the SDK's server in this process with a backend that runs nothing.
 #include <gtest/gtest.h>
@@ -14,7 +14,7 @@
 #include <string>
 
 #include "openapi_document.hpp"
-#include "warpsql/server.hpp"
+#include "chargewire/server.hpp"
 
 namespace {
 
@@ -23,16 +23,16 @@ namespace beast = boost::beast;
 namespace http = boost::beast::http;
 namespace json = boost::json;
 
-class NoEngine : public warpsql::Backend {
+class NoEngine : public chargewire::Backend {
  public:
-  warpsql::ServerIdentity Identity() override { return {"openapi-test", "0"}; }
-  std::unique_ptr<warpsql::EngineSession> OpenSession(const warpsql::Principal&, const std::string&,
+  chargewire::ServerIdentity Identity() override { return {"openapi-test", "0"}; }
+  std::unique_ptr<chargewire::EngineSession> OpenSession(const chargewire::Principal&, const std::string&,
                                                       const json::object&) override {
-    throw warpsql::Error(warpsql::ErrorCode::kNotImplemented, "no engine");
+    throw chargewire::Error(chargewire::ErrorCode::kNotImplemented, "no engine");
   }
 };
 
-class NoSignIn : public warpsql::Authenticator {
+class NoSignIn : public chargewire::Authenticator {
  public:
   json::array GrantTypes() override { return {"password"}; }
 };
@@ -73,35 +73,35 @@ Answer Send(uint16_t port, http::verb method, const std::string& target,
 class OpenApi : public ::testing::Test {
  protected:
   void SetUp() override {
-    warpsql::ServerOptions options;
+    chargewire::ServerOptions options;
     options.host = "127.0.0.1";
-    server_ = std::make_unique<warpsql::Server>(std::move(options), std::make_shared<NoEngine>(),
+    server_ = std::make_unique<chargewire::Server>(std::move(options), std::make_shared<NoEngine>(),
                                                 std::make_shared<NoSignIn>());
     server_->Start();
     port_ = server_->port();
   }
   void TearDown() override { server_->Stop(); }
 
-  std::unique_ptr<warpsql::Server> server_;
+  std::unique_ptr<chargewire::Server> server_;
   uint16_t port_ = 0;
 };
 
 TEST_F(OpenApi, TheDocumentIsServedWithoutCredentials) {
-  const Answer answer = Send(port_, http::verb::get, "/warp/v1/openapi.json");
+  const Answer answer = Send(port_, http::verb::get, "/chargewire/v1/openapi.json");
   ASSERT_EQ(answer.status, 200) << answer.body;
   EXPECT_EQ(answer.headers.at("content-type"), "application/json");
   EXPECT_EQ(answer.headers.at("x-content-type-options"), "nosniff");
   EXPECT_NE(answer.headers.at("cache-control").find("max-age="), std::string::npos);
   EXPECT_EQ(answer.headers.at("cache-control").find("no-store"), std::string::npos);
-  EXPECT_EQ(answer.headers.at("etag"), warpsql::OpenApiEtag());
-  EXPECT_TRUE(answer.headers.contains("warp-request-id"));
-  EXPECT_EQ(answer.body, warpsql::OpenApiJson());
+  EXPECT_EQ(answer.headers.at("etag"), chargewire::OpenApiEtag());
+  EXPECT_TRUE(answer.headers.contains("chargewire-request-id"));
+  EXPECT_EQ(answer.body, chargewire::OpenApiJson());
 }
 
 TEST_F(OpenApi, TheDocumentIsOpenApi31WithEveryEndpoint) {
-  const json::object doc = json::parse(warpsql::OpenApiJson()).as_object();
+  const json::object doc = json::parse(chargewire::OpenApiJson()).as_object();
   EXPECT_TRUE(doc.at("openapi").as_string().starts_with("3.1."));
-  EXPECT_EQ(doc.at("info").at("title").as_string(), "Warp SQL");
+  EXPECT_EQ(doc.at("info").at("title").as_string(), "Chargewire");
   const json::object& paths = doc.at("paths").as_object();
   // Appendix B's 38 endpoints, on 34 paths; the conformance suite compares them one by one.
   EXPECT_EQ(paths.size(), 34u);
@@ -112,42 +112,42 @@ TEST_F(OpenApi, TheDocumentIsOpenApi31WithEveryEndpoint) {
     }
   }
   EXPECT_EQ(operations, 38u);
-  for (const char* path : {"/warp", "/warp/v1/health", "/warp/v1/openapi.json", "/warp/v1/auth/token",
-                           "/warp/v1/sessions/{session_id}/statements"}) {
+  for (const char* path : {"/chargewire", "/chargewire/v1/health", "/chargewire/v1/openapi.json", "/chargewire/v1/auth/token",
+                           "/chargewire/v1/sessions/{session_id}/statements"}) {
     EXPECT_TRUE(paths.contains(path)) << path;
   }
   EXPECT_EQ(doc.at("components").at("securitySchemes").at("bearerAuth").at("scheme").as_string(), "bearer");
   // The unauthenticated endpoints say so.
-  EXPECT_TRUE(paths.at("/warp/v1/openapi.json").at("get").at("security").as_array().empty());
+  EXPECT_TRUE(paths.at("/chargewire/v1/openapi.json").at("get").at("security").as_array().empty());
 }
 
 TEST_F(OpenApi, AMatchingEtagGets304) {
-  const std::string etag(warpsql::OpenApiEtag());
-  const Answer same = Send(port_, http::verb::get, "/warp/v1/openapi.json", {{"If-None-Match", etag}});
+  const std::string etag(chargewire::OpenApiEtag());
+  const Answer same = Send(port_, http::verb::get, "/chargewire/v1/openapi.json", {{"If-None-Match", etag}});
   EXPECT_EQ(same.status, 304);
   EXPECT_TRUE(same.body.empty());
   EXPECT_EQ(same.headers.at("etag"), etag);
-  const Answer listed = Send(port_, http::verb::get, "/warp/v1/openapi.json",
+  const Answer listed = Send(port_, http::verb::get, "/chargewire/v1/openapi.json",
                              {{"If-None-Match", "\"other\", " + etag}});
   EXPECT_EQ(listed.status, 304);
-  const Answer other = Send(port_, http::verb::get, "/warp/v1/openapi.json", {{"If-None-Match", "\"other\""}});
+  const Answer other = Send(port_, http::verb::get, "/chargewire/v1/openapi.json", {{"If-None-Match", "\"other\""}});
   EXPECT_EQ(other.status, 200);
-  EXPECT_EQ(other.body, warpsql::OpenApiJson());
+  EXPECT_EQ(other.body, chargewire::OpenApiJson());
 }
 
 TEST_F(OpenApi, OnlyGet) {
-  const Answer answer = Send(port_, http::verb::post, "/warp/v1/openapi.json");
+  const Answer answer = Send(port_, http::verb::post, "/chargewire/v1/openapi.json");
   EXPECT_EQ(answer.status, 405);
   EXPECT_NE(answer.body.find("\"method_not_allowed\""), std::string::npos);
 }
 
 TEST_F(OpenApi, DiscoveryAdvertisesIt) {
-  const Answer answer = Send(port_, http::verb::get, "/warp");
+  const Answer answer = Send(port_, http::verb::get, "/chargewire");
   ASSERT_EQ(answer.status, 200);
   const json::object doc = json::parse(answer.body).as_object();
   const json::array& capabilities = doc.at("capabilities").as_array();
   EXPECT_NE(std::find(capabilities.begin(), capabilities.end(), json::value("openapi")), capabilities.end());
-  EXPECT_EQ(doc.at("links").at("openapi").as_string(), "/warp/v1/openapi.json");
+  EXPECT_EQ(doc.at("links").at("openapi").as_string(), "/chargewire/v1/openapi.json");
 }
 
 }  // namespace

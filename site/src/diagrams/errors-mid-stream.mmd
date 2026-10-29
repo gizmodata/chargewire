@@ -1,8 +1,8 @@
 sequenceDiagram
   participant C as Client
-  participant S as Warp SQL server
+  participant S as Chargewire server
   C->>S: POST …/statements<br/>Accept: application/vnd.apache.arrow.stream
-  S-->>C: 200, Warp-Statement-Id:<br/>schema, batch 0, batch 1, …
+  S-->>C: 200, Chargewire-Statement-Id:<br/>schema, batch 0, batch 1, …
   Note over S: the statement fails<br/>at row 3,000,000
   S--xC: the body ends WITHOUT<br/>the end-of-stream marker
   Note over C: incomplete stream:<br/>the result failed

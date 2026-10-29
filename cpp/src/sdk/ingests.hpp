@@ -18,10 +18,10 @@
 #include "common.hpp"
 #include "signal.hpp"
 #include "upload.hpp"
-#include "warpsql/backend.hpp"
-#include "warpsql/errors.hpp"
+#include "chargewire/backend.hpp"
+#include "chargewire/errors.hpp"
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 class IngestOperation : public std::enable_shared_from_this<IngestOperation> {
  public:
@@ -32,7 +32,7 @@ class IngestOperation : public std::enable_shared_from_this<IngestOperation> {
 
   const std::string& id() const { return id_; }
   const IngestTarget& target() const { return target_; }
-  // The opening request's Warp-Query-Tag (spec §2.5), if it had one.
+  // The opening request's Chargewire-Query-Tag (spec §2.5), if it had one.
   const std::optional<boost::json::object>& query_tag() const { return query_tag_; }
   Signal& changed() { return changed_; }
 
@@ -109,4 +109,4 @@ class IngestOperation : public std::enable_shared_from_this<IngestOperation> {
   std::atomic<int64_t> next_index_ = 0;
 };
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

@@ -4,7 +4,7 @@
 #include <string>
 #include <string_view>
 
-namespace warpsql::detail {
+namespace chargewire::detail {
 
 // "<prefix>_" followed by 160 random bits in base32 (lower case).
 std::string NewId(std::string_view prefix);
@@ -21,4 +21,4 @@ bool ConstantTimeEquals(std::string_view a, std::string_view b);
 // Standard base64 with padding.
 std::string Base64(std::string_view data);
 
-}  // namespace warpsql::detail
+}  // namespace chargewire::detail

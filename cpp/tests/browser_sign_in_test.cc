@@ -15,8 +15,8 @@
 #include <thread>
 
 #include "browser_sign_in.hpp"
-#include "warpsql/client.hpp"
-#include "warpsql/server.hpp"
+#include "chargewire/client.hpp"
+#include "chargewire/server.hpp"
 
 namespace {
 
@@ -25,11 +25,11 @@ namespace beast = boost::beast;
 namespace http = boost::beast::http;
 namespace json = boost::json;
 
-using warpsql::Error;
-using warpsql::ErrorCode;
-using warpsql::Principal;
-using warpsql::detail::BrowserFlows;
-using warpsql::detail::ValidReturnTo;
+using chargewire::Error;
+using chargewire::ErrorCode;
+using chargewire::Principal;
+using chargewire::detail::BrowserFlows;
+using chargewire::detail::ValidReturnTo;
 
 ErrorCode CodeOf(const std::function<void()>& work) {
   try {
@@ -170,16 +170,16 @@ TEST(BrowserFlowTable, FlowsExpire) {
 
 // ---- The endpoints ----
 
-class NoEngine : public warpsql::Backend {
+class NoEngine : public chargewire::Backend {
  public:
-  warpsql::ServerIdentity Identity() override { return {"browser-sign-in-test", "0"}; }
-  std::unique_ptr<warpsql::EngineSession> OpenSession(const Principal&, const std::string&,
+  chargewire::ServerIdentity Identity() override { return {"browser-sign-in-test", "0"}; }
+  std::unique_ptr<chargewire::EngineSession> OpenSession(const Principal&, const std::string&,
                                                       const json::object&) override {
     throw Error(ErrorCode::kNotImplemented, "no engine");
   }
 };
 
-class NoSignIn : public warpsql::Authenticator {
+class NoSignIn : public chargewire::Authenticator {
  public:
   json::array GrantTypes() override { return {"password"}; }
 };
@@ -187,7 +187,7 @@ class NoSignIn : public warpsql::Authenticator {
 // Stands in for an identity provider: the "authorize URL" carries what the SDK gave it, and
 // the code decides the outcome ("good": alice, "refused": invalid_credentials, else a
 // failure to reach the provider).
-class FakeProvider : public warpsql::BrowserSignInProvider {
+class FakeProvider : public chargewire::BrowserSignInProvider {
  public:
   std::string DisplayName() override { return "Fake IdP"; }
   std::string AuthorizeUrl(const Authorization& a) override {
@@ -251,9 +251,9 @@ std::string QueryParam(const std::string& url, const std::string& name) {
 class BrowserSignInServer : public ::testing::Test {
  protected:
   void SetUp() override {
-    warpsql::ServerOptions options;
+    chargewire::ServerOptions options;
     options.browser_sign_in = provider_;
-    server_ = std::make_unique<warpsql::Server>(options, std::make_shared<NoEngine>(), std::make_shared<NoSignIn>());
+    server_ = std::make_unique<chargewire::Server>(options, std::make_shared<NoEngine>(), std::make_shared<NoSignIn>());
     server_->Start();
     port_ = server_->port();
   }
@@ -262,27 +262,27 @@ class BrowserSignInServer : public ::testing::Test {
     server_->Wait();
   }
   json::object NewFlow(const std::string& body = "") {
-    const Answer created = Send(port_, http::verb::post, "/warp/v1/auth/oauth/flows", body);
+    const Answer created = Send(port_, http::verb::post, "/chargewire/v1/auth/oauth/flows", body);
     EXPECT_EQ(created.status, 201) << created.body;
     EXPECT_EQ(created.headers.at("cache-control"), "no-store");
     return created.Json();
   }
   Answer Poll(const json::object& flow, const std::string& secret) {
-    return Send(port_, http::verb::post, "/warp/v1/auth/oauth/flows/" + std::string(flow.at("flow_id").as_string()),
+    return Send(port_, http::verb::post, "/chargewire/v1/auth/oauth/flows/" + std::string(flow.at("flow_id").as_string()),
                 json::serialize(json::object{{"poll_secret", secret}}));
   }
   Answer Callback(const json::object& flow, const std::string& query) {
     const std::string state = QueryParam(std::string(flow.at("authorize_url").as_string()), "state");
-    return Send(port_, http::verb::get, "/warp/v1/auth/oauth/callback?state=" + state + query);
+    return Send(port_, http::verb::get, "/chargewire/v1/auth/oauth/callback?state=" + state + query);
   }
 
   std::shared_ptr<FakeProvider> provider_ = std::make_shared<FakeProvider>();
-  std::unique_ptr<warpsql::Server> server_;
+  std::unique_ptr<chargewire::Server> server_;
   uint16_t port_ = 0;
 };
 
 TEST_F(BrowserSignInServer, DiscoveryAdvertisesItWithTheProvidersName) {
-  const auto doc = Send(port_, http::verb::get, "/warp").Json();
+  const auto doc = Send(port_, http::verb::get, "/chargewire").Json();
   const auto& capabilities = doc.at("capabilities").as_array();
   EXPECT_NE(std::find(capabilities.begin(), capabilities.end(), json::value("oauth_browser")), capabilities.end());
   EXPECT_EQ(doc.at("auth").at("oauth_browser").at("provider").as_string(), "Fake IdP");
@@ -329,7 +329,7 @@ TEST_F(BrowserSignInServer, ReturnToGetsTheFlowIdInTheFragmentOnly) {
   const Answer redirect = Callback(flow, "&code=good");
   EXPECT_EQ(redirect.status, 303);
   EXPECT_EQ(redirect.headers.at("location"),
-            "/ui/?tab=1#warp_oauth_flow=" + std::string(flow.at("flow_id").as_string()));
+            "/ui/?tab=1#chargewire_oauth_flow=" + std::string(flow.at("flow_id").as_string()));
   EXPECT_EQ(redirect.headers.at("referrer-policy"), "no-referrer");
   EXPECT_EQ(Poll(flow, std::string(flow.at("poll_secret").as_string())).Json().at("state").as_string(), "complete");
 }
@@ -338,13 +338,13 @@ TEST_F(BrowserSignInServer, ReturnToIsAbsoluteOnAConfiguredPublicOrigin) {
   provider_->origin = "https://db.example.com";
   const auto flow = NewFlow(R"({"return_to": "/ui/"})");
   EXPECT_EQ(Callback(flow, "&code=good").headers.at("location"),
-            "https://db.example.com/ui/#warp_oauth_flow=" + std::string(flow.at("flow_id").as_string()));
+            "https://db.example.com/ui/#chargewire_oauth_flow=" + std::string(flow.at("flow_id").as_string()));
 }
 
 TEST_F(BrowserSignInServer, OpenRedirectsAreRefused) {
   for (const char* bad : {"https://evil.example/", "//evil.example", "/\\evil.example", "/ui/#x", "javascript:x"}) {
     const Answer refused =
-        Send(port_, http::verb::post, "/warp/v1/auth/oauth/flows", json::serialize(json::object{{"return_to", bad}}));
+        Send(port_, http::verb::post, "/chargewire/v1/auth/oauth/flows", json::serialize(json::object{{"return_to", bad}}));
     EXPECT_EQ(refused.status, 400) << bad;
     EXPECT_EQ(refused.Json().at("code").as_string(), "invalid_return_to") << bad;
   }
@@ -372,55 +372,55 @@ TEST_F(BrowserSignInServer, FailuresAreReportedThroughThePoll) {
 
 TEST_F(BrowserSignInServer, MalformedPollsAndWrongMethods) {
   const auto flow = NewFlow();
-  const std::string target = "/warp/v1/auth/oauth/flows/" + std::string(flow.at("flow_id").as_string());
+  const std::string target = "/chargewire/v1/auth/oauth/flows/" + std::string(flow.at("flow_id").as_string());
   EXPECT_EQ(Send(port_, http::verb::post, target, "{}").Json().at("code").as_string(), "bad_request");
   EXPECT_EQ(Send(port_, http::verb::get, target).status, 405);
-  EXPECT_EQ(Send(port_, http::verb::get, "/warp/v1/auth/oauth/flows").status, 405);
-  EXPECT_EQ(Send(port_, http::verb::post, "/warp/v1/auth/oauth/callback").status, 405);
+  EXPECT_EQ(Send(port_, http::verb::get, "/chargewire/v1/auth/oauth/flows").status, 405);
+  EXPECT_EQ(Send(port_, http::verb::post, "/chargewire/v1/auth/oauth/callback").status, 405);
   EXPECT_EQ(Callback(flow, "&code=good").status, 200);
 }
 
-// The client library's browser sign-in (libwarpsql_client): `open` plays the browser.
+// The client library's browser sign-in (libchargewire_client): `open` plays the browser.
 TEST_F(BrowserSignInServer, ClientSignsInWithTheBrowser) {
-  warpsql::client::Client client({.host = "127.0.0.1", .port = port_});
-  EXPECT_EQ(warpsql::client::Client::BrowserSignInProviderName(client.Discover()), "Fake IdP");
+  chargewire::client::Client client({.host = "127.0.0.1", .port = port_});
+  EXPECT_EQ(chargewire::client::Client::BrowserSignInProviderName(client.Discover()), "Fake IdP");
   std::string opened;
   client.SignInWithBrowser([&](const std::string& url) {
     opened = url;
     const std::string state = QueryParam(url, "state");
-    EXPECT_EQ(Send(port_, http::verb::get, "/warp/v1/auth/oauth/callback?code=good&state=" + state).status, 200);
+    EXPECT_EQ(Send(port_, http::verb::get, "/chargewire/v1/auth/oauth/callback?code=good&state=" + state).status, 200);
   });
   EXPECT_TRUE(opened.starts_with("https://idp.example/authorize?"));
   EXPECT_TRUE(client.SignedIn());
 
   // Step by step: pending, then the provider's refusal as an error with its code.
-  warpsql::client::Client refused({.host = "127.0.0.1", .port = port_});
+  chargewire::client::Client refused({.host = "127.0.0.1", .port = port_});
   const auto flow = refused.StartBrowserSignIn();
   EXPECT_FALSE(refused.PollBrowserSignIn(flow));
-  Send(port_, http::verb::get, "/warp/v1/auth/oauth/callback?code=refused&state=" + QueryParam(flow.authorize_url, "state"));
+  Send(port_, http::verb::get, "/chargewire/v1/auth/oauth/callback?code=refused&state=" + QueryParam(flow.authorize_url, "state"));
   try {
     refused.PollBrowserSignIn(flow);
     ADD_FAILURE() << "no error";
-  } catch (const warpsql::client::Error& e) {
+  } catch (const chargewire::client::Error& e) {
     EXPECT_EQ(e.code(), "invalid_credentials");
     EXPECT_EQ(e.status(), 401);
   }
   try {
     refused.PollBrowserSignIn(flow);
     ADD_FAILURE() << "no error";
-  } catch (const warpsql::client::Error& e) {
+  } catch (const chargewire::client::Error& e) {
     EXPECT_EQ(e.code(), "flow_not_found");
   }
   EXPECT_FALSE(refused.SignedIn());
 }
 
 TEST(BrowserSignInOff, NotImplementedWithoutAProvider) {
-  warpsql::Server server(warpsql::ServerOptions{}, std::make_shared<NoEngine>(), std::make_shared<NoSignIn>());
+  chargewire::Server server(chargewire::ServerOptions{}, std::make_shared<NoEngine>(), std::make_shared<NoSignIn>());
   server.Start();
-  const Answer answer = Send(server.port(), http::verb::post, "/warp/v1/auth/oauth/flows", "{}");
+  const Answer answer = Send(server.port(), http::verb::post, "/chargewire/v1/auth/oauth/flows", "{}");
   EXPECT_EQ(answer.status, 501);
   EXPECT_EQ(answer.Json().at("code").as_string(), "not_implemented");
-  const auto doc = Send(server.port(), http::verb::get, "/warp").Json();
+  const auto doc = Send(server.port(), http::verb::get, "/chargewire").Json();
   EXPECT_FALSE(doc.at("auth").as_object().contains("oauth_browser"));
   server.Stop();
   server.Wait();

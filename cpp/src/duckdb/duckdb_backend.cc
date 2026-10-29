@@ -18,14 +18,14 @@
 #include "duckdb_sql.hpp"
 #include "duckdb_upload.hpp"
 
-namespace warpduckdb {
+namespace chargewire_duckdb {
 
 namespace json = boost::json;
 
 // How long a health check may run before it is interrupted.
 constexpr auto kHealthCheckLimit = std::chrono::seconds(10);
-using warpsql::Error;
-using warpsql::ErrorCode;
+using chargewire::Error;
+using chargewire::ErrorCode;
 
 DuckDBBackend::DuckDBBackend(Options options)
     : result_batch_rows_(options.result_batch_rows), read_only_(options.read_only),
@@ -84,16 +84,16 @@ DuckDBBackend::~DuckDBBackend() {
   environment_.reset();
 }
 
-warpsql::ServerIdentity DuckDBBackend::Identity() {
-  return {"warp-duckdb", "1.0.2 (DuckDB " + version_ + ")"};
+chargewire::ServerIdentity DuckDBBackend::Identity() {
+  return {"chargewire-duckdb", "1.0.2 (DuckDB " + version_ + ")"};
 }
 
-std::unique_ptr<warpsql::EngineSession> DuckDBBackend::NewSession(const warpsql::Principal&, const std::string&) {
+std::unique_ptr<chargewire::EngineSession> DuckDBBackend::NewSession(const chargewire::Principal&, const std::string&) {
   return std::make_unique<DuckDBSession>(instance_.get(), result_batch_rows_);
 }
 
-std::unique_ptr<warpsql::EngineSession> DuckDBBackend::OpenSession(
-    const warpsql::Principal& principal, const std::string& session_id, const json::object& options) {
+std::unique_ptr<chargewire::EngineSession> DuckDBBackend::OpenSession(
+    const chargewire::Principal& principal, const std::string& session_id, const json::object& options) {
   auto session = NewSession(principal, session_id);
   if (!options.empty()) {
     auto errors = session->SetOptions(options);
@@ -141,7 +141,7 @@ void DuckDBBackend::CheckHealth() {
   RunSql(health_connection_.get(), health_query_);
 }
 
-warpsql::BackendCapabilities DuckDBBackend::Capabilities() {
+chargewire::BackendCapabilities DuckDBBackend::Capabilities() {
   return {.prepared_statements = true, .transactions = true, .ingest = true};
 }
 
@@ -151,7 +151,7 @@ json::object DuckDBBackend::ServerInfo() {
   return {{"server_read_only", read_only_}, {"duckdb_version", version_}};
 }
 
-warpsql::Principal StaticPasswordAuthenticator::AuthenticatePassword(std::string_view username,
+chargewire::Principal StaticPasswordAuthenticator::AuthenticatePassword(std::string_view username,
                                                                      std::string_view password) {
   // Compare digests, so neither the time taken nor the comparison length depends on
   // where the inputs differ.
@@ -170,20 +170,20 @@ warpsql::Principal StaticPasswordAuthenticator::AuthenticatePassword(std::string
   if (!user_ok || !password_ok) {
     throw Error(ErrorCode::kInvalidCredentials, "the user name or password is not correct");
   }
-  return warpsql::Principal{std::string(username), "admin", "password", {}, {}, {}};
+  return chargewire::Principal{std::string(username), "admin", "password", {}, {}, {}};
 }
 
-warpsql::Principal StaticPasswordAuthenticator::AuthenticateCertificate(
-    std::string_view identity, const warpsql::ClientCertificate&) {
+chargewire::Principal StaticPasswordAuthenticator::AuthenticateCertificate(
+    std::string_view identity, const chargewire::ClientCertificate&) {
   for (const auto& allowed : certificate_identities_) {
-    if (warpsql::CertificateIdentitiesMatch(allowed, identity)) {
-      return warpsql::Principal{allowed, "admin", "client_certificate", {}, {}, {}};
+    if (chargewire::CertificateIdentitiesMatch(allowed, identity)) {
+      return chargewire::Principal{allowed, "admin", "client_certificate", {}, {}, {}};
     }
   }
   // A URI identity (a SPIFFE ID) differing from an allowed one only in case is another
   // identity: URI paths are case-sensitive.
   for (const auto& allowed : certificate_identities_) {
-    if (warpsql::IsUriIdentity(identity) && allowed.size() == identity.size() &&
+    if (chargewire::IsUriIdentity(identity) && allowed.size() == identity.size() &&
         std::equal(allowed.begin(), allowed.end(), identity.begin(), [](char a, char b) {
           return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
         })) {
@@ -197,4 +197,4 @@ warpsql::Principal StaticPasswordAuthenticator::AuthenticateCertificate(
                   "' may not sign in on this server");
 }
 
-}  // namespace warpduckdb
+}  // namespace chargewire_duckdb
