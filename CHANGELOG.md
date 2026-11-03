@@ -7,6 +7,17 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-11-03
+
+### Changed
+
+- The C++ SDK builds with Arrow C++ 26.0.1 (`cpp/scripts/build-arrow.sh`), Arrow's patch release
+  of 2026-11-03, instead of 26.0.0. Among its fixes, reading an invalid map array from an IPC
+  stream no longer crashes (apache/arrow GH-54936), and MSVC builds no longer define `__SSE2__`
+  globally (GH-51690). Arrow's bundled zstd, LZ4, uriparser and xsimd are unchanged. The
+  conformance suite needs pyarrow 26.0.1 or later. The protocol is unchanged (protocol version
+  1); the specification changes only its version number.
+
 ## [2.0.1] - 2026-10-29
 
 ### Fixed

@@ -25,7 +25,7 @@
 
 ```bash
 ./scripts/build-duckdb.sh     # DuckDB 2.0 at the pinned commit (about 10 minutes)
-./scripts/build-arrow.sh      # Arrow C++ 26.0.0, IPC only (about 30 seconds)
+./scripts/build-arrow.sh      # Arrow C++ 26.0.1, IPC only (about 30 seconds)
 OPENSSL_ROOT_DIR=$(brew --prefix openssl@3) cmake -S . -B build -G Ninja
 cmake --build build
 ```

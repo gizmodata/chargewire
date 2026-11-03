@@ -4,7 +4,7 @@
 # compute, no Parquet, no filesystems. For comparing against nanoarrow.
 set -euo pipefail
 
-ARROW_TAG=apache-arrow-26.0.0
+ARROW_TAG=apache-arrow-26.0.1
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # CHARGEWIRE_DEPS_DIR lets another project build these into its own directory.
