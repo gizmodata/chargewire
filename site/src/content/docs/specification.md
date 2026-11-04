@@ -1,6 +1,6 @@
 ---
 title: Specification
-description: "The Chargewire protocol, version 1 (specification 2.0.2): SQL over HTTP with Arrow IPC streams."
+description: "The Chargewire protocol, version 1 (specification 2.1.0): SQL over HTTP with Arrow IPC streams."
 editUrl: https://github.com/gizmodata/chargewire/edit/main/spec/chargewire.md
 tableOfContents:
   maxHeadingLevel: 3
@@ -12,7 +12,7 @@ tableOfContents:
 This page is [`spec/chargewire.md`](https://github.com/gizmodata/chargewire/blob/main/spec/chargewire.md), rendered as it is. Its endpoints are also described for tools in the [OpenAPI document](/reference/openapi/).
 :::
 
-**Status:** 2.0.2 (2026-11-03), the specification's version, which is Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
+**Status:** 2.1.0 (2026-11-04), the specification's version, which is Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
 addition ([§12](#12-versioning)).
 
 Chargewire is an open protocol for running SQL against a database server over plain
@@ -1360,6 +1360,13 @@ SQL `LIKE` syntax (`%`, `_`, `\` escape), as in Flight SQL.
 | `exported-keys` | `catalog`, `db_schema`, `table` | `CommandGetExportedKeys` (same columns) |
 | `cross-reference` | `pk_catalog`, `pk_db_schema`, `pk_table`, `fk_catalog`, `fk_db_schema`, `fk_table` | `CommandGetCrossReference` (same columns) |
 | `type-info` | `data_type` | `CommandGetXdbcTypeInfo` |
+
+`db_schema_name` is the schema's name. A schema nested in another (an engine that nests
+schemas, as DuckDB 2.0 does: `CREATE SCHEMA sales.payroll`) is named by its path from the
+top, `sales.payroll`, each part written quoted when it contains a dot or a double quote
+(`"sales.payroll"` is a top-level schema of that name). The text is the schema's name as
+SQL takes it between the catalog and the table, and the filter patterns and `db_schema`
+parameters match that text; a client that needs the parts splits it at the unquoted dots.
 
 `table_schema` (when `include_schema=true`) is the table's Arrow schema serialized as
 an IPC message, with the same per-field metadata keys Flight SQL defines

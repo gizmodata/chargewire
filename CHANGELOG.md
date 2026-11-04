@@ -7,6 +7,11 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-11-04
+
+Protocol version 1 is unchanged: these are additions, and one change to when a session counts as
+idle (§5.7) that a client which waits on or polls its statements does not notice.
+
 ### Changed
 
 - **A running statement no longer keeps an idle session alive by itself (spec §5.7).** A
