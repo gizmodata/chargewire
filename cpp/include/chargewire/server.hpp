@@ -12,6 +12,8 @@
 #include <utility>
 #include <vector>
 
+#include <boost/asio/awaitable.hpp>
+
 #include "chargewire/backend.hpp"
 
 namespace chargewire {
@@ -98,6 +100,71 @@ struct SecurityEvent {
   // address and certificate) that were not reported one by one. Each source gets its
   // first ten events a minute in full, then one summary a minute.
   int64_t suppressed = 0;
+};
+
+// ---- Application endpoints ----
+//
+// An application's own HTTP endpoints beside the protocol's, on the same listener (so the
+// same origin, TLS certificate and tokens): a web UI's relay to other servers, say. Each is
+// a path prefix outside /chargewire; a request under it goes to the endpoint's handler, a
+// coroutine on an I/O thread, with its body streamed (never read whole) and an answer that
+// may stream too. The plain handler (below) answers only GET and HEAD, whole, and comes
+// after these.
+
+// A request body, read on demand in pieces.
+class AppBody {
+ public:
+  virtual ~AppBody() = default;
+  // The next piece, or nullopt at the body's end. Throws when the connection fails.
+  virtual boost::asio::awaitable<std::optional<std::string>> Next() = 0;
+};
+
+// Writes a streamed answer's body, one HTTP chunk per call.
+class AppBodyWriter {
+ public:
+  virtual ~AppBodyWriter() = default;
+  virtual boost::asio::awaitable<void> Write(std::string_view bytes) = 0;
+  // True once the client has closed or reset the connection (without blocking or reading).
+  virtual bool ClientGone() = 0;
+};
+
+struct AppRequest {
+  std::string method;  // "GET", "POST", ...
+  std::string path;    // percent-decoded, without the query
+  std::string target;  // as received: the path and query, percent-encoded
+  std::vector<std::pair<std::string, std::string>> headers;  // as received
+  // The client's address (ServerOptions::trusted_proxies applied), for logs only.
+  std::string peer;
+  // The principal of the request's bearer token, when it carries a valid one (an invalid
+  // one is refused before the handler runs, whatever AppEndpoint::requires_token says).
+  std::optional<Principal> principal;
+  // The body, streamed; null for a request without one. A handler that answers without
+  // reading it to the end closes the connection after its answer.
+  std::shared_ptr<AppBody> body;
+
+  // The first value of header `name` (ASCII case-insensitive), or empty.
+  std::string_view Header(std::string_view name) const;
+};
+
+struct AppResponse {
+  int status = 200;
+  std::string content_type;
+  std::vector<std::pair<std::string, std::string>> headers;
+  std::string body;
+  // Set: the body streams instead. Runs after the headers are sent; returning true ends the
+  // body normally, false or a throw drops the connection without the final chunk (the
+  // client sees an incomplete body).
+  std::function<boost::asio::awaitable<bool>(AppBodyWriter&)> stream;
+};
+
+using AppHandler = std::function<boost::asio::awaitable<AppResponse>(AppRequest&)>;
+
+struct AppEndpoint {
+  std::string prefix;  // e.g. "/ui/v1/remotes/": every path starting with it is the endpoint's
+  // A request without a bearer token is refused (401 invalid_token) before the handler.
+  // false: the handler decides, with AppRequest::principal when the request carried one.
+  bool requires_token = true;
+  AppHandler handler;
 };
 
 // A GET or HEAD request outside the protocol's paths (anything not under /chargewire), which an
@@ -205,6 +272,9 @@ struct ServerOptions {
   // Told about every SecurityEvent (log it, audit it). Called on an I/O thread: keep it short.
   std::function<void(const SecurityEvent&)> on_security_event;
 
+  // The application's own endpoints (above), on the main listener; the first whose prefix
+  // matches takes the request. Checked before plain_handler.
+  std::vector<AppEndpoint> app_endpoints;
   // Answers GET and HEAD requests outside /chargewire on the main listener (not the health
   // port). Unset: they get 404, as any unknown path.
   PlainHandler plain_handler;

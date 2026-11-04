@@ -43,6 +43,14 @@ spec's version is the repository's version.
 - `EngineSession::Ending(reason)`: the SDK tells the engine why it is destroying a session it
   ended itself (`"idle"`, `"idle_in_transaction"`) right before destroying it, so an engine's
   session log can record it.
+- C++ SDK: `ServerOptions::app_endpoints`, an application's own HTTP endpoints beside the
+  protocol's on the same listener (the same origin, TLS certificate and tokens): each is a path
+  prefix outside `/chargewire` whose handler runs as a coroutine with the request body streamed
+  (`AppBody`, never read whole) and an answer that may stream too (`AppResponse::stream`,
+  `AppBodyWriter`). A bearer token on such a request is validated as the protocol validates it
+  (`AppRequest::principal`), and `AppEndpoint::requires_token` refuses a request without one. A
+  CORS preflight stays the server's; the plain handler (GET and HEAD, whole) comes after.
+  Hardcharger's web UI relays other servers through one. Test: `tests/app_endpoint_test.cc`.
 
 ## [2.0.2] - 2026-11-03
 
