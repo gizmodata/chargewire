@@ -55,8 +55,12 @@ class Server::Impl {
                RetainedQuota(options.retained_bytes_per_principal)},
         api_(state_),
         limits_{state_.options.max_header_bytes, state_.options.max_json_body_bytes,
-                // Bulk ingest streams its body; everything else is read up front.
-                [](const Request& request) {
+                // Bulk ingest streams its body, and so does everything under an
+                // application endpoint; everything else is read up front.
+                [this](const Request& request) {
+                  for (const auto& endpoint : state_.options.app_endpoints) {
+                    if (request.path.starts_with(endpoint.prefix)) return true;
+                  }
                   // and so do a partitioned ingest's parts (spec §8.3)
                   return request.method == http::verb::post &&
                          (request.path.ends_with("/ingest") ||

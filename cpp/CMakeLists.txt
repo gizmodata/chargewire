@@ -221,7 +221,7 @@ if(CHARGEWIRE_BUILD_TESTS)
                  tests/statements_test.cc tests/plain_handler_test.cc tests/browser_sign_in_test.cc
                  tests/statement_ids_test.cc tests/openapi_test.cc
                  tests/forwarded_test.cc tests/session_authority_test.cc tests/upload_limits_test.cc
-                 tests/legacy_dialect_test.cc)
+                 tests/legacy_dialect_test.cc tests/app_endpoint_test.cc)
   target_include_directories(chargewire-sdk-tests PRIVATE src/sdk)
   target_link_libraries(chargewire-sdk-tests PRIVATE chargewire chargewire_client GTest::gtest_main)
 endif()

@@ -77,6 +77,7 @@ bool ParseTarget(std::string_view target, Request& request) {
     return false;
   }
   request.path = url->path();
+  request.target = std::string(target);
   for (const auto& param : url->params()) {
     request.query[param.key] = param.has_value ? param.value : std::string();
   }

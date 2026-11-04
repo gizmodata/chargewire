@@ -60,6 +60,8 @@ class Api {
 
  private:
   Task<Response> Route(Request& request);
+  // An application endpoint's request (ServerOptions::app_endpoints).
+  Task<Response> AppRoute(Request& request, const AppEndpoint& endpoint);
 
   Task<Response> Discovery(Request& request);
   Task<Response> Health(Request& request);

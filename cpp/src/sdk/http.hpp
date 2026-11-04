@@ -27,6 +27,7 @@ struct Request {
   http::verb method = http::verb::unknown;
   std::string path;                          // decoded, without the query
   std::map<std::string, std::string> query;  // decoded parameters
+  std::string target;                        // as received (path and query, encoded)
   http::fields headers;
   std::string body;                         // when the body is read up front
   std::shared_ptr<BodySource> body_source;  // when it streams (see HttpLimits::streams_body)

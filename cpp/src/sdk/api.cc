@@ -343,6 +343,15 @@ Task<Response> Api::Handle(Request& request) {
 }
 
 Task<Response> Api::Route(Request& request) {
+  // The application's own endpoints (options.app_endpoints): the first whose prefix matches.
+  // OPTIONS stays the server's (a CORS preflight, answered below).
+  if (request.method != http::verb::options) {
+    for (const auto& endpoint : state_.options.app_endpoints) {
+      if (request.path.starts_with(endpoint.prefix)) {
+        co_return co_await AppRoute(request, endpoint);
+      }
+    }
+  }
   // GET and HEAD outside /chargewire: the application's, if it answers (options.plain_handler).
   if (state_.options.plain_handler &&
       (request.method == http::verb::get || request.method == http::verb::head)) {
@@ -2283,9 +2292,91 @@ Task<Response> Api::DeleteStatement(Request& request, const std::string& session
   co_return NoContent();
 }
 
+namespace {
+
+// The request's body as the application reads it: the streamed source, or (a body the
+// HTTP layer read whole, which app endpoints never get, but keep it right) the string once.
+class AppBodyAdapter : public AppBody {
+ public:
+  AppBodyAdapter(std::shared_ptr<BodySource> source, std::string whole)
+      : source_(std::move(source)), whole_(std::move(whole)) {}
+
+  Task<std::optional<std::string>> Next() override {
+    if (source_) co_return co_await source_->Next();
+    if (whole_.empty() || given_) co_return std::nullopt;
+    given_ = true;
+    co_return std::move(whole_);
+  }
+
+ private:
+  std::shared_ptr<BodySource> source_;
+  std::string whole_;
+  bool given_ = false;
+};
+
+class AppWriterAdapter : public AppBodyWriter {
+ public:
+  explicit AppWriterAdapter(BodyWriter& writer) : writer_(writer) {}
+  Task<void> Write(std::string_view bytes) override { co_await writer_.Write(bytes); }
+  bool ClientGone() override { return writer_.ClientGone(); }
+
+ private:
+  BodyWriter& writer_;
+};
+
+}  // namespace
+
+Task<Response> Api::AppRoute(Request& request, const AppEndpoint& endpoint) {
+  auto app = std::make_shared<AppRequest>();
+  app->method = std::string(http::to_string(request.method));
+  app->path = request.path;
+  app->target = request.target;
+  app->peer = request.peer;
+  for (const auto& field : request.headers) {
+    app->headers.emplace_back(std::string(field.name_string()), std::string(field.value()));
+  }
+  // A bearer token is checked whenever there is one; whether there must be one is the
+  // endpoint's choice.
+  if (!request.Header("Authorization").empty()) {
+    app->principal = Authenticate(request, false);
+  } else if (endpoint.requires_token) {
+    throw Error(ErrorCode::kInvalidToken, "this endpoint needs a bearer token");
+  }
+  if (request.body_source || !request.body.empty()) {
+    app->body = std::make_shared<AppBodyAdapter>(request.body_source, std::move(request.body));
+  }
+  AppResponse answer = co_await endpoint.handler(*app);
+  Response response;
+  response.status = static_cast<http::status>(answer.status);
+  response.content_type = std::move(answer.content_type);
+  response.headers = std::move(answer.headers);
+  if (answer.stream) {
+    // The request (its body source) lives as long as the answer streams.
+    response.stream = [app, stream = std::move(answer.stream)](BodyWriter& writer) -> Task<bool> {
+      AppWriterAdapter adapter(writer);
+      co_return co_await stream(adapter);
+    };
+  } else {
+    response.body = std::move(answer.body);
+  }
+  co_return response;
+}
+
 }  // namespace chargewire::detail
 
 namespace chargewire {
+
+std::string_view AppRequest::Header(std::string_view name) const {
+  for (const auto& [key, value] : headers) {
+    if (key.size() == name.size() &&
+        std::equal(key.begin(), key.end(), name.begin(), [](char a, char b) {
+          return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+        })) {
+      return value;
+    }
+  }
+  return {};
+}
 
 std::string_view PlainRequest::Header(std::string_view name) const {
   for (const auto& [key, value] : headers) {
