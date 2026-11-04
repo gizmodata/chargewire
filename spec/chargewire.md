@@ -1349,6 +1349,13 @@ SQL `LIKE` syntax (`%`, `_`, `\` escape), as in Flight SQL.
 | `cross-reference` | `pk_catalog`, `pk_db_schema`, `pk_table`, `fk_catalog`, `fk_db_schema`, `fk_table` | `CommandGetCrossReference` (same columns) |
 | `type-info` | `data_type` | `CommandGetXdbcTypeInfo` |
 
+`db_schema_name` is the schema's name. A schema nested in another (an engine that nests
+schemas, as DuckDB 2.0 does: `CREATE SCHEMA sales.payroll`) is named by its path from the
+top, `sales.payroll`, each part written quoted when it contains a dot or a double quote
+(`"sales.payroll"` is a top-level schema of that name). The text is the schema's name as
+SQL takes it between the catalog and the table, and the filter patterns and `db_schema`
+parameters match that text; a client that needs the parts splits it at the unquoted dots.
+
 `table_schema` (when `include_schema=true`) is the table's Arrow schema serialized as
 an IPC message, with the same per-field metadata keys Flight SQL defines
 (`ARROW:FLIGHT:SQL:TYPE_NAME`, `…:PRECISION`, `…:SCALE`, `…:REMARKS`, …). A field is

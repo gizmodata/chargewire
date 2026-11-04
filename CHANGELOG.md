@@ -21,6 +21,14 @@ spec's version is the repository's version.
   statement (`cancel_reason: session_closed`) and the engine session's destruction rolls the
   transaction back. A client that polls a long statement less often than `idle_timeout_s`
   now loses its session; the SDK's default is 900 s.
+- Metadata names a nested schema by its path (spec §10). An engine that nests schemas (DuckDB
+  2.0's `CREATE SCHEMA sales.payroll`) lists it as `sales.payroll` in `db-schemas`, `tables`,
+  `primary-keys`, `imported-keys`, `exported-keys`, `cross-reference` and the per-field
+  `ARROW:FLIGHT:SQL:DB_SCHEMA_NAME`, a part quoted when it contains a dot or a double quote, and
+  the schema filters match that text. Before, the reference server listed a nested schema by its
+  leaf name alone (two schemas called `payroll`, with no way to tell `sales.payroll` from
+  `hr.payroll`, or either from a top-level schema named `"sales.payroll"`). Top-level schemas
+  without a dot or quote in their name are listed as before.
 
 ### Added
 
