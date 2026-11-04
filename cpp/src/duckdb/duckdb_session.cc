@@ -487,6 +487,23 @@ std::shared_ptr<arrow::RecordBatchReader> TypeInfo(std::optional<int32_t> data_t
 
 }  // namespace
 
+// Every schema by catalog and oid, with the name the metadata calls give it (spec §10):
+// a schema's own name, or, for a schema nested in another (DuckDB 2.0), its path, each
+// part written quoted when it contains a dot or a double quote. DuckDB's listings give a
+// schema's leaf name and its parent's oid only, so the path is built from the root down.
+// The listing is read once (MATERIALIZED): an attached database of another kind may list
+// its schemas with a round trip.
+constexpr const char* kSchemaPaths =
+    "WITH RECURSIVE schemas AS MATERIALIZED ("
+    "SELECT database_name, oid, parent_schema_oid, "
+    "CASE WHEN schema_name LIKE '%.%' OR schema_name LIKE '%\"%' "
+    "THEN '\"' || replace(schema_name, '\"', '\"\"') || '\"' ELSE schema_name END AS part "
+    "FROM duckdb_schemas()), "
+    "schema_paths AS ("
+    "SELECT database_name, oid, part AS path FROM schemas WHERE parent_schema_oid IS NULL "
+    "UNION ALL SELECT s.database_name, s.oid, p.path || '.' || s.part FROM schemas s "
+    "JOIN schema_paths p ON s.database_name = p.database_name AND s.parent_schema_oid = p.oid) ";
+
 std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::Metadata(
     MetadataKind kind, const chargewire::MetadataFilter& filter) {
   if (kind == MetadataKind::kTypeInfo) {
@@ -516,10 +533,10 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::Metadata(
     case MetadataKind::kDbSchemas:
       text("catalog", filter.catalog);
       text("schema", filter.db_schema);
-      sql = "SELECT catalog_name, schema_name AS db_schema_name "
-            "FROM information_schema.schemata "
-            "WHERE ($catalog IS NULL OR catalog_name = $catalog) "
-            "AND ($schema IS NULL OR schema_name LIKE $schema ESCAPE '\\') ORDER BY 1, 2";
+      sql = std::string(kSchemaPaths) +
+            "SELECT database_name AS catalog_name, path AS db_schema_name FROM schema_paths "
+            "WHERE ($catalog IS NULL OR database_name = $catalog) "
+            "AND ($schema IS NULL OR path LIKE $schema ESCAPE '\\') ORDER BY 1, 2";
       break;
     case MetadataKind::kTables: {
       std::optional<std::string> types;
@@ -530,12 +547,19 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::Metadata(
       text("schema", filter.db_schema);
       text("table", filter.table);
       text("types", types);
-      sql = "SELECT table_catalog AS catalog_name, table_schema AS db_schema_name, table_name, "
-            "table_type FROM information_schema.tables "
-            "WHERE ($catalog IS NULL OR table_catalog = $catalog) "
-            "AND ($schema IS NULL OR table_schema LIKE $schema ESCAPE '\\') "
-            "AND ($table IS NULL OR table_name LIKE $table ESCAPE '\\') "
-            "AND ($types IS NULL OR list_contains(string_split($types, ','), table_type)) "
+      // information_schema.tables, with each schema's path (nested schemas) in its place.
+      sql = std::string(kSchemaPaths) +
+            ", tables AS (SELECT database_name, schema_oid, table_name, "
+            "CASE WHEN temporary THEN 'LOCAL TEMPORARY' ELSE 'BASE TABLE' END AS table_type "
+            "FROM duckdb_tables() UNION ALL SELECT database_name, schema_oid, view_name, 'VIEW' "
+            "FROM duckdb_views()) "
+            "SELECT t.database_name AS catalog_name, p.path AS db_schema_name, t.table_name, "
+            "t.table_type FROM tables t JOIN schema_paths p "
+            "ON p.database_name = t.database_name AND p.oid = t.schema_oid "
+            "WHERE ($catalog IS NULL OR t.database_name = $catalog) "
+            "AND ($schema IS NULL OR p.path LIKE $schema ESCAPE '\\') "
+            "AND ($table IS NULL OR t.table_name LIKE $table ESCAPE '\\') "
+            "AND ($types IS NULL OR list_contains(string_split($types, ','), t.table_type)) "
             "ORDER BY 1, 2, 3, 4";
       break;
     }
@@ -547,15 +571,18 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::Metadata(
       text("catalog", filter.catalog);
       text("schema", filter.db_schema);
       text("table", filter.table);
-      sql = "SELECT catalog_name, db_schema_name, table_name, column_name, key_name, "
+      sql = std::string(kSchemaPaths) +
+            "SELECT catalog_name, db_schema_name, table_name, column_name, key_name, "
             "CAST(key_sequence AS INTEGER) AS key_sequence FROM ("
-            "SELECT database_name AS catalog_name, schema_name AS db_schema_name, table_name, "
-            "unnest(constraint_column_names) AS column_name, constraint_name AS key_name, "
-            "unnest(range(1, len(constraint_column_names) + 1)) AS key_sequence "
-            "FROM duckdb_constraints() WHERE constraint_type = 'PRIMARY KEY' "
-            "AND ($table IS NULL OR table_name = $table) "
-            "AND ($catalog IS NULL OR database_name = $catalog) "
-            "AND ($schema IS NULL OR schema_name = $schema)) ORDER BY 1, 2, 3, 5, 6";
+            "SELECT c.database_name AS catalog_name, p.path AS db_schema_name, c.table_name, "
+            "unnest(c.constraint_column_names) AS column_name, c.constraint_name AS key_name, "
+            "unnest(range(1, len(c.constraint_column_names) + 1)) AS key_sequence "
+            "FROM duckdb_constraints() c JOIN schema_paths p "
+            "ON p.database_name = c.database_name AND p.oid = c.schema_oid "
+            "WHERE c.constraint_type = 'PRIMARY KEY' "
+            "AND ($table IS NULL OR c.table_name = $table) "
+            "AND ($catalog IS NULL OR c.database_name = $catalog) "
+            "AND ($schema IS NULL OR p.path = $schema)) ORDER BY 1, 2, 3, 5, 6";
       break;
     case MetadataKind::kImportedKeys:
     case MetadataKind::kExportedKeys:
@@ -565,39 +592,41 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::Metadata(
         text("catalog", filter.catalog);
         text("schema", filter.db_schema);
         text("table", filter.table);
-        where = "($table IS NULL OR table_name = $table) "
-                "AND ($catalog IS NULL OR database_name = $catalog) "
-                "AND ($schema IS NULL OR schema_name = $schema)";
+        where = "($table IS NULL OR c.table_name = $table) "
+                "AND ($catalog IS NULL OR c.database_name = $catalog) "
+                "AND ($schema IS NULL OR p.path = $schema)";
       } else if (kind == MetadataKind::kExportedKeys) {
         text("catalog", filter.catalog);
         text("schema", filter.db_schema);
         text("table", filter.table);
-        where = "referenced_table = $table AND ($catalog IS NULL OR database_name = $catalog) "
-                "AND ($schema IS NULL OR schema_name = $schema)";
+        where = "c.referenced_table = $table AND ($catalog IS NULL OR c.database_name = $catalog) "
+                "AND ($schema IS NULL OR p.path = $schema)";
       } else {
         text("pk_table", filter.table);
         text("fk_table", filter.fk_table);
         text("pk_catalog", filter.catalog);
         text("pk_schema", filter.db_schema);
-        where = "referenced_table = $pk_table AND table_name = $fk_table "
-                "AND ($pk_catalog IS NULL OR database_name = $pk_catalog) "
-                "AND ($pk_schema IS NULL OR schema_name = $pk_schema)";
+        where = "c.referenced_table = $pk_table AND c.table_name = $fk_table "
+                "AND ($pk_catalog IS NULL OR c.database_name = $pk_catalog) "
+                "AND ($pk_schema IS NULL OR p.path = $pk_schema)";
       }
       const std::string order =
           kind == MetadataKind::kImportedKeys ? "1, 2, 3, 11, 9" : "5, 6, 7, 10, 9";
-      sql = "SELECT pk_catalog_name, pk_db_schema_name, pk_table_name, pk_column_name, "
+      sql = std::string(kSchemaPaths) +
+            "SELECT pk_catalog_name, pk_db_schema_name, pk_table_name, pk_column_name, "
             "fk_catalog_name, fk_db_schema_name, fk_table_name, fk_column_name, "
             "CAST(key_sequence AS INTEGER) AS key_sequence, fk_key_name, "
             "NULL::VARCHAR AS pk_key_name, CAST(3 AS UTINYINT) AS update_rule, "
             "CAST(3 AS UTINYINT) AS delete_rule FROM ("
-            "SELECT database_name AS pk_catalog_name, schema_name AS pk_db_schema_name, "
-            "referenced_table AS pk_table_name, "
-            "unnest(referenced_column_names) AS pk_column_name, "
-            "database_name AS fk_catalog_name, schema_name AS fk_db_schema_name, "
-            "table_name AS fk_table_name, unnest(constraint_column_names) AS fk_column_name, "
-            "unnest(range(1, len(constraint_column_names) + 1)) AS key_sequence, "
-            "constraint_name AS fk_key_name FROM duckdb_constraints() "
-            "WHERE constraint_type = 'FOREIGN KEY' AND " + where + ") ORDER BY " + order;
+            "SELECT c.database_name AS pk_catalog_name, p.path AS pk_db_schema_name, "
+            "c.referenced_table AS pk_table_name, "
+            "unnest(c.referenced_column_names) AS pk_column_name, "
+            "c.database_name AS fk_catalog_name, p.path AS fk_db_schema_name, "
+            "c.table_name AS fk_table_name, unnest(c.constraint_column_names) AS fk_column_name, "
+            "unnest(range(1, len(c.constraint_column_names) + 1)) AS key_sequence, "
+            "c.constraint_name AS fk_key_name FROM duckdb_constraints() c JOIN schema_paths p "
+            "ON p.database_name = c.database_name AND p.oid = c.schema_oid "
+            "WHERE c.constraint_type = 'FOREIGN KEY' AND " + where + ") ORDER BY " + order;
       break;
     }
   }
@@ -631,10 +660,10 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::TablesWithSchemas(
     const std::string catalog = catalogs->GetString(row);
     const std::string schema = schemas->GetString(row);
     const std::string table = names->GetString(row);
-    // The table's Arrow schema, with the Flight SQL per-field metadata drivers read.
-    auto table_schema = QueryArrow(connection_.get(), "SELECT * FROM " +
-                                                          QualifiedName({catalog, schema, table}) +
-                                                          " LIMIT 0")
+    // The table's Arrow schema, with the Flight SQL per-field metadata drivers read. The
+    // schema's name is already written as SQL takes it (a nested schema's path).
+    auto table_schema = QueryArrow(connection_.get(), "SELECT * FROM " + QualifiedName({catalog}) + "." +
+                                                          schema + "." + QualifiedName({table}) + " LIMIT 0")
                             ->schema();
     // What the catalog says about each column, beyond its Arrow type.
     struct Column {
@@ -654,10 +683,12 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::TablesWithSchemas(
       for (const auto& value : bound) handles.push_back(value.get());
       auto described = QueryArrow(
           connection_.get(),
-          "SELECT column_name, data_type, is_nullable, numeric_precision, numeric_scale, "
-          "column_default, numeric_precision_radix, COLUMN_COMMENT "
-          "FROM information_schema.columns WHERE table_catalog = $c "
-          "AND table_schema = $s AND table_name = $t ORDER BY ordinal_position",
+          std::string(kSchemaPaths) +
+              "SELECT c.column_name, c.data_type, CASE WHEN c.is_nullable THEN 'YES' ELSE 'NO' END, "
+              "c.numeric_precision, c.numeric_scale, c.column_default, c.numeric_precision_radix, "
+              "c.comment FROM duckdb_columns() c JOIN schema_paths p "
+              "ON p.database_name = c.database_name AND p.oid = c.schema_oid "
+              "WHERE c.database_name = $c AND p.path = $s AND c.table_name = $t ORDER BY c.column_index",
           {"c", "s", "t"}, handles);
       auto rows = described->ToTable();
       described.reset();
