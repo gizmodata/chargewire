@@ -7,6 +7,35 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Changed
+
+- **A running statement no longer keeps an idle session alive by itself (spec §5.7).** A
+  request waiting on a statement (`Prefer: wait` on a submit or a status request), a read of a
+  result, a bulk ingest in progress and an unexpired retained result keep a session, as before;
+  a statement that runs with no request waiting on it or reading it does not. A client that is
+  there polls its statement and is heard from within `idle_timeout_s`; one whose process was
+  killed mid-write kept its session, and with it the write's open transaction, alive for as
+  long as the statement ran (a 9-hour `MERGE` on a Hardcharger server, whose uncommitted
+  transaction then blocked every later run until an administrator killed the session,
+  gizmodata/hardcharger#26). When the idle sweep evicts such a session, the SDK cancels the
+  statement (`cancel_reason: session_closed`) and the engine session's destruction rolls the
+  transaction back. A client that polls a long statement less often than `idle_timeout_s`
+  now loses its session; the SDK's default is 900 s.
+
+### Added
+
+- **An idle-in-transaction timeout (spec §5.7), like PostgreSQL's
+  `idle_in_transaction_session_timeout`.** `ServerOptions::idle_in_transaction_timeout` (0, off,
+  by default; the reference server's `--idle-in-transaction-timeout-seconds`) ends a session that
+  holds a transaction open with nothing running and no request for that long, rolling the
+  transaction back; the session's next request gets `session_ended` with the new reason
+  `idle_in_transaction` (§5.6, `chargewire::reason::kIdleInTransaction`). An engine sets it per
+  session with `EngineSession::IdleInTransactionTimeout()` (nullopt: the server's). The session
+  document carries the session's limit as `idle_in_transaction_timeout_s`.
+- `EngineSession::Ending(reason)`: the SDK tells the engine why it is destroying a session it
+  ended itself (`"idle"`, `"idle_in_transaction"`) right before destroying it, so an engine's
+  session log can record it.
+
 ## [2.0.2] - 2026-11-03
 
 ### Changed

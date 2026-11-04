@@ -2,6 +2,7 @@
 
 #include <openssl/crypto.h>
 
+#include <format>
 #include <thread>
 
 #include "api.hpp"
@@ -262,7 +263,25 @@ class Server::Impl {
                               state_.options.max_finished_statements_per_session);
       if (session->CloseIfIdle(idle_cutoff, CancelReason::kSessionClosed)) {
         state_.sessions.Remove(session->id());
-        net::post(session->strand(), [session] { session->DestroyEngine(); });
+        net::post(session->strand(), [session] { session->DestroyEngine("idle"); });
+        continue;
+      }
+      // Idle in a transaction (spec §5.7): ended with a reason, as EndSession() ends one,
+      // so its owner's next request learns why (session_ended) instead of session_not_found.
+      const auto in_transaction =
+          session->IdleInTransactionTimeout().value_or(state_.options.idle_in_transaction_timeout);
+      if (in_transaction > std::chrono::seconds(0)) {
+        const Error why = Error::SessionEnded(
+            reason::kIdleInTransaction,
+            std::format("the session held a transaction open with nothing running for {} s "
+                        "(idle_in_transaction_timeout) and was ended; its transaction was rolled back",
+                        in_transaction.count()));
+        if (session->EndIfIdleInTransaction(Clock::now() - in_transaction, why)) {
+          state_.sessions.Retire(session->id(), session->owner(), why,
+                                 Clock::now() + std::max<Clock::duration>(state_.options.session_idle_timeout,
+                                                                          std::chrono::minutes(15)));
+          net::post(session->strand(), [session] { session->DestroyEngine("idle_in_transaction"); });
+        }
       }
     }
   }

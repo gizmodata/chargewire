@@ -143,6 +143,11 @@ struct ServerOptions {
 
   std::chrono::seconds token_lifetime{3600};
   std::chrono::seconds session_idle_timeout{900};
+  // A session that holds a transaction open with no request and nothing running for this
+  // long is ended (session_ended, reason idle_in_transaction) and its transaction rolled
+  // back, as PostgreSQL's idle_in_transaction_session_timeout does. 0: never. The engine's
+  // EngineSession::IdleInTransactionTimeout() overrides it per session.
+  std::chrono::seconds idle_in_transaction_timeout{0};
   std::chrono::seconds result_ttl{3600};
   // A finished statement is forgotten this long after it ends (and once its retained
   // result has expired), or sooner when its session holds more finished statements

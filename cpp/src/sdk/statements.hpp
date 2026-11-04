@@ -128,6 +128,11 @@ class Statement {
   bool WaitingForReader() const;
   // A read of the result (any partition) has started and not ended.
   bool ReadInProgress() const;
+  // A request waiting on the statement (a submit or status long-poll, a result read
+  // waiting for the outcome) is in flight: while one is, the client is there (spec §5.7).
+  void BeginWait();
+  void EndWait();
+  bool WaitInProgress() const;
   // True when the statement has finished at least `keep` ago, nobody is reading it,
   // and any retained result has expired: the session may forget it.
   bool Forgettable(WallClock::time_point now, std::chrono::seconds keep) const;
@@ -209,6 +214,7 @@ class Statement {
   bool abandoned_ = false;  // unretained, reader gone: batches are counted, not kept
   bool abandon_pending_ = false;  // abandoned before the outcome was known
   bool waiting_for_reader_ = false;
+  int waiters_ = 0;  // requests waiting on the statement (BeginWait)
   // Expired (or released): no new read may start. The batches stay for the reads that had
   // started until the last one ends, unless the result was released.
   bool expired_ = false;

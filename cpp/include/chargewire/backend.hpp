@@ -247,6 +247,19 @@ class EngineSession {
   // no timeout. Safe from any thread.
   virtual std::optional<std::chrono::milliseconds> DefaultStatementTimeout();
 
+  // How long this session may hold a transaction open with nothing running and no request
+  // before the server ends it (session_ended, reason idle_in_transaction, spec §5.6 and
+  // §5.7), e.g. a value the session chose with SQL. nullopt: the server's
+  // ServerOptions::idle_in_transaction_timeout applies; zero: never. Safe from any thread.
+  virtual std::optional<std::chrono::seconds> IdleInTransactionTimeout() { return std::nullopt; }
+
+  // The server is about to destroy this session because it ended it itself: `reason` is
+  // "idle" (no request for ServerOptions::session_idle_timeout, spec §5.7) or
+  // "idle_in_transaction" (IdleInTransactionTimeout). Called on the session's engine thread,
+  // right before the session is destroyed, so an engine that records why its sessions end
+  // (a session log) can. The default ignores it.
+  virtual void Ending(std::string_view reason) { (void)reason; }
+
   // Applies session options; returns the ones that failed, by name.
   virtual OptionErrors SetOptions(const boost::json::object& options);
   // The session's current options.
