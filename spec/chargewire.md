@@ -579,7 +579,8 @@ session.
   "session_id": "s_8f3k…",
   "options": {"catalog": "lake", "schema": "analytics", "autocommit": true},
   "transaction": "none",
-  "idle_timeout_s": 900
+  "idle_timeout_s": 900,
+  "idle_in_transaction_timeout_s": 0
 }
 ```
 
@@ -680,6 +681,7 @@ code `session_ended` and a `reason` field in the problem document (§11), one of
 | `principal_dropped` | The principal was dropped or disabled |
 | `token_revoked` | The token the session was opened with was revoked |
 | `token_expired` | The token the session was opened with expired, and the session could do nothing more without it (for example a scoped token's session) |
+| `idle_in_transaction` | The session held a transaction open with nothing running and no request for `idle_in_transaction_timeout_s` (§5.7); the server ended it and rolled the transaction back |
 
 The token is checked before the session (§4.2), and the events that end a session for
 `credentials_changed`, `principal_dropped`, `token_revoked` or `token_expired` usually
@@ -693,16 +695,33 @@ The session is gone either way, and only the client can decide to start a new on
 `session_ended` with `credentials_changed`, `principal_dropped`, `token_revoked` or
 `token_expired`, the client MUST get a new access token before it creates a new session
 (the old one no longer stands, or no longer carries what the session needed). After
-`killed`, or a `reason` it doesn't know, it MAY create a new session with the token it
-has.
+`killed`, `idle_in_transaction`, or a `reason` it doesn't know, it MAY create a new session
+with the token it has.
 
 ### 5.7 Idle sessions
 
-A session with no request and no running statement for `idle_timeout_s` MAY be
-evicted. A running statement, or a retained result not yet expired, keeps a session
-alive. A request still in progress counts as a request until its response ends, so a read
-of one of the session's results that is under way, however slowly the client reads, keeps
-it alive too (an unretained result's last batches go out after its statement has finished).
+A session with no request for `idle_timeout_s` MAY be evicted. A request still in
+progress counts as a request until its response ends: a submit or status request waiting
+on a statement (`Prefer: wait`, §6.1, §6.3), or a read of one of the session's results
+that is under way, however slowly the client reads, keeps the session alive (an unretained
+result's last batches go out after its statement has finished). So does a retained result
+not yet expired (§6.5), and a bulk ingest in progress (§8).
+
+A running statement that no request is waiting on or reading does not by itself keep the
+session alive: a client that is there polls the statement, and is heard from within
+`idle_timeout_s`; one that is gone (its connection dropped mid-wait, its process killed)
+must not keep the session, and with it a write's open transaction, alive for as long as
+the statement runs. When such a session is evicted, its running statement is cancelled
+(`cancel_reason: session_closed`) and its transaction rolled back. A client that polls a
+long statement less often than `idle_timeout_s` loses its session.
+
+A server MAY also end a session that holds a transaction open (§5.5) with nothing running
+and no request for `idle_in_transaction_timeout_s`, as PostgreSQL's
+`idle_in_transaction_session_timeout` does: the transaction is rolled back, and the
+session's next request gets `session_ended` with reason `idle_in_transaction` (§5.6). A
+session document's `idle_in_transaction_timeout_s` is that limit for the session, `0` when
+the server has none. A retained result does not keep such a session: the transaction's
+locks are what the limit is for.
 
 ## 6. Statements
 

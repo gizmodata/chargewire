@@ -66,6 +66,9 @@ inline constexpr const char* kCredentialsChanged = "credentials_changed";
 inline constexpr const char* kPrincipalDropped = "principal_dropped";
 inline constexpr const char* kTokenRevoked = "token_revoked";
 inline constexpr const char* kTokenExpired = "token_expired";
+// session_ended only: the session held a transaction open with nothing running past
+// the idle-in-transaction timeout (ServerOptions::idle_in_transaction_timeout, §5.7).
+inline constexpr const char* kIdleInTransaction = "idle_in_transaction";
 }  // namespace reason
 
 // The stable machine-readable name ("permission_denied").

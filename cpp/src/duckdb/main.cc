@@ -6,7 +6,8 @@
 //       [--mtls-certificate-sign-in --mtls-admin-identities A,B] [--mtls-require-identity-match[=BOOL]]
 //       [--mtls-crl-allow-missing-ca-crls]
 //       [--cors-origin ORIGIN]... [--drain-seconds N] [--token-lifetime-seconds N]
-//       [--session-idle-timeout-seconds N] [--finished-statement-ttl-seconds N]
+//       [--session-idle-timeout-seconds N] [--idle-in-transaction-timeout-seconds N]
+//       [--finished-statement-ttl-seconds N]
 //       [--health-check-query SQL] [--result-retention-seconds N]
 //       [--oauth-issuer URL --oauth-client-id ID --oauth-identities A,B [--oauth-scopes S]
 //        [--oauth-base-url URL] [--oauth-redirect-uri URL] [--oauth-provider-name NAME] [--oauth-max-flows N]]
@@ -55,7 +56,8 @@ struct Flags {
             << "       [--mtls-certificate-sign-in --mtls-admin-identities A,B]\n"
             << "       [--mtls-require-identity-match[=BOOL]] [--mtls-crl-allow-missing-ca-crls]\n"
             << "       [--cors-origin ORIGIN]... [--drain-seconds N] [--token-lifetime-seconds N]\n"
-            << "       [--session-idle-timeout-seconds N] [--finished-statement-ttl-seconds N]\n"
+            << "       [--session-idle-timeout-seconds N] [--idle-in-transaction-timeout-seconds N]\n"
+            << "       [--finished-statement-ttl-seconds N]\n"
             << "       [--health-check-query SQL] [--result-retention-seconds N]\n"
             << "       [--oauth-issuer URL --oauth-client-id ID --oauth-identities A,B [--oauth-scopes S]\n"
             << "        [--oauth-base-url URL] [--oauth-redirect-uri URL] [--oauth-provider-name NAME] [--oauth-max-flows N]]\n";
@@ -120,6 +122,8 @@ Flags ParseFlags(int argc, char** argv) {
       flags.server.token_lifetime = std::chrono::seconds(std::stoi(value()));
     else if (flag == "--session-idle-timeout-seconds")
       flags.server.session_idle_timeout = std::chrono::seconds(std::stoi(value()));
+    else if (flag == "--idle-in-transaction-timeout-seconds")
+      flags.server.idle_in_transaction_timeout = std::chrono::seconds(std::stoi(value()));
     else if (flag == "--finished-statement-ttl-seconds")
       flags.server.finished_statement_ttl = std::chrono::seconds(std::stoi(value()));
     else if (flag == "--oauth-issuer") flags.oauth.issuer = value();

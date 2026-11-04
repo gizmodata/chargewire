@@ -10,6 +10,9 @@
 #include <boost/asio/thread_pool.hpp>
 #include <chrono>
 #include <memory>
+#include <optional>
+#include <string>
+#include <utility>
 
 #include <arrow/api.h>
 
@@ -99,12 +102,106 @@ TEST_F(SessionLifetime, AClosedSessionTakesNoNewStatementOrIngest) {
   EXPECT_TRUE(session->Ingests().empty());
 }
 
-// A statement that is still running keeps an otherwise idle session open (§5.7).
-TEST_F(SessionLifetime, ARunningStatementKeepsTheSessionOpen) {
+// A request waiting on a running statement (a submit or status long-poll) keeps an
+// otherwise idle session open: the client is there (§5.7). Once no request waits on the
+// statement and nobody reads it, the statement itself keeps nothing: the client is gone
+// (its connection dropped mid-wait, its process killed), and a write it left running must
+// not hold the session, and the write's transaction, open for as long as it runs. The
+// close cancels the statement.
+TEST_F(SessionLifetime, ARunningStatementKeepsTheSessionOpenOnlyWhileARequestWaitsOnIt) {
   auto session = NewSession();
-  session->AddStatement(NewStatement("q_running"));
+  auto statement = NewStatement("q_running");
+  session->AddStatement(statement);
+  EXPECT_TRUE(statement->BeginRunning());
+  statement->BeginWait();
   EXPECT_FALSE(session->CloseIfIdle(Clock::now() + std::chrono::seconds(1), CancelReason::kSessionClosed));
   EXPECT_FALSE(session->closed());
+  statement->EndWait();
+  EXPECT_FALSE(session->CloseIfIdle(Clock::now() - std::chrono::hours(1), CancelReason::kSessionClosed))
+      << "a request was made within the window";
+  EXPECT_TRUE(session->CloseIfIdle(Clock::now() + std::chrono::seconds(1), CancelReason::kSessionClosed));
+  EXPECT_TRUE(session->closed());
+  EXPECT_TRUE(statement->CancelRequested()) << "the abandoned statement is cancelled with its session";
+}
+
+// An engine whose session holds a transaction, for the idle-in-transaction rule.
+class FakeEngine : public chargewire::EngineSession {
+ public:
+  chargewire::TransactionState transaction = chargewire::TransactionState::kNone;
+  std::optional<std::chrono::seconds> idle_in_transaction;
+  std::string* ending = nullptr;  // outlives the engine, which DestroyEngine destroys
+  chargewire::TransactionState Transaction() override { return transaction; }
+  std::optional<std::chrono::seconds> IdleInTransactionTimeout() override { return idle_in_transaction; }
+  void Ending(std::string_view reason) override {
+    if (ending) *ending = std::string(reason);
+  }
+};
+
+// A session that holds a transaction open with nothing running and no request since the
+// cutoff is ended with the error given (§5.7): its next request gets it, and the engine
+// hears why it is destroyed. Work under way, or a request waiting on it, keeps it.
+TEST_F(SessionLifetime, IdleInATransactionEndsTheSessionWithItsReason) {
+  auto session = NewSession();
+  auto engine = std::make_unique<FakeEngine>();
+  std::string ending;
+  engine->ending = &ending;
+  engine->transaction = chargewire::TransactionState::kOpen;
+  session->SetEngine(std::move(engine));
+  session->RefreshTransaction();
+  const Error why = Error::SessionEnded(chargewire::reason::kIdleInTransaction, "idle in a transaction");
+  const auto past = Clock::now() + std::chrono::seconds(1);  // every request was before this
+  EXPECT_FALSE(session->EndIfIdleInTransaction(Clock::now() - std::chrono::hours(1), why))
+      << "a request was made within the window";
+  auto statement = NewStatement("q_running");
+  session->AddStatement(statement);
+  EXPECT_TRUE(statement->BeginRunning());
+  EXPECT_FALSE(session->EndIfIdleInTransaction(past, why)) << "a statement is running";
+  statement->Finish();
+  statement->BeginWait();
+  EXPECT_FALSE(session->EndIfIdleInTransaction(past, why)) << "a request waits on a statement";
+  statement->EndWait();
+  EXPECT_FALSE(session->CloseIfIdle(Clock::now() - std::chrono::hours(1), CancelReason::kSessionClosed));
+  EXPECT_TRUE(session->EndIfIdleInTransaction(past, why));
+  EXPECT_TRUE(session->closed());
+  try {
+    session->Touch();
+    FAIL() << "expected session_ended";
+  } catch (const Error& error) {
+    EXPECT_EQ(error.code(), ErrorCode::kSessionEnded);
+    EXPECT_EQ(error.reason(), chargewire::reason::kIdleInTransaction);
+  }
+  EXPECT_FALSE(session->EndIfIdleInTransaction(past, why)) << "ended once";
+  session->DestroyEngine("idle_in_transaction");
+  EXPECT_EQ(ending, "idle_in_transaction");
+}
+
+// A session in no transaction is never idle in one, however long it has been quiet; the
+// idle rule (CloseIfIdle) is the one for it. Aborted transactions count as open ones: they
+// hold what an open one holds until they are rolled back.
+TEST_F(SessionLifetime, OnlyASessionInATransactionIsIdleInOne) {
+  for (const auto [transaction, ends] : {std::pair{chargewire::TransactionState::kNone, false},
+                                         std::pair{chargewire::TransactionState::kOpen, true},
+                                         std::pair{chargewire::TransactionState::kAborted, true}}) {
+    auto session = NewSession();
+    auto engine = std::make_unique<FakeEngine>();
+    engine->transaction = transaction;
+    session->SetEngine(std::move(engine));
+    session->RefreshTransaction();
+    const Error why = Error::SessionEnded(chargewire::reason::kIdleInTransaction, "idle in a transaction");
+    EXPECT_EQ(session->EndIfIdleInTransaction(Clock::now() + std::chrono::seconds(1), why), ends)
+        << chargewire::TransactionStateName(transaction);
+  }
+}
+
+// The engine's per-session timeout is the session's; without an engine (or an answer)
+// the server's default applies (nullopt).
+TEST_F(SessionLifetime, TheEngineSetsTheSessionsIdleInTransactionTimeout) {
+  auto session = NewSession();
+  EXPECT_EQ(session->IdleInTransactionTimeout(), std::nullopt);
+  auto engine = std::make_unique<FakeEngine>();
+  engine->idle_in_transaction = std::chrono::seconds(42);
+  session->SetEngine(std::move(engine));
+  EXPECT_EQ(session->IdleInTransactionTimeout(), std::chrono::seconds(42));
 }
 
 // A finished statement whose result is still being read keeps the session open: an

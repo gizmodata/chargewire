@@ -28,8 +28,10 @@ class Session {
   // The engine session. Only touch it on strand(); see Interrupt() and Progress().
   EngineSession& engine();
   void SetEngine(std::unique_ptr<EngineSession> engine);
-  // Destroys the engine session. Call on strand(), after Close().
-  void DestroyEngine();
+  // Destroys the engine session. Call on strand(), after Close(). `reason`, when the
+  // server ended the session itself (idle eviction, the idle-in-transaction timeout),
+  // is told to the engine first (EngineSession::Ending), so it can record why.
+  void DestroyEngine(std::string_view reason = {});
 
   // Safe from any thread while the engine is busy. `reason`: the cancel_reason it is for
   // (EngineSession::Cancel).
@@ -43,6 +45,9 @@ class Session {
   bool IsRunning(const Statement* statement) const;
   std::optional<double> Progress();
   std::optional<std::chrono::milliseconds> DefaultStatementTimeout();
+  // The session's own idle-in-transaction timeout (EngineSession::IdleInTransactionTimeout);
+  // nullopt: the server's applies. Safe from any thread.
+  std::optional<std::chrono::seconds> IdleInTransactionTimeout();
   // Throws session_ended when the engine ended the session (EngineSession::CheckEnded).
   // Safe from any thread.
   void CheckEnded();
@@ -130,6 +135,12 @@ class Session {
   // finds it closed (session_not_found); it never gets a session closed under it, its
   // result stream cut mid-body. Returns whether it closed it.
   bool CloseIfIdle(Clock::time_point cutoff, CancelReason reason);
+  // Ends the session with `why` (session_ended, spec §5.6) if it has held a transaction
+  // open with no request since `cutoff` and nothing under way: no statement queued or
+  // running, no request waiting on one, no result being read, no ingest in progress.
+  // One step under the session's lock, as CloseIfIdle() is. Its transaction is rolled
+  // back when the engine session goes (DestroyEngine). Returns whether it ended it.
+  bool EndIfIdleInTransaction(Clock::time_point cutoff, const Error& why);
   bool closed() const;
 
  private:
@@ -156,6 +167,7 @@ class Session {
   std::optional<Error> ended_;  // End()'s error
 
   bool IdleLocked(Clock::time_point cutoff) const;  // mutex_ held
+  bool IdleInTransactionLocked(Clock::time_point cutoff) const;  // mutex_ held
   void Teardown(CancelReason reason);              // after closed_ and torn_down_ were set
   void ThrowIfClosedLocked() const;                // mutex_ held
 };

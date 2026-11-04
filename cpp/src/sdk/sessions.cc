@@ -90,7 +90,7 @@ void Session::SetEngine(std::unique_ptr<EngineSession> engine) {
   engine_ = std::move(engine);
 }
 
-void Session::DestroyEngine() {
+void Session::DestroyEngine(std::string_view reason) {
   std::unique_ptr<EngineSession> engine;
   std::map<std::string, std::shared_ptr<PreparedStatement>> prepared;
   {
@@ -102,6 +102,7 @@ void Session::DestroyEngine() {
     std::lock_guard lock(engine_mutex_);
     engine = std::move(engine_);
   }
+  if (engine && !reason.empty()) engine->Ending(reason);
   // Destroyed outside the lock: closing an engine session can take a while.
 }
 
@@ -137,6 +138,11 @@ std::optional<double> Session::Progress() {
 std::optional<std::chrono::milliseconds> Session::DefaultStatementTimeout() {
   std::lock_guard lock(engine_mutex_);
   return engine_ ? engine_->DefaultStatementTimeout() : std::nullopt;
+}
+
+std::optional<std::chrono::seconds> Session::IdleInTransactionTimeout() {
+  std::lock_guard lock(engine_mutex_);
+  return engine_ ? engine_->IdleInTransactionTimeout() : std::nullopt;
 }
 
 void Session::CheckEnded() {
@@ -347,16 +353,51 @@ bool Session::IdleLocked(Clock::time_point cutoff) const {
     if (!ingest->Finished()) return false;  // an ingest in progress (it expires on its own)
   }
   for (const auto& [id, statement] : statements_) {
-    // A statement still running keeps the session alive, unless it is only waiting
-    // for someone to read an unretained result. So does a retained result until it
-    // expires (spec §5.7), and a read of a result in progress, however slow: it is a
-    // request that hasn't ended, and evicting the session would cut its stream (a
-    // finished unretained result still has up to unretained_buffer_bytes to send).
-    if ((!statement->IsTerminal() && !statement->WaitingForReader()) ||
-        statement->HoldsRetainedResult() || statement->ReadInProgress()) {
+    // A request about a statement that is under way counts as a request until its
+    // response ends (spec §5.7): a wait on its outcome or its status, or a read of its
+    // result, however slow (a finished unretained result still has up to
+    // unretained_buffer_bytes to send, and evicting the session would cut the stream).
+    // A retained result keeps the session until it expires. A statement that runs with
+    // nobody waiting on it or reading it does not: a client that is there polls it, and
+    // is heard from within the window; one that is gone (its connection dropped
+    // mid-wait, its process killed) must not keep the session, and a write's open
+    // transaction with it, alive for as long as the statement runs. Once the session
+    // closes, the statement is cancelled and the transaction rolled back.
+    if (statement->HoldsRetainedResult() || statement->ReadInProgress() || statement->WaitInProgress()) {
       return false;
     }
   }
+  return true;
+}
+
+bool Session::IdleInTransactionLocked(Clock::time_point cutoff) const {
+  if (transaction_ == TransactionState::kNone || last_activity_ > cutoff) {
+    return false;
+  }
+  for (const auto& [id, ingest] : ingests_) {
+    if (!ingest->Finished()) return false;
+  }
+  for (const auto& [id, statement] : statements_) {
+    // Work under way, or a request about it in flight, is activity. A retained result is
+    // not: the transaction's locks are what the timeout is for.
+    if (!statement->IsTerminal() || statement->ReadInProgress() || statement->WaitInProgress()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool Session::EndIfIdleInTransaction(Clock::time_point cutoff, const Error& why) {
+  {
+    std::lock_guard lock(mutex_);
+    if (closed_ || !IdleInTransactionLocked(cutoff)) {
+      return false;
+    }
+    closed_ = true;
+    ended_ = why;
+    torn_down_ = true;
+  }
+  Teardown(CancelReason::kSessionClosed);
   return true;
 }
 
