@@ -58,7 +58,7 @@ struct ConnectOptions {
   std::chrono::milliseconds connect_timeout{10000};
   // How long to keep sending a request again that the server answers with server_resuming
   // (spec §11.2: a stopped server starting again), waiting its Retry-After (3 s when it
-  // sends none, at most 60 s) between attempts; then the call throws that error. Every
+  // sends none, at least 1 s, at most 60 s) between attempts; then the call throws that error. Every
   // request but discovery and health, the sign-in included; a request whose body streams
   // (an ingest, Arrow parameters) is not sent again. 0: no retry.
   std::chrono::seconds resume_timeout{600};

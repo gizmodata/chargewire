@@ -252,7 +252,7 @@ TEST(Resuming, TheSignInAndTheSessionAreSentAgainUntilTheServerAnswers) {
   EXPECT_EQ(waits.waits(), std::vector<std::chrono::milliseconds>(5, 2000ms));
 }
 
-TEST(Resuming, WaitsRetryAfterThreeSecondsWithoutOneAndAtMostSixty) {
+TEST(Resuming, WaitsRetryAfterThreeSecondsWithoutOneAtLeastOneAndAtMostSixty) {
   RecordedWaits waits;
   StubServer stub([](const Seen& s, int nth) {
     if (Is(s, "GET", "/chargewire")) return Discovery();
@@ -265,13 +265,13 @@ TEST(Resuming, WaitsRetryAfterThreeSecondsWithoutOneAndAtMostSixty) {
         answer.headers["Retry-After"] = "Wed, 21 Oct 2026 07:28:00 GMT";  // not an integer: 3 s
         return answer;
       }
-      case 4: return Resuming("0");
+      case 4: return Resuming("0");     // less than 1: 1
       default: return Token();
     }
   });
   wc::Client client(stub.Options());
   client.SignInWithPassword("joe", "pw");
-  EXPECT_EQ(waits.waits(), (std::vector<std::chrono::milliseconds>{3000ms, 7000ms, 60000ms, 3000ms, 0ms}));
+  EXPECT_EQ(waits.waits(), (std::vector<std::chrono::milliseconds>{3000ms, 7000ms, 60000ms, 3000ms, 1000ms}));
   EXPECT_EQ(wc::detail::ResumeWait(" 12 "), 12000ms);
   EXPECT_EQ(wc::detail::ResumeWait("-1"), 3000ms);
   EXPECT_EQ(wc::detail::ResumeWait("99999999999999"), 3000ms);

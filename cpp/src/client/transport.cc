@@ -115,6 +115,8 @@ bool IsTlsError(const boost::system::error_code& ec) {
 
 constexpr auto kDefaultResumeWait = std::chrono::seconds(3);
 constexpr auto kMaxResumeWait = std::chrono::seconds(60);
+// Whatever Retry-After says: a "0" must not send requests back to back for the whole resume timeout.
+constexpr auto kMinResumeWait = std::chrono::seconds(1);
 
 std::mutex resume_sleep_mutex;
 std::function<void(std::chrono::milliseconds)> resume_sleep;  // tests only
@@ -155,7 +157,7 @@ std::chrono::milliseconds ResumeWait(std::string_view retry_after) {
     return kDefaultResumeWait;
   }
   const auto seconds = std::chrono::seconds(std::stol(std::string(retry_after)));
-  return std::min<std::chrono::milliseconds>(seconds, kMaxResumeWait);
+  return std::clamp<std::chrono::milliseconds>(seconds, kMinResumeWait, kMaxResumeWait);
 }
 
 void SetResumeSleepForTesting(std::function<void(std::chrono::milliseconds)> sleep) {

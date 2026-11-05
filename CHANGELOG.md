@@ -16,13 +16,13 @@ spec's version is the repository's version.
   retry after 5 s". The request had no effect, so a client sends the same request again,
   the sign-in included. An answer may be held up to 25 s, so a client's request timeout,
   sign-in included, must be at least 30 s. Clients wait `Retry-After` (3 s when it is
-  missing, at most 60 s) and repeat until a resume deadline, 600 s by default (0: no
+  missing, at least 1 s and at most 60 s) and repeat until a resume deadline, 600 s by default (0: no
   retry), then report the error with its detail. The OpenAPI document requires the code's
   `503`; the conformance suite holds every `server_resuming` answer it receives to a `503`
   with an integer `Retry-After`, never to discovery or health.
 - C++ client: sends a request again while the server answers `server_resuming` (spec §11.2),
   every request but discovery and health, the sign-in included, waiting `Retry-After` each
-  time (3 s without one, at most 60 s), until `ConnectOptions::resume_timeout` (600 s by
+  time (3 s without one, at least 1 s, at most 60 s), until `ConnectOptions::resume_timeout` (600 s by
   default; 0: no retry) and, for a request with a time limit of its own (closing a session,
   a cancel), that limit; then the call throws the `server_resuming` error with the server's
   detail and how long it waited. A request whose body streams (an ingest, Arrow parameters)

@@ -1503,8 +1503,9 @@ code `server_resuming`, and a detail such as "the server is resuming; retry afte
   30 seconds, or a held request fails although the server is on its way.
 
 A client SHOULD wait `Retry-After` seconds (3 when the header is missing or not an integer,
-and at most 60), then send the same request again, the sign-in included, and repeat until a
-resume deadline passes, and then report the last `server_resuming` error with its `detail`.
+at least 1, so that `Retry-After: 0` doesn't send requests back to back, and at most 60),
+then send the same request again, the sign-in included, and repeat until a resume deadline
+passes, and then report the last `server_resuming` error with its `detail`.
 The deadline SHOULD be configurable, 600 seconds by default (a server whose machine must be
 started first can take several minutes), with `0` meaning no retry. A request with a time
 limit of its own (closing a session as the client exits, a cancel) stops retrying at that
