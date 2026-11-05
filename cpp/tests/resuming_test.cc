@@ -9,8 +9,10 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <arrow/api.h>
@@ -441,4 +443,78 @@ TEST(Resuming, ASignInHeldTwentyFiveSecondsIsAnswered) {
   client.SignInWithPassword("joe", "pw");
   EXPECT_GE(std::chrono::steady_clock::now() - started, 25s);
   EXPECT_EQ(client.access_token(), "t0k");
+}
+
+// on_resuming hears each wait as it starts and about once a second after (a countdown an
+// application can show), with the attempt, the time left, the time spent and the server's
+// detail; the request goes on as without it.
+TEST(Resuming, TheProgressCallbackHearsEachWaitSecondBySecond) {
+  RecordedWaits waits;
+  StubServer stub([](const Seen& s, int nth) {
+    if (Is(s, "GET", "/chargewire")) return Discovery();
+    return nth < 2 ? Resuming(nth == 0 ? "3" : "1") : Token();
+  });
+  auto options = stub.Options();
+  std::vector<wc::ResumeProgress> heard;
+  options.on_resuming = [&](const wc::ResumeProgress& progress) {
+    heard.push_back(progress);
+    return true;
+  };
+  wc::Client client(options);
+  client.SignInWithPassword("joe", "pw");
+  EXPECT_EQ(client.access_token(), "t0k");
+  ASSERT_EQ(heard.size(), 4u);  // 3 s as 3, 2, 1; then 1 s as 1
+  const std::vector<std::pair<int, std::chrono::milliseconds>> expected = {
+      {1, 3000ms}, {1, 2000ms}, {1, 1000ms}, {2, 1000ms}};
+  for (size_t i = 0; i < heard.size(); ++i) {
+    EXPECT_EQ(heard[i].attempt, expected[i].first) << i;
+    EXPECT_EQ(heard[i].retry_in, expected[i].second) << i;
+    EXPECT_EQ(heard[i].resume_timeout, 600000ms) << i;
+    EXPECT_GE(heard[i].elapsed.count(), 0) << i;
+    // The detail of the answer being waited out.
+    const std::string retry = expected[i].first == 1 ? "retry after 3 s" : "retry after 1 s";
+    EXPECT_NE(heard[i].detail.find(retry), std::string::npos) << i << ": " << heard[i].detail;
+  }
+  // The same 4 s in all, in 1 s steps.
+  EXPECT_EQ(waits.waits(), std::vector<std::chrono::milliseconds>(4, 1000ms));
+}
+
+// Returning false stops at once (an application's Ctrl-C) with the server's error, saying
+// so, and the request isn't sent again.
+TEST(Resuming, TheProgressCallbackCanStopTheWait) {
+  RecordedWaits waits;
+  StubServer stub([](const Seen& s, int) {
+    if (Is(s, "GET", "/chargewire")) return Discovery();
+    return Resuming("30");
+  });
+  auto options = stub.Options();
+  int calls = 0;
+  options.on_resuming = [&](const wc::ResumeProgress&) { return ++calls < 3; };
+  wc::Client client(options);
+  try {
+    client.SignInWithPassword("joe", "pw");
+    FAIL() << "signed in";
+  } catch (const wc::Error& e) {
+    EXPECT_EQ(e.status(), 503);
+    EXPECT_EQ(e.code(), "server_resuming");
+    EXPECT_NE(std::string(e.what()).find("the server is resuming"), std::string::npos) << e.what();
+  }
+  EXPECT_EQ(calls, 3);
+  EXPECT_EQ(waits.waits(), std::vector<std::chrono::milliseconds>(2, 1000ms)) << "stopped within the first wait";
+  EXPECT_EQ(stub.Count("POST", kToken), 1);
+}
+
+// A callback that throws is ignored: the client keeps waiting and signs in.
+TEST(Resuming, AThrowingProgressCallbackChangesNothing) {
+  RecordedWaits waits;
+  StubServer stub([](const Seen& s, int nth) {
+    if (Is(s, "GET", "/chargewire")) return Discovery();
+    return nth < 1 ? Resuming("2") : Token();
+  });
+  auto options = stub.Options();
+  options.on_resuming = [](const wc::ResumeProgress&) -> bool { throw std::runtime_error("display broke"); };
+  wc::Client client(options);
+  client.SignInWithPassword("joe", "pw");
+  EXPECT_EQ(client.access_token(), "t0k");
+  EXPECT_EQ(waits.waits(), std::vector<std::chrono::milliseconds>(2, 1000ms));
 }

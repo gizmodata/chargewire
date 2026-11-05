@@ -48,6 +48,15 @@ struct TlsOptions {
   std::string key_file;
 };
 
+// Where a wait on a resuming server stands (ConnectOptions::on_resuming, spec §11.2).
+struct ResumeProgress {
+  int attempt = 1;                        // the server_resuming answers received so far
+  std::chrono::milliseconds retry_in{0};  // until the request is sent again
+  std::chrono::milliseconds elapsed{0};   // since the first attempt
+  std::chrono::milliseconds resume_timeout{0};  // when the client gives up, from the first attempt
+  std::string detail;                     // the server's detail, e.g. "the server is resuming; retry after 5 s"
+};
+
 struct ConnectOptions {
   std::string host = "localhost";
   uint16_t port = 31337;
@@ -62,6 +71,12 @@ struct ConnectOptions {
   // request but discovery and health, the sign-in included; a request whose body streams
   // (an ingest, Arrow parameters) is not sent again. 0: no retry.
   std::chrono::seconds resume_timeout{600};
+  // Called while the client waits out a server_resuming answer (see ResumeProgress), so an
+  // application can say the server is starting instead of looking frozen: at the start of
+  // each wait, then about once a second until the request is sent again. Returning false
+  // stops waiting: the call throws the server_resuming error at once (e.g. on Ctrl-C). It
+  // runs on the calling thread; an exception it throws is ignored. Empty: waits silently.
+  std::function<bool(const ResumeProgress&)> on_resuming;
   // Empty: "chargewire-client-cpp/<version>".
   std::string user_agent;
 };

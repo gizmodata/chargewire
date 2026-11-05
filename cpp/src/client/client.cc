@@ -319,8 +319,10 @@ class ClientCore {
                                           bool resume = true) const {
     return std::make_unique<Transport>(options.host, options.port, tls,
                                        connect_timeout.count() > 0 ? connect_timeout : options.connect_timeout,
-                                       legacy, resume ? std::chrono::milliseconds(options.resume_timeout)
-                                                      : std::chrono::milliseconds(0));
+                                       legacy,
+                                       resume ? std::chrono::milliseconds(options.resume_timeout)
+                                              : std::chrono::milliseconds(0),
+                                       resume ? options.on_resuming : nullptr);
   }
 
   // A server released before the protocol's rename has no discovery document at the

@@ -100,7 +100,8 @@ class Transport {
   Transport(std::string host, uint16_t port, std::shared_ptr<ssl::context> tls,
             std::chrono::milliseconds connect_timeout,
             std::shared_ptr<const std::atomic<bool>> legacy = nullptr,
-            std::chrono::milliseconds resume_timeout = std::chrono::milliseconds(0));
+            std::chrono::milliseconds resume_timeout = std::chrono::milliseconds(0),
+            std::function<bool(const ResumeProgress&)> on_resuming = nullptr);
   ~Transport();
   Transport(const Transport&) = delete;
   Transport& operator=(const Transport&) = delete;
@@ -142,6 +143,7 @@ class Transport {
   std::shared_ptr<ssl::context> tls_;
   std::chrono::milliseconds connect_timeout_;
   std::chrono::milliseconds resume_timeout_;
+  std::function<bool(const ResumeProgress&)> on_resuming_;
   net::io_context io_;
   std::unique_ptr<beast::tcp_stream> plain_;
   std::unique_ptr<beast::ssl_stream<beast::tcp_stream>> secure_;

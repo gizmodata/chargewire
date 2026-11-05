@@ -329,9 +329,10 @@ std::string BodyReader::ReadAll() {
 
 Transport::Transport(std::string host, uint16_t port, std::shared_ptr<ssl::context> tls,
                      std::chrono::milliseconds connect_timeout, std::shared_ptr<const std::atomic<bool>> legacy,
-                     std::chrono::milliseconds resume_timeout)
+                     std::chrono::milliseconds resume_timeout,
+                     std::function<bool(const ResumeProgress&)> on_resuming)
     : host_(std::move(host)), port_(port), tls_(std::move(tls)), connect_timeout_(connect_timeout),
-      resume_timeout_(resume_timeout), legacy_(std::move(legacy)) {
+      resume_timeout_(resume_timeout), on_resuming_(std::move(on_resuming)), legacy_(std::move(legacy)) {
   if (host_.size() > 2 && host_.front() == '[' && host_.back() == ']') host_ = host_.substr(1, host_.size() - 2);
 }
 
@@ -478,6 +479,7 @@ std::unique_ptr<BodyReader> Transport::Open(http::request<http::string_body> req
   const auto started = clock::now();
   auto give_up = started + resume_timeout_;
   if (timeout.count() > 0) give_up = std::min(give_up, started + timeout);
+  int attempt = 0;
   while (true) {
     std::chrono::milliseconds attempt_timeout = timeout;
     if (timeout.count() > 0) {
@@ -503,19 +505,46 @@ std::unique_ptr<BodyReader> Transport::Open(http::request<http::string_body> req
     }
     auto problem = ResumingProblem(reader->ContentType(), reader->replay_);
     if (!problem) return reader;
+    ++attempt;
     const auto wait = ResumeWait(reader->Header("Retry-After"));
-    const auto now = clock::now();
-    if (now + wait > give_up) {
-      // The server is still resuming at the deadline: its own error, saying how long we waited.
-      const auto waited = std::chrono::duration_cast<std::chrono::seconds>(now - started).count();
-      const auto* detail = problem->if_contains("detail");
-      std::string text = detail != nullptr && detail->is_string() ? std::string(detail->as_string())
-                                                                  : std::string("the server is resuming");
-      if (waited > 0) text += " (still resuming after " + std::to_string(waited) + " s of retries)";
+    const auto* detail_value = problem->if_contains("detail");
+    const std::string detail = detail_value != nullptr && detail_value->is_string()
+                                   ? std::string(detail_value->as_string())
+                                   : std::string("the server is resuming");
+    // The server's own error, saying how long we waited and why we stopped.
+    auto give_up_now = [&](std::string_view why) {
+      const auto waited = std::chrono::duration_cast<std::chrono::seconds>(clock::now() - started).count();
+      std::string text = detail;
+      if (waited > 0) text += " (" + std::string(why) + " after " + std::to_string(waited) + " s of retries)";
       (*problem)["detail"] = text;
       throw Error::FromProblem(503, *problem);
+    };
+    if (clock::now() + wait > give_up) give_up_now("still resuming");  // the deadline would pass first
+    if (!on_resuming_) {
+      ResumeSleep(wait);
+      continue;
     }
-    ResumeSleep(wait);
+    // With a progress callback: tell it at the start of the wait and about once a second,
+    // so it can show a countdown, and stop as soon as it says so.
+    auto remaining = wait;
+    while (remaining.count() > 0) {
+      ResumeProgress progress;
+      progress.attempt = attempt;
+      progress.retry_in = remaining;
+      progress.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - started);
+      progress.resume_timeout = resume_timeout_;
+      progress.detail = detail;
+      bool go_on = true;
+      try {
+        go_on = on_resuming_(progress);
+      } catch (...) {
+        // A failing callback must not change what the request does.
+      }
+      if (!go_on) give_up_now("stopped waiting");
+      const auto step = std::min<std::chrono::milliseconds>(remaining, std::chrono::seconds(1));
+      ResumeSleep(step);
+      remaining -= step;
+    }
   }
 }
 
