@@ -53,7 +53,15 @@ struct ConnectOptions {
   uint16_t port = 31337;
   std::string base_path = "/chargewire";  // where the server mounts the protocol (spec §2.1)
   TlsOptions tls;
+  // Bounds the TCP connection and the TLS handshake only, never a request: a sign-in a server
+  // holds while it resumes (spec §11.2, up to 25 s) is still answered.
   std::chrono::milliseconds connect_timeout{10000};
+  // How long to keep sending a request again that the server answers with server_resuming
+  // (spec §11.2: a stopped server starting again), waiting its Retry-After (3 s when it
+  // sends none, at most 60 s) between attempts; then the call throws that error. Every
+  // request but discovery and health, the sign-in included; a request whose body streams
+  // (an ingest, Arrow parameters) is not sent again. 0: no retry.
+  std::chrono::seconds resume_timeout{600};
   // Empty: "chargewire-client-cpp/<version>".
   std::string user_agent;
 };

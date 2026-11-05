@@ -20,6 +20,16 @@ spec's version is the repository's version.
   retry), then report the error with its detail. The OpenAPI document requires the code's
   `503`; the conformance suite holds every `server_resuming` answer it receives to a `503`
   with an integer `Retry-After`, never to discovery or health.
+- C++ client: sends a request again while the server answers `server_resuming` (spec §11.2),
+  every request but discovery and health, the sign-in included, waiting `Retry-After` each
+  time (3 s without one, at most 60 s), until `ConnectOptions::resume_timeout` (600 s by
+  default; 0: no retry) and, for a request with a time limit of its own (closing a session,
+  a cancel), that limit; then the call throws the `server_resuming` error with the server's
+  detail and how long it waited. A request whose body streams (an ingest, Arrow parameters)
+  is not sent again (its body is spent): the error is thrown at once. Any other `503` is
+  thrown as before. `connect_timeout` bounds the TCP connection and TLS handshake only, as
+  it did, so a sign-in held 25 s is answered. Tests: `tests/resuming_test.cc`, against a
+  stub server.
 
 ## [2.1.0] - 2026-11-04
 

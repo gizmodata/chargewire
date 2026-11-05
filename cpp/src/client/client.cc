@@ -313,10 +313,14 @@ class ClientCore {
     host_header = (v6 ? "[" + options.host + "]" : options.host) + ":" + std::to_string(options.port);
   }
 
-  std::unique_ptr<Transport> NewTransport(std::chrono::milliseconds connect_timeout = kNoTimeout) const {
+  // A connection for protocol requests. `resume` (every request but discovery and health)
+  // sends a request again while the server answers server_resuming (spec §11.2).
+  std::unique_ptr<Transport> NewTransport(std::chrono::milliseconds connect_timeout = kNoTimeout,
+                                          bool resume = true) const {
     return std::make_unique<Transport>(options.host, options.port, tls,
                                        connect_timeout.count() > 0 ? connect_timeout : options.connect_timeout,
-                                       legacy);
+                                       legacy, resume ? std::chrono::milliseconds(options.resume_timeout)
+                                                      : std::chrono::milliseconds(0));
   }
 
   // A server released before the protocol's rename has no discovery document at the
@@ -1485,7 +1489,7 @@ Client::~Client() = default;
 const ConnectOptions& Client::options() const { return core_->options; }
 
 Discovery Client::Discover() {
-  auto transport = core_->NewTransport();
+  auto transport = core_->NewTransport(kNoTimeout, /*resume=*/false);  // never answered server_resuming
   Reply reply = transport->Exchange(core_->Request(http::verb::get, core_->BasePath(), false));
   if (reply.status != 200) throw ProblemOf(reply);
   auto object = ParseObject(reply.body);
@@ -1515,7 +1519,7 @@ Discovery Client::Discover() {
 }
 
 json::object Client::Health() {
-  auto transport = core_->NewTransport();
+  auto transport = core_->NewTransport(kNoTimeout, /*resume=*/false);  // never answered server_resuming
   Reply reply = transport->Exchange(core_->Request(http::verb::get, core_->V1("/health"), false));
   auto object = ParseObject(reply.body);
   if ((reply.status != 200 && reply.status != 503) || !object) throw ProblemOf(reply);

@@ -1,7 +1,8 @@
 // One HTTP/1.1 connection (plain or TLS) on Boost.Beast, kept alive between requests and
-// reopened when the server has closed it. It knows nothing about Chargewire. Not thread-safe:
-// each user of the protocol that may run concurrently (a cancel from another thread) opens
-// its own Transport.
+// reopened when the server has closed it. It knows one thing about Chargewire: a server that
+// is resuming (spec §11.2) answers 503 server_resuming, and the request is sent again. Not
+// thread-safe: each user of the protocol that may run concurrently (a cancel from another
+// thread) opens its own Transport.
 #pragma once
 
 #include <chrono>
@@ -70,7 +71,7 @@ class BodyReader {
   // end. Throws Error (connection_failed) when the connection fails before the end.
   std::size_t Read(char* out, std::size_t size);
   std::string ReadAll();
-  bool done() const { return done_; }
+  bool done() const { return done_ && replay_at_ >= replay_.size(); }
 
  private:
   friend class Transport;
@@ -78,15 +79,28 @@ class BodyReader {
   uint64_t generation_;
   std::unique_ptr<http::response_parser<http::buffer_body>> parser_;
   bool done_ = false;
+  // A body already read (to see whether a 503 was server_resuming), handed out again.
+  std::string replay_;
+  std::size_t replay_at_ = 0;
 };
+
+// How long to wait before repeating a request answered server_resuming (spec §11.2): the
+// answer's Retry-After in seconds, 3 s when it is missing or not an integer, at most 60 s.
+std::chrono::milliseconds ResumeWait(std::string_view retry_after);
+
+// Tests only: replaces the wait between server_resuming attempts (nullptr: sleep).
+void SetResumeSleepForTesting(std::function<void(std::chrono::milliseconds)> sleep);
 
 class Transport {
  public:
   // `legacy`, when set and true, makes requests and header lookups use the protocol's
   // pre-rename spelling (legacy_dialect.hpp); it may turn true after construction.
+  // `resume_timeout` > 0 repeats a request answered server_resuming (spec §11.2) for that
+  // long (see Open); 0 never does.
   Transport(std::string host, uint16_t port, std::shared_ptr<ssl::context> tls,
             std::chrono::milliseconds connect_timeout,
-            std::shared_ptr<const std::atomic<bool>> legacy = nullptr);
+            std::shared_ptr<const std::atomic<bool>> legacy = nullptr,
+            std::chrono::milliseconds resume_timeout = std::chrono::milliseconds(0));
   ~Transport();
   Transport(const Transport&) = delete;
   Transport& operator=(const Transport&) = delete;
@@ -94,6 +108,9 @@ class Transport {
   // Sends `request` (its body, or the chunks of `chunks` with chunked encoding) and reads
   // the response's header; the body is read through the returned reader, which must be
   // done or destroyed before the next request. `timeout` (0: none) bounds the whole call.
+  // A request without `chunks` that the server answers 503 server_resuming is sent again
+  // after the answer's Retry-After, until the resume timeout (or `timeout`) would pass,
+  // and then that answer throws as an Error with the server's detail.
   std::unique_ptr<BodyReader> Open(http::request<http::string_body> request, const ChunkSource* chunks = nullptr,
                                    std::chrono::milliseconds timeout = std::chrono::milliseconds(0));
   // The whole exchange.
@@ -109,6 +126,8 @@ class Transport {
  private:
   friend class BodyReader;
 
+  std::unique_ptr<BodyReader> OpenOnce(http::request<http::string_body> request, const ChunkSource* chunks,
+                                       std::chrono::milliseconds timeout);
   void Connect();
   void Drop();
   template <class Op>
@@ -122,6 +141,7 @@ class Transport {
   uint16_t port_;
   std::shared_ptr<ssl::context> tls_;
   std::chrono::milliseconds connect_timeout_;
+  std::chrono::milliseconds resume_timeout_;
   net::io_context io_;
   std::unique_ptr<beast::tcp_stream> plain_;
   std::unique_ptr<beast::ssl_stream<beast::tcp_stream>> secure_;

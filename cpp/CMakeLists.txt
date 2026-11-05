@@ -209,7 +209,8 @@ if(CHARGEWIRE_BUILD_TESTS)
     URL https://github.com/google/googletest/archive/refs/tags/v1.18.0.tar.gz
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
   FetchContent_MakeAvailable(googletest)
-  add_executable(chargewire-client-tests tests/client_test.cc)
+  add_executable(chargewire-client-tests tests/client_test.cc tests/resuming_test.cc)
+  target_include_directories(chargewire-client-tests PRIVATE src/client)
   target_link_libraries(chargewire-client-tests PRIVATE chargewire_client GTest::gtest_main)
   target_compile_definitions(chargewire-client-tests PRIVATE
                              CHARGEWIRE_TEST_DEFAULT_SERVER="$<TARGET_FILE:chargewire-duckdb>")

@@ -8,9 +8,14 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
+#include <mutex>
+#include <thread>
 #include <utility>
 #include <vector>
+
+#include <boost/json.hpp>
 
 #include <boost/asio/connect.hpp>
 #include <boost/asio/write.hpp>
@@ -106,7 +111,57 @@ bool IsTlsError(const boost::system::error_code& ec) {
   return ec.category() == net::error::get_ssl_category();
 }
 
+// ---- server_resuming (spec §11.2) ----
+
+constexpr auto kDefaultResumeWait = std::chrono::seconds(3);
+constexpr auto kMaxResumeWait = std::chrono::seconds(60);
+
+std::mutex resume_sleep_mutex;
+std::function<void(std::chrono::milliseconds)> resume_sleep;  // tests only
+
+void ResumeSleep(std::chrono::milliseconds wait) {
+  std::function<void(std::chrono::milliseconds)> sleep;
+  {
+    std::lock_guard lock(resume_sleep_mutex);
+    sleep = resume_sleep;
+  }
+  if (sleep) {
+    sleep(wait);
+  } else {
+    std::this_thread::sleep_for(wait);
+  }
+}
+
+// The problem document of a server_resuming answer, or nullopt for any other answer.
+std::optional<boost::json::object> ResumingProblem(std::string_view content_type, const std::string& body) {
+  if (MediaType(content_type) != "application/problem+json" && MediaType(content_type) != "application/json") {
+    return std::nullopt;
+  }
+  boost::system::error_code ec;
+  boost::json::value value = boost::json::parse(body, ec);
+  if (ec || !value.is_object()) return std::nullopt;
+  const auto* code = value.as_object().if_contains("code");
+  if (code == nullptr || !code->is_string() || code->as_string() != "server_resuming") return std::nullopt;
+  return std::move(value.as_object());
+}
+
 }  // namespace
+
+std::chrono::milliseconds ResumeWait(std::string_view retry_after) {
+  while (!retry_after.empty() && std::isspace(static_cast<unsigned char>(retry_after.front()))) retry_after.remove_prefix(1);
+  while (!retry_after.empty() && std::isspace(static_cast<unsigned char>(retry_after.back()))) retry_after.remove_suffix(1);
+  if (retry_after.empty() || retry_after.size() > 9 ||
+      !std::all_of(retry_after.begin(), retry_after.end(), [](unsigned char c) { return std::isdigit(c); })) {
+    return kDefaultResumeWait;
+  }
+  const auto seconds = std::chrono::seconds(std::stol(std::string(retry_after)));
+  return std::min<std::chrono::milliseconds>(seconds, kMaxResumeWait);
+}
+
+void SetResumeSleepForTesting(std::function<void(std::chrono::milliseconds)> sleep) {
+  std::lock_guard lock(resume_sleep_mutex);
+  resume_sleep = std::move(sleep);
+}
 
 std::optional<std::string> FindSystemCaCertFile() {
   if (const char* env = std::getenv("SSL_CERT_FILE"); env != nullptr && *env != '\0' && Readable(env)) {
@@ -215,6 +270,12 @@ std::string BodyReader::Header(std::string_view name) const {
 std::string BodyReader::ContentType() const { return MediaType(Header("Content-Type")); }
 
 std::size_t BodyReader::Read(char* out, std::size_t size) {
+  if (replay_at_ < replay_.size() && size > 0) {
+    const std::size_t n = std::min(size, replay_.size() - replay_at_);
+    std::memcpy(out, replay_.data() + replay_at_, n);
+    replay_at_ += n;
+    return n;
+  }
   if (done_ || size == 0) return 0;
   if (transport_.generation_ != generation_ || transport_.active_ != this) {
     throw Error(0, "client_connection_failed", "the response was abandoned before its end");
@@ -265,9 +326,10 @@ std::string BodyReader::ReadAll() {
 // ---- Transport ----
 
 Transport::Transport(std::string host, uint16_t port, std::shared_ptr<ssl::context> tls,
-                     std::chrono::milliseconds connect_timeout, std::shared_ptr<const std::atomic<bool>> legacy)
+                     std::chrono::milliseconds connect_timeout, std::shared_ptr<const std::atomic<bool>> legacy,
+                     std::chrono::milliseconds resume_timeout)
     : host_(std::move(host)), port_(port), tls_(std::move(tls)), connect_timeout_(connect_timeout),
-      legacy_(std::move(legacy)) {
+      resume_timeout_(resume_timeout), legacy_(std::move(legacy)) {
   if (host_.size() > 2 && host_.front() == '[' && host_.back() == ']') host_ = host_.substr(1, host_.size() - 2);
 }
 
@@ -408,6 +470,55 @@ void Transport::Close() { Drop(); }
 
 std::unique_ptr<BodyReader> Transport::Open(http::request<http::string_body> request, const ChunkSource* chunks,
                                             std::chrono::milliseconds timeout) {
+  // A streamed body is spent once sent, so such a request can't be sent again.
+  if (resume_timeout_.count() <= 0 || chunks != nullptr) return OpenOnce(std::move(request), chunks, timeout);
+  using clock = std::chrono::steady_clock;
+  const auto started = clock::now();
+  auto give_up = started + resume_timeout_;
+  if (timeout.count() > 0) give_up = std::min(give_up, started + timeout);
+  while (true) {
+    std::chrono::milliseconds attempt_timeout = timeout;
+    if (timeout.count() > 0) {
+      attempt_timeout = std::max(std::chrono::milliseconds(1),
+                                 std::chrono::duration_cast<std::chrono::milliseconds>(started + timeout - clock::now()));
+    }
+    auto reader = OpenOnce(request, nullptr, attempt_timeout);
+    if (reader->status() != 503) return reader;
+    // A 503's body is a short problem document: read it to see whether the server is
+    // resuming, and hand it out again when it isn't.
+    {
+      // Read within the call's own time limit, as Exchange reads a body.
+      struct ResetDeadline {
+        Transport& t;
+        ~ResetDeadline() { t.deadline_ = {}; }
+      } reset{*this};
+      if (timeout.count() > 0 && connected_) {
+        deadline_ = started + timeout;
+        WithStream([&](auto&) { SetTimeout(timeout); });
+      }
+      reader->replay_ = reader->ReadAll();
+      reader->replay_at_ = 0;
+    }
+    auto problem = ResumingProblem(reader->ContentType(), reader->replay_);
+    if (!problem) return reader;
+    const auto wait = ResumeWait(reader->Header("Retry-After"));
+    const auto now = clock::now();
+    if (now + wait > give_up) {
+      // The server is still resuming at the deadline: its own error, saying how long we waited.
+      const auto waited = std::chrono::duration_cast<std::chrono::seconds>(now - started).count();
+      const auto* detail = problem->if_contains("detail");
+      std::string text = detail != nullptr && detail->is_string() ? std::string(detail->as_string())
+                                                                  : std::string("the server is resuming");
+      if (waited > 0) text += " (still resuming after " + std::to_string(waited) + " s of retries)";
+      (*problem)["detail"] = text;
+      throw Error::FromProblem(503, *problem);
+    }
+    ResumeSleep(wait);
+  }
+}
+
+std::unique_ptr<BodyReader> Transport::OpenOnce(http::request<http::string_body> request, const ChunkSource* chunks,
+                                                std::chrono::milliseconds timeout) {
   if (active_ != nullptr) Drop();  // the last response wasn't read to its end
   deadline_ = timeout.count() > 0 ? std::chrono::steady_clock::now() + timeout
                                   : std::chrono::steady_clock::time_point{};
