@@ -7,6 +7,20 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Added
+
+- **`server_resuming` (spec §11.2): a server that was stopped and is starting again.** A
+  server (or a stand-in answering at its address while it is stopped, such as a hosting
+  service's auto-resume) answers any request but discovery and health with `503`, code
+  `server_resuming`, an integer `Retry-After` and a detail such as "the server is resuming;
+  retry after 5 s". The request had no effect, so a client sends the same request again,
+  the sign-in included. An answer may be held up to 25 s, so a client's request timeout,
+  sign-in included, must be at least 30 s. Clients wait `Retry-After` (3 s when it is
+  missing, at most 60 s) and repeat until a resume deadline, 600 s by default (0: no
+  retry), then report the error with its detail. The OpenAPI document requires the code's
+  `503`; the conformance suite holds every `server_resuming` answer it receives to a `503`
+  with an integer `Retry-After`, never to discovery or health.
+
 ## [2.1.0] - 2026-11-04
 
 Protocol version 1 is unchanged: these are additions, and one change to when a session counts as

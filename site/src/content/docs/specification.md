@@ -1472,6 +1472,7 @@ server fault, and proxies and monitoring that count `5xx` as outages count only 
 | `internal_error` | 500 | The server failed in a way that is not the request's doing (a bug, a broken invariant) |
 | `not_implemented` | 501 | The server does not implement this operation (browser sign-in on a server without `oauth_browser`, [§4.3](#43-browser-sign-in-optional-capability-oauth_browser)) |
 | `server_draining` | 503 | The server is shutting down; with `Retry-After` |
+| `server_resuming` | 503 | The server was stopped and is starting again; the request had no effect; with `Retry-After` ([§11.2](#112-resuming)) |
 | `access_denied`, `identity_provider_error` | — | A failed browser sign-in's `error.code` in the poll answer, as is `invalid_credentials` ([§4.3.2](#432-polling-post-chargewirev1authoauthflowsflow_id)); never a response's status |
 
 **Codes a client makes up.** A client that reports a failure it found itself, with no
@@ -1485,6 +1486,37 @@ A server that is shutting down MUST stop accepting new sessions and statements
 (`503`, `server_draining`, with `Retry-After`), report `not_serving` on health, let
 running statements finish within its grace period, and then cancel what remains
 (`cancel_reason: server_shutdown`).
+
+### 11.2 Resuming
+
+A server can be stopped while nobody uses it and started again by the first client that
+signs in. Something answers at the server's address while it is stopped (a stand-in, or the
+server itself while it starts), and until the server serves it answers requests with `503`,
+code `server_resuming`, and a detail such as "the server is resuming; retry after 5 s":
+
+- `server_resuming` MAY answer any request except discovery ([§3.1](#31-get-chargewire)) and health ([§3.2](#32-get-chargewirev1health)), which
+  never answer it: discovery describes the server as usual, and health reports `not_serving`.
+- It MUST carry `Retry-After` ([§2.6](#26-response-headers-defined-by-this-protocol)): an integer, the seconds after which asking again is
+  worthwhile.
+- It means the request had no effect: nothing was signed in, created or run, so the client
+  may send the same request again, even one that is not idempotent. A server or stand-in MUST
+  NOT answer `server_resuming` to a request it acted on.
+- An answer MAY be held up to 25 seconds before it is sent (a stand-in waiting for the server
+  to come up, so a short resume costs no second round trip), and MUST NOT be held longer. A
+  client's timeout for a request, the sign-in ([§4.1](#41-post-chargewirev1authtoken)) included, MUST therefore be at least
+  30 seconds, or a held request fails although the server is on its way.
+
+A client SHOULD wait `Retry-After` seconds (3 when the header is missing or not an integer,
+and at most 60), then send the same request again, the sign-in included, and repeat until a
+resume deadline passes, and then report the last `server_resuming` error with its `detail`.
+The deadline SHOULD be configurable, 600 seconds by default (a server whose machine must be
+started first can take several minutes), with `0` meaning no retry. A request with a time
+limit of its own (closing a session as the client exits, a cancel) stops retrying at that
+limit. A client that doesn't know the code treats it as any `503` ([§12](#12-versioning)).
+
+Sessions, statements and tokens from before the stop may be gone once the server is back:
+their requests then get `session_not_found` ([§5.6](#56-sessions-that-no-longer-exist)) or `invalid_token` ([§4.2](#42-using-the-token)), as after any
+restart.
 
 ## 12. Versioning
 

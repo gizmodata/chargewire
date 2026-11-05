@@ -61,6 +61,7 @@
   "9.7": "97-browser-sign-in",
   "9.8": "98-error-messages",
   "11.1": "111-graceful-shutdown",
+  "11.2": "112-resuming",
   "A": "appendix-a-possible-future-additions",
   "B": "appendix-b-endpoints"
 }

@@ -46,7 +46,7 @@ privileges (`chargewire-duckdb`) it skips, saying so.
 
 ## What each file covers
 
-252 test functions (some run several cases), in the suite's [`tests/`](https://github.com/gizmodata/chargewire/tree/main/conformance/tests):
+256 test functions (some run several cases), in the suite's [`tests/`](https://github.com/gizmodata/chargewire/tree/main/conformance/tests):
 
 | File | Tests | Covers |
 |---|---|---|
@@ -60,7 +60,7 @@ privileges (`chargewire-duckdb`) it skips, saying so.
 | [`test_metadata.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_metadata.py) | 11 | [§10](/specification/#10-metadata): metadata with Arrow Flight SQL's result schemas. |
 | [`test_mtls.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_mtls.py) | 36 | [§2.1](/specification/#21-transport) and [§4.4](/specification/#44-client-certificate-sign-in-optional-capability-mtls_identity): mutual TLS that carries identity. The client_certificate grant, certificate-bound tokens, revocation, identity match. |
 | [`test_oauth_browser.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_oauth_browser.py) | 18 | [§4.3](/specification/#43-browser-sign-in-optional-capability-oauth_browser) and [§9.7](/specification/#97-browser-sign-in): browser sign-in (capability oauth_browser). |
-| [`test_openapi.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_openapi.py) | 15 | [§3.3](/specification/#33-get-chargewirev1openapijson-optional-capability-openapi) and Appendix B: the OpenAPI document, the endpoint that serves it, and the check (openapi_check.py) that holds every response of the suite to it. |
+| [`test_openapi.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_openapi.py) | 19 | [§3.3](/specification/#33-get-chargewirev1openapijson-optional-capability-openapi) and Appendix B: the OpenAPI document, the endpoint that serves it, and the check (openapi_check.py) that holds every response of the suite to it. |
 | [`test_partitioned_ingest.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_partitioned_ingest.py) | 14 | [§8.3](/specification/#83-partitioned-ingest): partitioned ingest, its parts uploaded at once and committed atomically. |
 | [`test_partitions.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_partitions.py) | 14 | [§6.10](/specification/#610-partitioned-results): partitioned results, read concurrently over separate connections. |
 | [`test_prepare_describe.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_prepare_describe.py) | 7 | [§7](/specification/#7-prepared-statements): preparing a query describes its result without running it. |
@@ -83,6 +83,9 @@ method and path and checks:
 - the required headers are there, and every documented header's value fits its schema;
 - a JSON body validates against the response's schema (JSON Schema 2020-12, which OpenAPI
   3.1 schemas are), and a problem document's `status` and `type` agree with the response;
+- a `server_resuming` answer (spec [§11.2](/specification/#112-resuming)) is a `503` with an integer `Retry-After`, and never
+  answers discovery or health (a server that is never stopped and woken never sends one, so
+  this holds only servers that do);
 - an Arrow body begins like an Arrow IPC stream (the tests read the rest);
 - a path or method outside the document gets a `404` or `405` problem document.
 
@@ -114,14 +117,16 @@ Every MUST of the spec that a server can be tested for has a test, except these:
 | [§9.3](/specification/#93-results-are-governed-data) | Retained results stored outside memory are protected like the source data and deleted on expiry or session end | Storage is outside the protocol |
 | [§9.5](/specification/#95-browsers) | `X-Content-Type-Options: nosniff` on every response | Checked on a sample of responses, not all |
 | [§9.6](/specification/#96-client-certificates) | No TLS 1.2 renegotiation to change the certificate | Python's `ssl` can't start a renegotiation |
+| [§11.2](/specification/#112-resuming) | `server_resuming` only for a request that had no effect, and an answer held at most 25 s | Stopping a server and waking it is up to a deployment (a hosting service that stops idle servers); the suite has no way to make a server resume |
 
 These MUSTs bind clients, not servers, so a server suite can't test them: [§3.1](/specification/#31-get-chargewire) (use only
 listed features), [§4.1](/specification/#41-post-chargewirev1authtoken) (tokens are opaque), [§5.6](/specification/#56-sessions-that-no-longer-exist) (a new token after `session_ended` for the
 token reasons), [§6.1](/specification/#61-submit-post-chargewirev1sessionssession_idstatements) (check `Content-Type`), [§6.2](/specification/#62-the-statement-document) (a `failed` or `cancelled` document is an
 error), [§6.6](/specification/#66-errors-during-a-result-stream) (an incomplete stream is a failed result), [§6.10](/specification/#610-partitioned-results) (read every partition to its
 end, all at once, and never guess a missing `Chargewire-Result-Order`), [§8.2](/specification/#82-compression) (read buffers left
-uncompressed), [§8.3](/specification/#83-partitioned-ingest) (no reliance on row order after a partitioned ingest) and [§12](/specification/#12-versioning) (ignore
-what is unknown, accept unknown enumeration values). The drivers' own suites test them.
+uncompressed), [§8.3](/specification/#83-partitioned-ingest) (no reliance on row order after a partitioned ingest), [§11.2](/specification/#112-resuming) (a request
+timeout of at least 30 s) and [§12](/specification/#12-versioning) (ignore what is unknown, accept unknown enumeration
+values). The drivers' own suites test them.
 
 [§2.1](/specification/#21-transport)'s "say so in its documentation" (a base path other than `/chargewire`) and [§4.4](/specification/#44-client-certificate-sign-in-optional-capability-mtls_identity)'s "end TLS
 at the server" are about documentation and deployment.

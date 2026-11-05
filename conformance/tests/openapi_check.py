@@ -4,7 +4,9 @@
 it: a documented status (or its 4XX/5XX range), a documented content type, the required
 headers and their values, and a JSON body that validates against the response's schema
 (OpenAPI 3.1 schemas are JSON Schema 2020-12). A problem document must also agree with
-the HTTP status and carry `urn:chargewire:error:<code>` as its type (spec §11).
+the HTTP status and carry `urn:chargewire:error:<code>` as its type (spec §11), and a
+`server_resuming` answer must be a `503` with an integer `Retry-After`, never to discovery or
+health (spec §11.2; a server that never resumes never sends one).
 
 conftest.py installs it on every httpx request the suite makes, so every JSON endpoint the
 suite exercises is checked on every response, success or error, without each test asking.
@@ -32,6 +34,8 @@ METHODS = ("get", "put", "post", "delete", "options", "head", "patch", "trace")
 ARROW_STREAM = "application/vnd.apache.arrow.stream"
 # An Arrow IPC stream begins with a message, framed by the continuation marker.
 ARROW_CONTINUATION = b"\xff\xff\xff\xff"
+# The requests `server_resuming` never answers (spec §11.2).
+NEVER_RESUMING = {("GET", "/chargewire"), ("GET", "/chargewire/v1/health")}
 
 
 def load_document(path: Path = OPENAPI_PATH) -> dict:
@@ -138,6 +142,13 @@ class OpenApi:
         where = f"{method.upper()} {path} -> {status}"
         if method in ("options", "head") or not path.startswith("/chargewire"):
             return []
+        return [f"{where}: {problem}" for problem in
+                resuming_problems(method=method, path=path, status=status, headers=headers, body=body)
+                ] + self.check_operation(method=method, path=path, status=status, headers=headers, body=body)
+
+    def check_operation(self, method: str, path: str, status: int, headers: dict[str, str],
+                        body: bytes | None) -> list[str]:
+        where = f"{method.upper()} {path} -> {status}"
         route = self.find(path=path)
         if route is None or method not in route.item:
             # No such endpoint (404) or not this method (405): still a problem document.
@@ -209,6 +220,30 @@ class OpenApi:
         while isinstance(schema, dict) and "$ref" in schema:
             schema, _ = self.resolve(pointer=schema["$ref"].removeprefix("#"))
         return schema
+
+
+def resuming_problems(method: str, path: str, status: int, headers: dict[str, str],
+                      body: bytes | None) -> list[str]:
+    """Spec §11.2: what is wrong with a `server_resuming` answer; [] for any other response."""
+    if not body or headers.get("content-type", "").split(";")[0].strip().lower() != "application/problem+json":
+        return []
+    try:
+        problem = json.loads(body)
+    except ValueError:
+        return []
+    if not isinstance(problem, dict) or problem.get("code") != "server_resuming":
+        return []
+    problems = []
+    if status != 503:
+        problems.append(f"server_resuming must be a 503, not {status}")
+    retry_after = headers.get("retry-after")
+    if retry_after is None:
+        problems.append("server_resuming without Retry-After")
+    elif not re.fullmatch(pattern=r"[0-9]+", string=retry_after.strip()):
+        problems.append(f"server_resuming with Retry-After {retry_after!r}, not an integer of seconds")
+    if (method.upper(), path) in NEVER_RESUMING:
+        problems.append("server_resuming never answers discovery or health")
+    return problems
 
 
 def header_value(value: str, schema: dict):

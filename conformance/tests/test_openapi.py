@@ -169,3 +169,49 @@ def test_a_problem_document_must_agree_with_its_status(server):
     problems = check(openapi=OpenApi(), response=response, body=json.dumps(body).encode())
     assert any("does not match" in problem or "does not name its code" in problem
                for problem in problems), problems
+
+
+# ---- server_resuming (§11.2): a 503 with an integer Retry-After, never to discovery or health ----
+#
+# A server that is never stopped and woken never sends server_resuming, and these rules don't
+# touch it. One that does (or a stand-in in front of it) is held to them on every response the
+# suite receives; these show the rules bite, on real responses rewritten into the answer.
+
+RESUMING = {"type": "urn:chargewire:error:server_resuming", "title": "Server resuming", "status": 503,
+            "code": "server_resuming", "detail": "the server is resuming; retry after 5 s"}
+
+
+def resuming(response: httpx.Response, retry_after: str | None = "5", status: int = 503) -> list[str]:
+    headers = {k.lower(): v for k, v in response.headers.items() if k.lower() != "retry-after"}
+    headers["content-type"] = "application/problem+json"
+    if retry_after is not None:
+        headers["retry-after"] = retry_after
+    body = json.dumps({**RESUMING, "status": status}).encode()
+    return check(openapi=OpenApi(), response=response, body=body, headers=headers, status=status)
+
+
+def test_a_server_resuming_answer_with_retry_after_passes(server, chargewire):
+    assert resuming(response=real_session_response(chargewire=chargewire)) == []
+    sign_in = httpx.post(url=f"{server.base_url}/chargewire/v1/auth/token",
+                         json={"grant_type": "password", "username": "nobody", "password": "wrong"})
+    assert resuming(response=sign_in) == []  # the sign-in may be answered so too
+
+
+def test_server_resuming_without_an_integer_retry_after_fails(chargewire):
+    response = real_session_response(chargewire=chargewire)
+    problems = resuming(response=response, retry_after=None)
+    assert any("server_resuming without Retry-After" in problem for problem in problems), problems
+    problems = resuming(response=response, retry_after="Wed, 21 Oct 2026 07:28:00 GMT")
+    assert any("not an integer of seconds" in problem for problem in problems), problems
+
+
+def test_server_resuming_must_be_a_503(chargewire):
+    problems = resuming(response=real_session_response(chargewire=chargewire), status=500)
+    assert any("server_resuming must be a 503, not 500" in problem for problem in problems), problems
+    assert any("503 was expected" in problem for problem in problems), problems  # the document's rule
+
+
+def test_server_resuming_never_answers_discovery_or_health(server):
+    for path in ("/chargewire", "/chargewire/v1/health"):
+        problems = resuming(response=httpx.get(url=f"{server.base_url}{path}"))
+        assert any("never answers discovery or health" in problem for problem in problems), (path, problems)

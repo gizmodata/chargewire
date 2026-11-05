@@ -33,6 +33,12 @@ info:
     **Errors** are problem documents (`application/problem+json`, RFC 9457) with a stable
     `code` (spec §11). Every response carries a `Chargewire-Request-Id` header.
 
+    **Resuming.** A server that was stopped and is starting again answers any operation but
+    discovery and health with `503`, code `server_resuming`, and `Retry-After` (spec §11.2).
+    The request had no effect: send the same request again after `Retry-After` seconds. An
+    answer may be held up to 25 seconds, so a request's timeout, sign-in included, should be
+    at least 30 seconds.
+
     **Additions.** Version 1 changes only by addition (spec §12): clients ignore fields,
     headers and capabilities they don't know and accept values of enumerated fields that
     this document doesn't list. A client generated from this document should be set up to
@@ -1410,7 +1416,7 @@ components:
       schema:
         type: string
     RetryAfter:
-      description: Seconds to wait before retrying, as an integer (spec §2.6)
+      description: Seconds to wait before retrying, as an integer (spec §2.6); always present on `server_resuming` (spec §11.2)
       required: false
       schema:
         type: integer
@@ -2132,6 +2138,14 @@ components:
                 enum: [statement_cancelled, statement_timeout]
           then:
             required: [cancel_reason]
+        - if:
+            properties:
+              code:
+                const: server_resuming
+          then:
+            properties:
+              status:
+                const: 503
       example:
         type: "urn:chargewire:error:permission_denied"
         title: Permission denied

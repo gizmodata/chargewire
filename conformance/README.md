@@ -51,6 +51,9 @@ method and path and checks:
 - the required headers are there, and every documented header's value fits its schema;
 - a JSON body validates against the response's schema (JSON Schema 2020-12, which OpenAPI
   3.1 schemas are), and a problem document's `status` and `type` agree with the response;
+- a `server_resuming` answer (spec §11.2) is a `503` with an integer `Retry-After`, and never
+  answers discovery or health (a server that is never stopped and woken never sends one, so
+  this holds only servers that do);
 - an Arrow body begins like an Arrow IPC stream (the tests read the rest);
 - a path or method outside the document gets a `404` or `405` problem document.
 
@@ -82,14 +85,16 @@ Every MUST of the spec that a server can be tested for has a test, except these:
 | §9.3 | Retained results stored outside memory are protected like the source data and deleted on expiry or session end | Storage is outside the protocol |
 | §9.5 | `X-Content-Type-Options: nosniff` on every response | Checked on a sample of responses, not all |
 | §9.6 | No TLS 1.2 renegotiation to change the certificate | Python's `ssl` can't start a renegotiation |
+| §11.2 | `server_resuming` only for a request that had no effect, and an answer held at most 25 s | Stopping a server and waking it is up to a deployment (a hosting service that stops idle servers); the suite has no way to make a server resume |
 
 These MUSTs bind clients, not servers, so a server suite can't test them: §3.1 (use only
 listed features), §4.1 (tokens are opaque), §5.6 (a new token after `session_ended` for the
 token reasons), §6.1 (check `Content-Type`), §6.2 (a `failed` or `cancelled` document is an
 error), §6.6 (an incomplete stream is a failed result), §6.10 (read every partition to its
 end, all at once, and never guess a missing `Chargewire-Result-Order`), §8.2 (read buffers left
-uncompressed), §8.3 (no reliance on row order after a partitioned ingest) and §12 (ignore
-what is unknown, accept unknown enumeration values). The drivers' own suites test them.
+uncompressed), §8.3 (no reliance on row order after a partitioned ingest), §11.2 (a request
+timeout of at least 30 s) and §12 (ignore what is unknown, accept unknown enumeration
+values). The drivers' own suites test them.
 
 §2.1's "say so in its documentation" (a base path other than `/chargewire`) and §4.4's "end TLS
 at the server" are about documentation and deployment.
