@@ -804,8 +804,28 @@ std::optional<double> DuckDBSession::Progress() {
   return percentage / 100.0;
 }
 
+namespace {
+// A SQL string literal: 'it''s'.
+std::string SqlLiteral(std::string_view text) {
+  std::string out = "'";
+  for (const char c : text) {
+    if (c == '\'') out += '\'';
+    out += c;
+  }
+  return out + "'";
+}
+}  // namespace
+
 chargewire::OptionErrors DuckDBSession::SetOptions(const json::object& options) {
   BeginOwedTransaction();
+  // In a transaction, a USE that fails (a catalog or schema that isn't there) aborts the
+  // transaction: one mistyped option threw away the work in it, and the answer said only that
+  // the transaction was aborted. There, a missing one is reported without running USE.
+  const bool in_transaction = transaction_ != chargewire::TransactionState::kNone;
+  auto missing = [&](const std::string& name) {
+    return Error(ErrorCode::kInvalidOptionValue,
+                 "Catalog Error: SET schema: No catalog + schema named \"" + name + "\" found.");
+  };
   chargewire::OptionErrors errors;
   auto apply = [&](std::string_view key, auto&& fn) {
     const json::value* value = options.if_contains(key);
@@ -824,11 +844,24 @@ chargewire::OptionErrors DuckDBSession::SetOptions(const json::object& options) 
   };
   // Catalog before schema, so {"catalog": a, "schema": b} means a.b.
   apply("catalog", [&](const json::value& value) {
-    RunSql(connection_.get(), "USE " + QualifiedName({text(value, "catalog")}));
+    const std::string catalog = text(value, "catalog");
+    if (in_transaction && QueryText(connection_.get(), "SELECT count(*) FROM duckdb_databases() WHERE "
+                                                       "lower(database_name) = lower(" +
+                                                           SqlLiteral(catalog) + ")") == "0") {
+      throw missing(catalog);
+    }
+    RunSql(connection_.get(), "USE " + QualifiedName({catalog}));
   });
   apply("schema", [&](const json::value& value) {
     const std::string catalog = QueryText(connection_.get(), "SELECT current_database()");
-    RunSql(connection_.get(), "USE " + QualifiedName({catalog, text(value, "schema")}));
+    const std::string schema = text(value, "schema");
+    if (in_transaction && QueryText(connection_.get(), "SELECT count(*) FROM duckdb_schemas() WHERE "
+                                                       "lower(database_name) = lower(" +
+                                                           SqlLiteral(catalog) + ") AND lower(schema_name) = lower(" +
+                                                           SqlLiteral(schema) + ")") == "0") {
+      throw missing(catalog + "." + schema);
+    }
+    RunSql(connection_.get(), "USE " + QualifiedName({catalog, schema}));
   });
   apply("autocommit", [&](const json::value& value) {
     if (!value.is_bool()) {

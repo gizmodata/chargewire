@@ -84,6 +84,29 @@ def test_patch_answers_every_option_and_its_errors(chargewire, session_id):
     assert doc["options"] == chargewire.http.get(url=chargewire.session_url(session_id), headers=chargewire.headers()).json()["options"]
 
 
+def test_a_missing_catalog_or_schema_in_a_transaction_leaves_the_transaction_alone(chargewire, session_id):
+    """Inside a transaction, setting a catalog or schema that isn't there is that option's error
+    (200 with errors[...], §5.2), as it is outside one; it must not abort the transaction and
+    throw away the work in it. A server that ran USE and let it fail answered 422 "transaction
+    is aborted" and lost the open transaction."""
+    chargewire.execute(session_id=session_id, sql="CREATE TABLE tx_kept (v INTEGER)")
+    chargewire.execute(session_id=session_id, sql="BEGIN")
+    chargewire.execute(session_id=session_id, sql="INSERT INTO tx_kept VALUES (1)")
+    for options, name in (({"catalog": "no_such_catalog_here"}, "catalog"), ({"schema": "no_such_schema_here"}, "schema")):
+        response = chargewire.http.patch(url=chargewire.session_url(session_id), headers=chargewire.headers(),
+                                         json={"options": options})
+        assert response.status_code == 200, response.text
+        doc = response.json()
+        assert set(doc["errors"]) == {name}, doc
+        assert doc["errors"][name]["code"] == "invalid_option_value", doc
+        assert options[name] in doc["errors"][name]["detail"], doc
+        assert transaction_of(chargewire=chargewire, session_id=session_id) == "open", options
+    # The transaction and its work are intact, and it commits.
+    assert chargewire.query(session_id=session_id, sql="SELECT count(*) AS n FROM tx_kept").to_pylist() == [{"n": 1}]
+    assert chargewire.execute(session_id=session_id, sql="COMMIT")["state"] == "succeeded"
+    assert transaction_of(chargewire=chargewire, session_id=session_id) == "none"
+
+
 def test_autocommit_off_then_rollback(chargewire, session_id):
     chargewire.execute(session_id=session_id, sql="CREATE TABLE tx_rollback (v INTEGER)")
     response = chargewire.http.patch(url=chargewire.session_url(session_id), headers=chargewire.headers(),
