@@ -7,6 +7,11 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-11-05
+
+Protocol version 1 is unchanged: `server_resuming` is an addition (a new error code a
+client that doesn't know it reports as it would any 503).
+
 ### Added
 
 - **`server_resuming` (spec §11.2): a server that was stopped and is starting again.** A
@@ -30,6 +35,29 @@ spec's version is the repository's version.
   thrown as before. `connect_timeout` bounds the TCP connection and TLS handshake only, as
   it did, so a sign-in held 25 s is answered. Tests: `tests/resuming_test.cc`, against a
   stub server.
+- C++ client: `ConnectOptions::on_resuming` hears a wait on a resuming server, at its start
+  and about once a second after, with the attempt, the time left before the request is sent
+  again, the time spent and the server's detail, so an application can show a countdown
+  instead of looking frozen (the Hardcharger CLI does). Returning `false` stops the wait at
+  once with the server's error, which is how an application's Ctrl-C reaches a wait of up to
+  60 s. An exception it throws is ignored; without it, the client waits as before.
+
+### Fixed
+
+- The tables listing (`GET /chargewire/v1/metadata/tables`, spec §10) leaves out the engine's
+  internal tables and views again, as `information_schema.tables` does. 2.1.0 built it from
+  `duckdb_tables()` and `duckdb_views()` to name nested schemas by their path, without their
+  `internal` filter, so every client's table browser listed DuckDB's own system catalog
+  (`information_schema`, `pg_catalog` and the `duckdb_*` views). The protocol is unchanged.
+- A session evicted as idle (`session_idle_timeout`, spec §5.7) while it held a transaction
+  open is ended with `session_ended` and reason `idle_in_transaction`, so its owner's next
+  request learns the transaction was rolled back. The sweep only removed it, so the next
+  request got `session_not_found` and a client that replaces lost sessions could run its next
+  statement alone in autocommit; since 2.1.0 the sweep also evicts a session whose client
+  stopped polling a running statement, which made this more common. A session with no
+  transaction open still gets `session_not_found`. The spec now says a client must not run a
+  request again after `session_not_found` unless it knows no transaction was open
+  (gizmodata/hardcharger#29).
 
 ## [2.1.0] - 2026-11-04
 

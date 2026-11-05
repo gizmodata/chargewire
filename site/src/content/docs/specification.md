@@ -1,6 +1,6 @@
 ---
 title: Specification
-description: "The Chargewire protocol, version 1 (specification 2.1.0): SQL over HTTP with Arrow IPC streams."
+description: "The Chargewire protocol, version 1 (specification 2.2.0): SQL over HTTP with Arrow IPC streams."
 editUrl: https://github.com/gizmodata/chargewire/edit/main/spec/chargewire.md
 tableOfContents:
   maxHeadingLevel: 3
@@ -12,7 +12,7 @@ tableOfContents:
 This page is [`spec/chargewire.md`](https://github.com/gizmodata/chargewire/blob/main/spec/chargewire.md), rendered as it is. Its endpoints are also described for tools in the [OpenAPI document](/reference/openapi/).
 :::
 
-**Status:** 2.1.0 (2026-11-04), the specification's version, which is Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
+**Status:** 2.2.0 (2026-11-05), the specification's version, which is Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
 addition ([§12](#12-versioning)).
 
 Chargewire is an open protocol for running SQL against a database server over plain
@@ -693,7 +693,7 @@ code `session_ended` and a `reason` field in the problem document ([§11](#11-er
 | `principal_dropped` | The principal was dropped or disabled |
 | `token_revoked` | The token the session was opened with was revoked |
 | `token_expired` | The token the session was opened with expired, and the session could do nothing more without it (for example a scoped token's session) |
-| `idle_in_transaction` | The session held a transaction open with nothing running and no request for `idle_in_transaction_timeout_s` ([§5.7](#57-idle-sessions)); the server ended it and rolled the transaction back |
+| `idle_in_transaction` | The session held a transaction open with nothing running and no request for `idle_in_transaction_timeout_s`, or was evicted as idle (`idle_timeout_s`) while it held one ([§5.7](#57-idle-sessions)); the server ended it and rolled the transaction back |
 
 The token is checked before the session ([§4.2](#42-using-the-token)), and the events that end a session for
 `credentials_changed`, `principal_dropped`, `token_revoked` or `token_expired` usually
@@ -726,6 +726,14 @@ must not keep the session, and with it a write's open transaction, alive for as 
 the statement runs. When such a session is evicted, its running statement is cancelled
 (`cancel_reason: session_closed`) and its transaction rolled back. A client that polls a
 long statement less often than `idle_timeout_s` loses its session.
+
+An evicted session that held no transaction open is simply gone: its next request gets
+`session_not_found`. One that held a transaction open ([§5.5](#55-transactions)), which SQL such as `BEGIN`
+can open without the client knowing, MUST instead be ended as [§5.6](#56-sessions-that-no-longer-exist) describes, with reason
+`idle_in_transaction`, so its next request gets `session_ended` and the client learns that
+the transaction was rolled back. A client that gets `session_not_found` can't tell whether
+a transaction was lost, so it MUST NOT run a request again on a new session unless it knows
+no transaction was open.
 
 A server MAY also end a session that holds a transaction open ([§5.5](#55-transactions)) with nothing running
 and no request for `idle_in_transaction_timeout_s`, as PostgreSQL's
