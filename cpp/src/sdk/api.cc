@@ -1212,6 +1212,18 @@ void Api::Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> state
       StatementOutcome outcome = WithStatementId(session->engine(), statement->id(), [&] {
         return WithSubmitted(session->engine(), statement->submitted(), [&] { return work(session->engine()); });
       });
+      // What the statement did to the session (its options, its transaction), into the
+      // session document.
+      auto apply_session_changes = [&] {
+        if (session->engine().TakeOptionsChanged()) {
+          try {
+            session->set_options(session->engine().Options());
+          } catch (const std::exception&) {
+            // the document keeps the options it had; the statement itself succeeded
+          }
+        }
+        session->RefreshTransaction();
+      };
       if (outcome.rows) {
         statement->SetRows(outcome.rows->schema(), outcome.finish_if_abandoned);
         Clock::duration producing{}, handing_over{};
@@ -1258,19 +1270,19 @@ void Api::Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> state
           }
         }
       } else {
+        // A statement without rows is answered as soon as its outcome is known (a streamed
+        // submit returns at HasOutcome(), spec §6.1), before Finish(). The session must show
+        // what the statement did to its transaction and options by then (spec §5.2): a client
+        // that read the session at once saw the state before it, BEGIN still "none" and COMMIT
+        // still "open", and a client deciding from that whether a lost session's statement may
+        // run again (§5.7) could run it alone after a BEGIN.
+        apply_session_changes();
         statement->SetUpdate(outcome.rows_affected);
       }
       outcome.rows.reset();  // the engine runs one result at a time
-      if (session->engine().TakeOptionsChanged()) {
-        try {
-          session->set_options(session->engine().Options());
-        } catch (const std::exception&) {
-          // the document keeps the options it had; the statement itself succeeded
-        }
-      }
       // Before the statement ends, so a client that reads the session once its statement
       // is over sees what the statement did to the transaction (spec §5.2).
-      session->RefreshTransaction();
+      apply_session_changes();
       statement->Finish();
     } catch (const Error& error) {
       session->RefreshTransaction();

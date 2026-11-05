@@ -273,6 +273,20 @@ def test_sql_begin_opens_and_commit_ends_a_transaction(chargewire, session_id):
     assert transaction_of(chargewire=chargewire, session_id=session_id) == "none"
 
 
+def test_the_session_shows_the_transaction_as_soon_as_a_streamed_answer_comes(chargewire, session_id):
+    """A statement without rows on the streamed path (Accept: Arrow) is answered as soon as its
+    outcome is known (§6.1), and the session must already show what it did to the transaction
+    (§5.2): a client reading the session at once is deciding whether a lost session's statement
+    may run again (§5.7). A server that set the outcome before reading the transaction answered
+    BEGIN with the session still "none", and COMMIT still "open", now and then (Chargewire 2.2.0
+    on a busy runner). Many rounds, so the window shows if it is there."""
+    for round_ in range(200):
+        for sql, expected in (("BEGIN", "open"), ("COMMIT", "none")):
+            response = chargewire.submit(session_id=session_id, sql=sql, arrow=True)
+            assert response.status_code in (200, 201), response.text
+            assert transaction_of(chargewire=chargewire, session_id=session_id) == expected, (round_, sql)
+
+
 def test_every_spelling_of_begin_and_end_is_followed(chargewire, session_id):
     for begin, end in [("START TRANSACTION", "END"), ("BEGIN TRANSACTION", "ROLLBACK"),
                        ("/* a comment first */ BEGIN", "ABORT"), ("begin", "commit")]:
