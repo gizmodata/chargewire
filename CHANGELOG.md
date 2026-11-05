@@ -7,6 +7,23 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-11-05
+
+### Fixed
+
+- **The session shows what a statement did to its transaction as soon as the statement is
+  answered.** A statement without rows on the streamed path (`Accept: Arrow`) is answered as soon
+  as its outcome is known (spec §6.1), but the SDK read the session's transaction (and options) into
+  the session document only afterwards, so a client reading the session at once could see `BEGIN`
+  still `"none"` and `COMMIT` still `"open"`. A client that decides from that read whether a lost
+  session's statement may run again (§5.7) could then run it alone after a `BEGIN`; the Hardcharger
+  CLI did on a busy CI runner. The session is now updated before the outcome is set. A conformance
+  test reads the session right after streamed `BEGIN` and `COMMIT`, 200 times. Clients should still
+  not trust a `"none"` read right after a statement that can open a transaction, for servers before
+  2.2.1. The protocol is unchanged.
+- The site's `package-lock.json` is 2.1.0's again with only the package's own version changed: the
+  2.2.0 version bump had rewritten five unrelated dependency versions (fixed on main the same day).
+
 ## [2.2.0] - 2026-11-05
 
 Protocol version 1 is unchanged: `server_resuming` is an addition (a new error code a
