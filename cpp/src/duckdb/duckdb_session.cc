@@ -548,11 +548,15 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::Metadata(
       text("table", filter.table);
       text("types", types);
       // information_schema.tables, with each schema's path (nested schemas) in its place.
+      // Like information_schema.tables, it leaves out the engine's internal tables and views
+      // (the system catalog's information_schema, pg_catalog and duckdb_* views): 2.1.0
+      // listed them, so every client's table browser showed DuckDB's own catalog.
       sql = std::string(kSchemaPaths) +
             ", tables AS (SELECT database_name, schema_oid, table_name, "
             "CASE WHEN temporary THEN 'LOCAL TEMPORARY' ELSE 'BASE TABLE' END AS table_type "
-            "FROM duckdb_tables() UNION ALL SELECT database_name, schema_oid, view_name, 'VIEW' "
-            "FROM duckdb_views()) "
+            "FROM duckdb_tables() WHERE NOT internal "
+            "UNION ALL SELECT database_name, schema_oid, view_name, 'VIEW' "
+            "FROM duckdb_views() WHERE NOT internal) "
             "SELECT t.database_name AS catalog_name, p.path AS db_schema_name, t.table_name, "
             "t.table_type FROM tables t JOIN schema_paths p "
             "ON p.database_name = t.database_name AND p.oid = t.schema_oid "
