@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(chargewire VERSION 2.2.2 LANGUAGES C CXX)
+project(chargewire VERSION 2.2.3 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

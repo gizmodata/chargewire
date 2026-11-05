@@ -7,6 +7,17 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [2.2.3] - 2026-11-05
+
+### Fixed
+
+- **A missing catalog or schema set in a transaction no longer aborts it.** Setting the session's
+  `catalog` or `schema` option runs `USE`, and in a transaction a `USE` that failed aborted the
+  transaction: a mistyped option threw away the work in it, and the answer was a 422 "transaction
+  is aborted" that didn't say which catalog was missing. In a transaction the DuckDB backend now
+  checks that it exists first and reports a missing one as that option's `invalid_option_value`
+  (spec §5.2), as outside a transaction; the transaction stays open. A conformance test covers it.
+
 ## [2.2.2] - 2026-11-05
 
 ### Fixed

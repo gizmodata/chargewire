@@ -1,6 +1,6 @@
 [project]
 name = "chargewire-conformance"
-version = "2.2.2"
+version = "2.2.3"
 description = "Black-box conformance tests for Chargewire servers"
 requires-python = ">=3.12"
 dependencies = [
