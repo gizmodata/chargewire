@@ -133,8 +133,14 @@ class Session {
   // running, and no retained result kept. The check and the close are one step under the
   // session's lock, as Touch() is, so a request either touches it first (and it stays) or
   // finds it closed (session_not_found); it never gets a session closed under it, its
-  // result stream cut mid-body. Returns whether it closed it.
-  bool CloseIfIdle(Clock::time_point cutoff, CancelReason reason);
+  // result stream cut mid-body. Returns whether it closed it. When the session held a
+  // transaction open (a SQL BEGIN its client may not know about) and `ended_if_in_transaction`
+  // is given, the session is ended with that error instead of only closed (ended() returns
+  // it), so its owner's next request learns its transaction was rolled back (session_ended)
+  // rather than finding no session (session_not_found) and running its next statement
+  // alone in autocommit.
+  bool CloseIfIdle(Clock::time_point cutoff, CancelReason reason,
+                   const Error* ended_if_in_transaction = nullptr);
   // Ends the session with `why` (session_ended, spec §5.6) if it has held a transaction
   // open with no request since `cutoff` and nothing under way: no statement queued or
   // running, no request waiting on one, no result being read, no ingest in progress.

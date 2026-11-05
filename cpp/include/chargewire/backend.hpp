@@ -255,7 +255,8 @@ class EngineSession {
 
   // The server is about to destroy this session because it ended it itself: `reason` is
   // "idle" (no request for ServerOptions::session_idle_timeout, spec §5.7) or
-  // "idle_in_transaction" (IdleInTransactionTimeout). Called on the session's engine thread,
+  // "idle_in_transaction" (IdleInTransactionTimeout, or session_idle_timeout reached while
+  // the session held a transaction open, which was rolled back). Called on the session's engine thread,
   // right before the session is destroyed, so an engine that records why its sessions end
   // (a session log) can. The default ignores it.
   virtual void Ending(std::string_view reason) { (void)reason; }

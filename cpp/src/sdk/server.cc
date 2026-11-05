@@ -251,6 +251,11 @@ class Server::Impl {
     const auto now = WallClock::now();
     const auto idle_cutoff = Clock::now() - state_.options.session_idle_timeout;
     const auto ingest_cutoff = Clock::now() - state_.options.ingest_idle_timeout;
+    const Error idle_in_transaction = Error::SessionEnded(
+        reason::kIdleInTransaction,
+        std::format("the session had no request for {} s (session_idle_timeout) while it held a "
+                    "transaction open, and was ended; its transaction was rolled back",
+                    state_.options.session_idle_timeout.count()));
     for (auto& session : state_.sessions.All()) {
       for (const auto& statement : session->Statements()) {
         statement->ExpireIfDue(now);
@@ -265,9 +270,20 @@ class Server::Impl {
       }
       session->ForgetFinished(now, state_.options.finished_statement_ttl,
                               state_.options.max_finished_statements_per_session);
-      if (session->CloseIfIdle(idle_cutoff, CancelReason::kSessionClosed)) {
-        state_.sessions.Remove(session->id());
-        net::post(session->strand(), [session] { session->DestroyEngine("idle"); });
+      // Idle (spec §5.7). One that held a transaction open is ended with a reason, as the
+      // idle-in-transaction rule below ends one: its transaction is rolled back, and its
+      // owner's next request must say so (session_ended) rather than find no session, after
+      // which a client that replaces lost sessions could run its next statement alone.
+      if (session->CloseIfIdle(idle_cutoff, CancelReason::kSessionClosed, &idle_in_transaction)) {
+        if (const auto why = session->ended()) {
+          state_.sessions.Retire(session->id(), session->owner(), *why,
+                                 Clock::now() + std::max<Clock::duration>(state_.options.session_idle_timeout,
+                                                                          std::chrono::minutes(15)));
+          net::post(session->strand(), [session] { session->DestroyEngine("idle_in_transaction"); });
+        } else {
+          state_.sessions.Remove(session->id());
+          net::post(session->strand(), [session] { session->DestroyEngine("idle"); });
+        }
         continue;
       }
       // Idle in a transaction (spec §5.7): ended with a reason, as EndSession() ends one,

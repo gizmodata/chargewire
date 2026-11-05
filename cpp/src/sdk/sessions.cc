@@ -428,11 +428,14 @@ std::optional<Error> Session::ended() const {
   return ended_;
 }
 
-bool Session::CloseIfIdle(Clock::time_point cutoff, CancelReason reason) {
+bool Session::CloseIfIdle(Clock::time_point cutoff, CancelReason reason, const Error* ended_if_in_transaction) {
   {
     std::lock_guard lock(mutex_);
     if (closed_ || !IdleLocked(cutoff)) {
       return false;
+    }
+    if (ended_if_in_transaction && transaction_ != TransactionState::kNone) {
+      ended_ = *ended_if_in_transaction;
     }
     closed_ = true;
     torn_down_ = true;

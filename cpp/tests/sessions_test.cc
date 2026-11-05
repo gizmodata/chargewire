@@ -9,9 +9,11 @@
 #include <boost/asio/strand.hpp>
 #include <boost/asio/thread_pool.hpp>
 #include <chrono>
+#include <format>
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 
 #include <arrow/api.h>
@@ -190,6 +192,43 @@ TEST_F(SessionLifetime, OnlyASessionInATransactionIsIdleInOne) {
     const Error why = Error::SessionEnded(chargewire::reason::kIdleInTransaction, "idle in a transaction");
     EXPECT_EQ(session->EndIfIdleInTransaction(Clock::now() + std::chrono::seconds(1), why), ends)
         << chargewire::TransactionStateName(transaction);
+  }
+}
+
+// An idle session that held a transaction open (SQL BEGIN, which the client can't see) is
+// ended with the error given, not only closed (§5.7, issue #29): its next request gets
+// session_ended, so a client that replaces lost sessions learns its transaction was rolled
+// back instead of running its next statement alone. One in no transaction is only closed:
+// session_not_found, as before, and without the error it is only closed either way.
+TEST_F(SessionLifetime, AnIdleSessionInATransactionIsEndedWithAReason) {
+  const Error why = Error::SessionEnded(chargewire::reason::kIdleInTransaction, "idle while in a transaction");
+  const auto past = Clock::now() + std::chrono::seconds(1);
+  for (const auto [transaction, given, ended] :
+       {std::tuple{chargewire::TransactionState::kNone, true, false},
+        std::tuple{chargewire::TransactionState::kOpen, true, true},
+        std::tuple{chargewire::TransactionState::kAborted, true, true},
+        std::tuple{chargewire::TransactionState::kOpen, false, false}}) {
+    auto session = NewSession();
+    auto engine = std::make_unique<FakeEngine>();
+    engine->transaction = transaction;
+    session->SetEngine(std::move(engine));
+    session->RefreshTransaction();
+    const auto label = std::format("{} error {}", chargewire::TransactionStateName(transaction),
+                                   given ? "given" : "not given");
+    EXPECT_FALSE(session->CloseIfIdle(Clock::now() - std::chrono::hours(1), CancelReason::kSessionClosed,
+                                      given ? &why : nullptr))
+        << label << ": a request was made within the window";
+    EXPECT_FALSE(session->ended().has_value()) << label;
+    EXPECT_TRUE(session->CloseIfIdle(past, CancelReason::kSessionClosed, given ? &why : nullptr)) << label;
+    EXPECT_TRUE(session->closed()) << label;
+    EXPECT_EQ(session->ended().has_value(), ended) << label;
+    try {
+      session->Touch();
+      FAIL() << label << ": expected the closed session to refuse a request";
+    } catch (const Error& error) {
+      EXPECT_EQ(error.code(), ended ? ErrorCode::kSessionEnded : ErrorCode::kSessionNotFound) << label;
+      if (ended) EXPECT_EQ(error.reason(), chargewire::reason::kIdleInTransaction) << label;
+    }
   }
 }
 
