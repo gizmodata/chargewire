@@ -985,6 +985,19 @@ TEST_F(LiveTls, VerifiesTheServerAgainstTheGivenRoots) {
   EXPECT_NO_THROW(wc::Client(server.Options(skip)).Discover());
 }
 
+// A fully qualified host name, with its final dot, is the same host: the certificate for
+// "localhost" verifies for "localhost." (SNI and the check carry the name without the dot).
+TEST_F(LiveTls, AFullyQualifiedHostNameVerifies) {
+  Server server({"--tls-cert", certs_->server_cert.string(), "--tls-key", certs_->server_key.string()}, true);
+  ASSERT_TRUE(server.WaitReady());
+  wc::TlsOptions trusted{.enabled = true, .root_certs_file = certs_->ca.string()};
+  auto options = server.Options(trusted);
+  options.host = "localhost.";
+  wc::Client client(options);
+  client.SignInWithPassword(server.username(), server.password());
+  EXPECT_EQ(Scalar(*client.CreateSession(), "SELECT 1"), 1);
+}
+
 TEST_F(LiveTls, ChecksTheHostName) {
   Certificates other = Certificates::Make("DNS:db.example.com");
   Server server({"--tls-cert", other.server_cert.string(), "--tls-key", other.server_key.string()}, true);

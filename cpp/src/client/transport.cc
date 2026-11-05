@@ -428,12 +428,16 @@ void Transport::Connect() {
   }
   lowest.socket().set_option(tcp::no_delay(true), ec);
   if (secure_) {
-    if (!IsIpLiteral(host_) && !SSL_set_tlsext_host_name(secure_->native_handle(), host_.c_str())) {
+    // A fully qualified name ("db.example.com.") names the same host, but certificates and SNI
+    // carry it without the final dot (RFC 6066 §3): sent with it, every certificate check failed.
+    std::string tls_name = host_;
+    if (tls_name.size() > 1 && tls_name.back() == '.') tls_name.pop_back();
+    if (!IsIpLiteral(tls_name) && !SSL_set_tlsext_host_name(secure_->native_handle(), tls_name.c_str())) {
       Drop();
       throw Error(0, "client_tls_failed", "cannot set the TLS server name for " + host_);
     }
     if (SSL_CTX_get_verify_mode(tls_->native_handle()) != SSL_VERIFY_NONE) {
-      secure_->set_verify_callback(ssl::host_name_verification(host_));
+      secure_->set_verify_callback(ssl::host_name_verification(tls_name));
     }
     lowest.expires_after(connect_timeout_);
     ec = Run([&](auto handler) { secure_->async_handshake(ssl::stream_base::client, std::move(handler)); });
