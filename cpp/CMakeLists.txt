@@ -31,9 +31,14 @@ endif()
 # Boost 1.92: Beast (HTTP over Asio), JSON and URL. Only these are built.
 set(BOOST_INCLUDE_LIBRARIES beast json url)
 set(BOOST_ENABLE_CMAKE ON)
+# Download sources must not be able to fail a build: CMake tries each URL in turn (here the
+# same one again, as retries: GitHub answered 504 on a Windows release build), and the hash
+# says the archive is the one this pins, whichever try delivered it.
+set(CHARGEWIRE_BOOST_URL https://github.com/boostorg/boost/releases/download/boost-1.92.0/boost-1.92.0-cmake.tar.xz)
 FetchContent_Declare(
   Boost
-  URL https://github.com/boostorg/boost/releases/download/boost-1.92.0/boost-1.92.0-cmake.tar.xz
+  URL ${CHARGEWIRE_BOOST_URL} ${CHARGEWIRE_BOOST_URL} ${CHARGEWIRE_BOOST_URL}
+  URL_HASH SHA256=9bed76128d4e46755dbe818487788c6fceb6f72b378f4daa49b7e1e600d9088d
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(Boost)
@@ -204,9 +209,11 @@ option(CHARGEWIRE_BUILD_TESTS "Build the client library's and the SDK's tests" O
 if(CHARGEWIRE_BUILD_TESTS)
   set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
   set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+  set(CHARGEWIRE_GTEST_URL https://github.com/google/googletest/archive/refs/tags/v1.18.0.tar.gz)
   FetchContent_Declare(
     googletest
-    URL https://github.com/google/googletest/archive/refs/tags/v1.18.0.tar.gz
+    URL ${CHARGEWIRE_GTEST_URL} ${CHARGEWIRE_GTEST_URL} ${CHARGEWIRE_GTEST_URL}
+    URL_HASH SHA256=6e3191c1455468b3fc35a417fb565c1c5071aee1b7e7f85e30cf48a98d37d8b5
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
   FetchContent_MakeAvailable(googletest)
   add_executable(chargewire-client-tests tests/client_test.cc tests/resuming_test.cc)
