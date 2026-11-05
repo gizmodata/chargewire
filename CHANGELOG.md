@@ -7,6 +7,18 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-11-05
+
+### Fixed
+
+- **The C++ client connects over TLS to a fully qualified host name.** A host written with its
+  final dot (`db.example.com.`) names the same host, but certificates and SNI carry names without
+  it (RFC 6066 §3); the client sent the dotted name, so every such connection failed with
+  "certificate verify failed". It now uses the name without the final dot for SNI and the
+  certificate check. A live TLS test connects to `localhost.`.
+- **Builds survive a download outage.** The Boost and GoogleTest archives are fetched with retries
+  and checked against a pinned SHA-256 (a release build had failed on GitHub answering 504).
+
 ## [2.2.1] - 2026-11-05
 
 ### Fixed
