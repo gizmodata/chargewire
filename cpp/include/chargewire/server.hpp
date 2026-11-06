@@ -58,10 +58,12 @@ struct TlsOptions {
   // PEM certificate revocation lists (X509_V_FLAG_CRL_CHECK on the leaf). The handshake
   // refuses a certificate they revoke. Every CA that issues client certificates needs its
   // CRL here: a certificate whose issuer has no CRL, or an expired one, is refused too.
-  // The file is checked for changes at most every crl_check_interval (on new connections
-  // and requests) and reloaded; each open connection's certificate is then verified again
-  // at its next request (certificate_revoked). A file that fails to load keeps the last
-  // good one in force.
+  // The TLS files (the certificate chain and key, the client CA, this file) are checked
+  // for changes at most every crl_check_interval (on new connections and requests) and
+  // the context is rebuilt when one changed, so a renewed certificate is served without
+  // a restart; each open connection's certificate is then verified again at its next
+  // request (certificate_revoked). A file that fails to load keeps the last good one in
+  // force, and the reload is tried again.
   std::string client_crl_file;
   std::chrono::seconds crl_check_interval{5};
   // With CRLs, every certificate of a client's chain is checked (X509_V_FLAG_CRL_CHECK_ALL),
@@ -74,7 +76,8 @@ struct TlsOptions {
   // A password or token_exchange sign-in on a connection with a client certificate must
   // be for the identity the certificate maps to (certificate_identity_mismatch).
   bool require_identity_match = false;
-  // Told about each CRL (re)load: whether it worked and what happened, for the log.
+  // Told about each (re)load of the TLS files: whether it worked and what happened, for
+  // the log.
   std::function<void(bool ok, const std::string& message)> on_crl_reload;
 };
 

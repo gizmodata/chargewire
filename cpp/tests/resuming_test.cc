@@ -518,3 +518,27 @@ TEST(Resuming, AThrowingProgressCallbackChangesNothing) {
   EXPECT_EQ(client.access_token(), "t0k");
   EXPECT_EQ(waits.waits(), std::vector<std::chrono::milliseconds>(2, 1000ms));
 }
+
+TEST(Resuming, ARecycledSessionConnectionStillResumesAfterDiscoveryAndHealth) {
+  RecordedWaits waits;
+  StubServer stub([](const Seen& s, int nth) {
+    if (Is(s, "GET", "/chargewire")) return Discovery();
+    if (Is(s, "GET", "/chargewire/v1/health")) return Answer{200, "application/json", "{}", {}};
+    if (Is(s, "POST", kToken)) return Token();
+    if (Is(s, "POST", kSessions)) return nth == 1 ? Resuming("1") : Created();
+    if (Is(s, "DELETE", "/chargewire/v1/sessions/s1")) return Answer{204, "application/json", "", {}};
+    return Answer{404, "application/problem+json", R"({"code":"not_found","status":404})", {}};
+  });
+  wc::Client client(stub.Options());
+  client.SignInWithPassword("joe", "pw");
+  client.CreateSession()->Close();
+  client.Discover();
+  client.Health();
+  const auto opened = client.connections_opened();
+  auto session = client.CreateSession();
+  EXPECT_EQ(session->id(), "s1");
+  EXPECT_EQ(client.connections_opened(), opened);
+  EXPECT_EQ(stub.Count("POST", kSessions), 3);
+  EXPECT_EQ(waits.waits(), std::vector<std::chrono::milliseconds>{1000ms});
+  session->Close();
+}

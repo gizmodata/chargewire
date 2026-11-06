@@ -282,15 +282,21 @@ std::size_t BodyReader::Read(char* out, std::size_t size) {
   if (transport_.generation_ != generation_ || transport_.active_ != this) {
     throw Error(0, "client_connection_failed", "the response was abandoned before its end");
   }
-  while (true) {
+  // The caller's buffer is filled as far as the body goes: one socket read is at most
+  // 64 KiB (Beast's window), and a read that returned after each one cost a run of the
+  // loop per 64 KiB, which kept a large result at a few dozen MB/s. Here the reads go on,
+  // in one run of the loop, until the buffer is full, the body ends, or a read brings
+  // nothing more for now.
+  std::size_t filled = 0;
+  while (filled < size) {
     if (parser_->is_done()) {
       done_ = true;
       transport_.active_ = nullptr;
       if (!parser_->keep_alive()) transport_.Drop();
-      return 0;
+      break;
     }
-    parser_->get().body().data = out;
-    parser_->get().body().size = size;
+    parser_->get().body().data = out + filled;
+    parser_->get().body().size = size - filled;
     boost::system::error_code ec;
     transport_.WithStream([&](auto& stream) {
       ec = transport_.Run([&](auto handler) {
@@ -298,7 +304,7 @@ std::size_t BodyReader::Read(char* out, std::size_t size) {
       });
     });
     if (ec == http::error::need_buffer) ec = {};
-    const std::size_t got = size - parser_->get().body().size;
+    const std::size_t got = (size - filled) - parser_->get().body().size;
     if (ec) {
       transport_.active_ = nullptr;
       transport_.Drop();
@@ -307,15 +313,19 @@ std::size_t BodyReader::Read(char* out, std::size_t size) {
       throw Error(0, "client_connection_failed",
                   "the connection to " + transport_.Origin() + " ended in the middle of a response: " + ec.message());
     }
-    if (got > 0) {
-      if (parser_->is_done()) {
-        done_ = true;
-        transport_.active_ = nullptr;
-        if (!parser_->keep_alive()) transport_.Drop();
-      }
-      return got;
+    filled += got;
+    if (parser_->is_done()) {
+      done_ = true;
+      transport_.active_ = nullptr;
+      if (!parser_->keep_alive()) transport_.Drop();
+      break;
     }
+    // Something arrived and the socket may hold no more yet: hand it over rather than
+    // wait for the rest (a stream's reader asks for exactly what its next message needs,
+    // and a short read is what it expects).
+    if (got > 0 && filled >= (64 * 1024) && transport_.NothingReadable()) break;
   }
+  return filled;
 }
 
 std::string BodyReader::ReadAll() {
@@ -327,6 +337,8 @@ std::string BodyReader::ReadAll() {
 
 // ---- Transport ----
 
+constexpr std::size_t kReadBuffer = 64 * 1024;  // what one http::async_read_some takes at most
+
 Transport::Transport(std::string host, uint16_t port, std::shared_ptr<ssl::context> tls,
                      std::chrono::milliseconds connect_timeout, std::shared_ptr<const std::atomic<bool>> legacy,
                      std::chrono::milliseconds resume_timeout,
@@ -334,9 +346,21 @@ Transport::Transport(std::string host, uint16_t port, std::shared_ptr<ssl::conte
     : host_(std::move(host)), port_(port), tls_(std::move(tls)), connect_timeout_(connect_timeout),
       resume_timeout_(resume_timeout), on_resuming_(std::move(on_resuming)), legacy_(std::move(legacy)) {
   if (host_.size() > 2 && host_.front() == '[' && host_.back() == ']') host_ = host_.substr(1, host_.size() - 2);
+  // Beast reads as much as the buffer has spare room for (at most 64 KiB), and a buffer
+  // left to grow on its own stayed at its 512-byte minimum: a result came in 512 bytes
+  // per socket read and per run of the loop, a few dozen MB/s. Room for a full read.
+  buffer_.reserve(kReadBuffer);
 }
 
 Transport::~Transport() { Drop(); }
+
+bool Transport::NothingReadable() {
+  if (buffer_.size() > 0) return false;
+  if (secure_ && SSL_pending(secure_->native_handle()) > 0) return false;
+  boost::system::error_code ec;
+  beast::tcp_stream& lowest = secure_ ? beast::get_lowest_layer(*secure_) : *plain_;
+  return ec || lowest.socket().available(ec) == 0;
+}
 
 std::string Transport::Origin() const {
   const bool v6 = host_.find(':') != std::string::npos;
@@ -427,6 +451,10 @@ void Transport::Connect() {
     throw Error(0, "client_connection_failed", "could not connect to " + Origin() + ": " + ec.message());
   }
   lowest.socket().set_option(tcp::no_delay(true), ec);
+  // A receive buffer the server can run ahead into: a result stream is read in pieces, and
+  // with the default few hundred KiB the writer blocked after each piece, so every piece
+  // cost a wake-up on each side.
+  lowest.socket().set_option(net::socket_base::receive_buffer_size(4 * 1024 * 1024), ec);
   if (secure_) {
     // A fully qualified name ("db.example.com.") names the same host, but certificates and SNI
     // carry it without the final dot (RFC 6066 §3): sent with it, every certificate check failed.

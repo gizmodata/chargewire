@@ -7,6 +7,18 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-11-06
+
+### Added
+
+- C++ statement progress observers, with bounded observation while Arrow results stream. Observer failures cannot fail queries.
+- Reload replaced TLS certificate, key and client CA files for new connections without a restart.
+
+### Fixed
+
+- Reuse idle C++ client connections while retaining the auto-resume policy; discovery and health use separate transports.
+- Read Arrow streams into full-size buffers and enlarge socket buffers for efficient transfers.
+
 ## [2.2.3] - 2026-11-05
 
 ### Fixed

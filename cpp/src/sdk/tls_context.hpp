@@ -66,8 +66,10 @@ class TlsContext {
   // The SSL ex_data slot of a HandshakeRefusal the handshake fills in when it refuses a
   // client certificate.
   static int RefusalIndex();
-  // The context new connections use. Looks at the CRL file first, at most every
-  // crl_check_interval, and reloads it when it changed.
+  // The context new connections use. Looks at the files first (the server's certificate
+  // chain and key, the client CA, the CRL), at most every crl_check_interval, and rebuilds
+  // the context when one of them changed: a renewed certificate is served without a
+  // restart. Connections made before keep the context they were made with.
   Current Get();
 
   // After a handshake under `generation`: the connection's client certificate, or null
@@ -86,8 +88,13 @@ class TlsContext {
   std::mutex mutex_;  // guards current_ and the file's last-seen state
   Current current_;
   Clock::time_point last_check_;
-  std::filesystem::file_time_type crl_mtime_{};
-  std::uintmax_t crl_size_ = 0;
+  // Each watched file as last loaded: its modification time and size.
+  struct Watched {
+    std::string path;
+    std::filesystem::file_time_type mtime{};
+    std::uintmax_t size = 0;
+  };
+  std::vector<Watched> watched_;
 };
 
 // The identity `source` names in `certificate` (spec §4.4): exactly one value, without

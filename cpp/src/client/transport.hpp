@@ -120,6 +120,8 @@ class Transport {
 
   // Closes the connection (the next request opens a new one).
   void Close();
+  // Connected, with no response left to read: fit for another request, from anyone.
+  bool Idle() const { return connected_ && active_ == nullptr; }
   // http(s)://host:port, for messages.
   std::string Origin() const;
   const std::string& host() const { return host_; }
@@ -131,6 +133,9 @@ class Transport {
                                        std::chrono::milliseconds timeout);
   void Connect();
   void Drop();
+  // Whether nothing is there to read right now: no bytes buffered unparsed, none pending in
+  // TLS, none readable on the socket (a read would wait).
+  bool NothingReadable();
   template <class Op>
   boost::system::error_code Run(Op&& op);
   template <class F>

@@ -560,6 +560,73 @@ TEST_F(Live, StreamsRowsInBatches) {
   EXPECT_EQ(Scalar(*session_, "SELECT 7"), 7);
 }
 
+TEST_F(Live, ASessionAfterTheFirstOpensNoConnection) {
+  // The connection a session used goes back to the client when the session closes with
+  // its last response read to the end; the next session takes it. The same for the
+  // connections a partitioned result's streams used.
+  auto client = server_->SignedIn();
+  const uint64_t before = client->connections_opened();
+  for (int i = 0; i < 5; i++) {
+    auto session = client->CreateSession();
+    auto result = session->Execute("SELECT " + std::to_string(i) + " AS one");
+    ASSERT_TRUE(result.HasRows());
+    ASSERT_NE(result.reader->ToTable(), nullptr);
+    session->Close();
+  }
+  EXPECT_EQ(client->connections_opened(), before + 1);
+  wc::StatementOptions eight;
+  eight.result_partitions = 8;
+  uint64_t after_first_round = 0;
+  for (int round = 0; round < 3; round++) {
+    auto session = client->CreateSession();
+    auto result = session->Execute("SELECT i FROM range(200000) t(i)", eight);
+    ASSERT_TRUE(result.HasRows());
+    auto table = result.reader->ToTable();
+    ASSERT_NE(table, nullptr);
+    EXPECT_EQ(table->num_rows(), 200000);
+    session->Close();
+    // However many streams the server split the result into (up to eight), their
+    // connections are opened in the first round and reused in the next ones.
+    if (round == 0) {
+      after_first_round = client->connections_opened();
+      EXPECT_LE(after_first_round, before + 8);
+    } else {
+      EXPECT_EQ(client->connections_opened(), after_first_round) << "round " << round;
+    }
+  }
+  // A result dropped before its end gives no connection back: the one it held is gone.
+  {
+    auto session = client->CreateSession();
+    auto result = session->Execute("SELECT i FROM range(2000000) t(i)");
+    ASSERT_TRUE(result.HasRows());
+    ASSERT_NE(result.reader->Next(), nullptr);
+    result.reader.reset();
+    session->Close();
+  }
+  const uint64_t after_drop = client->connections_opened();
+  {
+    auto session = client->CreateSession();
+    ASSERT_NE(session->Execute("SELECT 1 AS one").reader->ToTable(), nullptr);
+    session->Close();
+  }
+  EXPECT_LE(client->connections_opened(), after_drop + 1);
+}
+
+TEST_F(Live, ALargeResultIsReadAtTheServersRate) {
+  // 300 MB over one stream: with the transport's buffer at its 512-byte minimum this took
+  // 7 to 8 seconds (one socket read and one run of the loop per 512 bytes); reserved for a
+  // full read, well under a second. The bound leaves room for a slow machine, not for the
+  // old rate.
+  auto result = session_->Execute("SELECT i, i * 2 AS j, i * 3 AS k FROM range(12500000) t(i)");
+  ASSERT_TRUE(result.HasRows());
+  const auto started = std::chrono::steady_clock::now();
+  int64_t rows = 0;
+  while (auto batch = result.reader->Next()) rows += batch->num_rows();
+  const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+  EXPECT_EQ(rows, 12500000);
+  EXPECT_LT(seconds, 3.0) << "300 MB took " << seconds << " s: the client reads in too small pieces again";
+}
+
 TEST_F(Live, AStatementWithoutRowsAnswersADocument) {
   auto created = session_->Execute("CREATE TABLE IF NOT EXISTS docs (x INTEGER)");
   ASSERT_FALSE(created.HasRows());
@@ -987,6 +1054,32 @@ TEST_F(LiveTls, VerifiesTheServerAgainstTheGivenRoots) {
 
 // A fully qualified host name, with its final dot, is the same host: the certificate for
 // "localhost" verifies for "localhost." (SNI and the check carry the name without the dot).
+TEST_F(LiveTls, ReplacedCertificateAndKeyAreServedWithoutRestart) {
+  auto original = Certificates::Make("DNS:localhost,IP:127.0.0.1");
+  auto renewed = Certificates::Make("DNS:localhost,IP:127.0.0.1");
+  {
+    Server server({"--tls-cert", original.server_cert.string(), "--tls-key", original.server_key.string()}, true);
+    ASSERT_TRUE(server.WaitReady());
+    wc::TlsOptions old_roots{.enabled = true, .root_certs_file = original.ca.string()};
+    wc::TlsOptions new_roots{.enabled = true, .root_certs_file = renewed.ca.string()};
+    EXPECT_NO_THROW(wc::Client(server.Options(old_roots)).Discover());
+    EXPECT_THROW(wc::Client(server.Options(new_roots)).Discover(), wc::Error);
+    fs::copy_file(renewed.server_cert, original.server_cert, fs::copy_options::overwrite_existing);
+    fs::copy_file(renewed.server_key, original.server_key, fs::copy_options::overwrite_existing);
+    bool replaced = false;
+    const auto deadline = std::chrono::steady_clock::now() + 10s;
+    while (std::chrono::steady_clock::now() < deadline) {
+      try { wc::Client(server.Options(new_roots)).Discover(); replaced = true; break; }
+      catch (const wc::Error&) { std::this_thread::sleep_for(100ms); }
+    }
+    EXPECT_TRUE(replaced);
+    EXPECT_THROW(wc::Client(server.Options(old_roots)).Discover(), wc::Error);
+  }
+  std::error_code ec;
+  fs::remove_all(original.dir, ec);
+  fs::remove_all(renewed.dir, ec);
+}
+
 TEST_F(LiveTls, AFullyQualifiedHostNameVerifies) {
   Server server({"--tls-cert", certs_->server_cert.string(), "--tls-key", certs_->server_key.string()}, true);
   ASSERT_TRUE(server.WaitReady());
@@ -1127,5 +1220,60 @@ TEST_F(LiveTls, SignsInWithTheClientCertificate) {
   std::this_thread::sleep_for(3s);
   EXPECT_NE(client.access_token(), first);
   EXPECT_EQ(Scalar(*client.CreateSession(), "SELECT 8"), 8);
+}
+
+
+TEST_F(Live, ProgressObservesAnUnretainedStreamAndStopsWhenClosed) {
+  std::atomic<int> reports{0};
+  wc::StatementOptions options;
+  options.result_partitions = 3;
+  options.on_progress = [&](const wc::StatementDocument& doc) {
+    EXPECT_FALSE(doc.statement_id.empty());
+    EXPECT_FALSE(doc.retained);
+    ++reports;
+    throw std::runtime_error("observer exceptions must not fail a query");
+  };
+  auto result = session_->Execute("SELECT i FROM range(5000000) t(i)", options);
+  ASSERT_TRUE(result.HasRows());
+  ASSERT_NE(result.reader->Next(), nullptr);
+  EXPECT_GT(reports.load(), 0);
+  result.reader->Close();
+  const int stopped = reports.load();
+  std::this_thread::sleep_for(350ms);
+  EXPECT_EQ(reports.load(), stopped);
+  EXPECT_EQ(Scalar(*session_, "SELECT 7"), 7);
+  auto update = session_->Execute("CREATE TEMP TABLE progress_update AS SELECT 42 AS i", options);
+  EXPECT_FALSE(update.HasRows());
+  EXPECT_EQ(Scalar(*session_, "SELECT i FROM progress_update"), 42);
+}
+
+TEST_F(Live, CancelRunningWithProgressBeforeAnyRows) {
+  // A query that runs for minutes unless cancelled.
+  const std::string slow = "SELECT count(*) FROM range(100000000000) a(i) WHERE i % 7 = 3";
+  std::atomic<bool> stop{false};
+  std::thread canceller([&] {
+    std::this_thread::sleep_for(500ms);
+    while (!stop.load()) {
+      session_->CancelRunning();
+      std::this_thread::sleep_for(200ms);
+    }
+  });
+  const auto start = std::chrono::steady_clock::now();
+  try {
+    wc::StatementOptions options;
+    options.on_progress = [](const auto&) {};
+    auto result = session_->Execute(slow, options);
+    if (result.HasRows()) result.reader->ToTable();
+    ADD_FAILURE() << "the query finished";
+  } catch (const wc::Error& e) {
+    EXPECT_TRUE(e.IsCancelled()) << e.code() << ": " << e.what();
+  }
+  stop.store(true);
+  canceller.join();
+  EXPECT_LT(std::chrono::steady_clock::now() - start, 30s);
+  // The session goes on, and a statement that isn't cancelled finishes.
+  EXPECT_EQ(Scalar(*session_, "SELECT count(*) FROM range(1000)"), 1000);
+  session_->CancelRunning();  // nothing runs: a no-op
+  EXPECT_EQ(Scalar(*session_, "SELECT 3"), 3);
 }
 

@@ -313,10 +313,25 @@ class ClientCore {
     host_header = (v6 ? "[" + options.host + "]" : options.host) + ":" + std::to_string(options.port);
   }
 
-  // A connection for protocol requests. `resume` (every request but discovery and health)
-  // sends a request again while the server answers server_resuming (spec §11.2).
+  // A connection for a request: one a session or a partition stream gave back (Recycle)
+  // when it had read its last response to the end, else a new one. A connection that sat
+  // in the pool past kPoolIdle is dropped instead of reused: the server closes an idle
+  // keep-alive connection after a while, and a request on a closed one is a failed
+  // request (the transport retries one once when nothing came back, but not for nothing).
+  // Discovery and health disable resume and use their own connections: a pooled
+  // transport retains the resume policy it was constructed with.
   std::unique_ptr<Transport> NewTransport(std::chrono::milliseconds connect_timeout = kNoTimeout,
                                           bool resume = true) const {
+    if (resume && connect_timeout.count() <= 0) {
+      std::lock_guard lock(pool_mutex);
+      const auto now = std::chrono::steady_clock::now();
+      while (!pool.empty()) {
+        Pooled pooled = std::move(pool.back());
+        pool.pop_back();
+        if (now - pooled.since <= kPoolIdle) return std::move(pooled.transport);
+      }
+    }
+    connections_opened.fetch_add(1, std::memory_order_relaxed);
     return std::make_unique<Transport>(options.host, options.port, tls,
                                        connect_timeout.count() > 0 ? connect_timeout : options.connect_timeout,
                                        legacy,
@@ -324,6 +339,22 @@ class ClientCore {
                                               : std::chrono::milliseconds(0),
                                        resume ? options.on_resuming : nullptr);
   }
+  // Gives a connection back for the next session or stream; one that is not idle (a
+  // response left unread, or closed) is let go.
+  void Recycle(std::unique_ptr<Transport> transport) const {
+    if (!transport || !transport->Idle()) return;
+    std::lock_guard lock(pool_mutex);
+    if (pool.size() < kPoolSize) pool.push_back({std::move(transport), std::chrono::steady_clock::now()});
+  }
+  static constexpr std::size_t kPoolSize = 16;
+  static constexpr std::chrono::seconds kPoolIdle{30};
+  struct Pooled {
+    std::unique_ptr<Transport> transport;
+    std::chrono::steady_clock::time_point since;
+  };
+  mutable std::mutex pool_mutex;
+  mutable std::vector<Pooled> pool;
+  mutable std::atomic<uint64_t> connections_opened{0};
 
   // A server released before the protocol's rename has no discovery document at the
   // current root, only at its old one; the client then speaks the old spelling to it
@@ -444,12 +475,32 @@ class ClientCore {
   std::optional<std::vector<std::string>> capabilities;
 };
 
+// A connection for one call (a discovery, a session's creation), back to the client's pool
+// after it, so the next call or session takes it.
+class BorrowedTransport {
+ public:
+  explicit BorrowedTransport(const ClientCore& core) : core_(core), transport_(core.NewTransport()) {}
+  ~BorrowedTransport() { core_.Recycle(std::move(transport_)); }
+  BorrowedTransport(const BorrowedTransport&) = delete;
+  BorrowedTransport& operator=(const BorrowedTransport&) = delete;
+  Transport* operator->() { return transport_.get(); }
+  Transport& operator*() { return *transport_; }
+
+ private:
+  const ClientCore& core_;
+  std::unique_ptr<Transport> transport_;
+};
+
 // ---- SessionCore ----
 
 class SessionCore : public std::enable_shared_from_this<SessionCore> {
  public:
-  SessionCore(std::shared_ptr<ClientCore> c, std::string session_id, int64_t idle)
-      : client(std::move(c)), id(std::move(session_id)), idle_timeout_s(idle), transport(client->NewTransport()) {}
+  // `t`: the connection that created the session, kept for its statements.
+  SessionCore(std::shared_ptr<ClientCore> c, std::string session_id, int64_t idle, std::unique_ptr<Transport> t)
+      : client(std::move(c)), id(std::move(session_id)), idle_timeout_s(idle), transport(std::move(t)) {}
+  ~SessionCore() {
+    if (transport && transport->Idle()) client->Recycle(std::move(transport));
+  }
 
   std::string Path(std::string_view rest) const { return client->V1("/sessions/" + id + std::string(rest)); }
 
@@ -612,7 +663,8 @@ class SessionCore : public std::enable_shared_from_this<SessionCore> {
   // `ipc_compression` is the Chargewire-IPC-Compression the request sends (spec §8.2).
   std::shared_ptr<ResultReader> Fetch(const std::string& statement_id, int64_t partition, int64_t from_batch,
                                       uint64_t serial, const std::string& ipc_compression);
-  ExecuteResult Finish(StatementDocument doc, uint64_t serial, const std::string& ipc_compression);
+  ExecuteResult Finish(StatementDocument doc, uint64_t serial, const std::string& ipc_compression,
+                       const std::function<void(const StatementDocument&)>& progress = {});
   // A reader of every partition of a split result at once (spec §6.10). `first`, when
   // set, is partition 0's response; otherwise partition 0 is requested too.
   std::shared_ptr<ResultReader> MakePartitioned(const std::string& statement_id, uint64_t serial, int partitions,
@@ -702,8 +754,10 @@ class StreamResultReader : public ResultReader {
 // One partition's Arrow stream, read by a pump thread of PartitionedResultReader.
 class PartStream {
  public:
-  PartStream(std::unique_ptr<Transport> own, std::unique_ptr<BodyReader> body)
-      : own_(std::move(own)), body_(std::move(body)), input_(std::make_shared<BodyStream>(body_.get())) {}
+  PartStream(std::shared_ptr<ClientCore> client, std::unique_ptr<Transport> own, std::unique_ptr<BodyReader> body)
+      : client_(std::move(client)), own_(std::move(own)), body_(std::move(body)),
+        input_(std::make_shared<BodyStream>(body_.get())) {}
+  ~PartStream() { Drop(); }
 
   // Reads the schema message; throws std::runtime_error when there is none.
   std::shared_ptr<arrow::Schema> Open() {
@@ -728,11 +782,13 @@ class PartStream {
   void Drop() {
     reader_.reset();
     input_.reset();
-    body_.reset();
+    body_.reset();  // read to its end: the connection is idle; cut short: it is dropped
+    if (own_ && client_) client_->Recycle(std::move(own_));
     own_.reset();
   }
 
  private:
+  std::shared_ptr<ClientCore> client_;
   std::unique_ptr<Transport> own_;  // the partition's connection (partition 0 uses the session's)
   std::unique_ptr<BodyReader> body_;
   std::shared_ptr<BodyStream> input_;
@@ -981,12 +1037,87 @@ std::shared_ptr<arrow::RecordBatchReader> ResultReader::AsRecordBatchReader() {
   return std::make_shared<ReaderAdapter>(this);
 }
 
-ExecuteResult SessionCore::Finish(StatementDocument doc, uint64_t serial, const std::string& ipc_compression) {
+namespace {
+void ReportProgress(const std::function<void(const StatementDocument&)>& report, const StatementDocument& doc) {
+  if (report) { try { report(doc); } catch (...) {} }
+}
+
+// A status request must never use the transport carrying Arrow, or keep a query alive
+// after the consumer leaves. Stop waits at most for the current bounded status request.
+class ProgressWatch {
+ public:
+  ProgressWatch(std::shared_ptr<SessionCore> core, std::string id,
+                std::function<void(const StatementDocument&)> report)
+      : thread_([this, core, id, report] {
+          std::unique_ptr<Transport> transport;
+          std::unique_lock lock(mutex_);
+          while (!changed_.wait_for(lock, std::chrono::milliseconds(250), [&] { return stopped_; })) {
+            lock.unlock();
+            try {
+              if (!transport) transport = core->client->NewTransport(std::chrono::seconds(1), false);
+              auto request = core->client->Request(http::verb::get, core->Path("/statements/" + id), true);
+              auto reply = transport->Exchange(std::move(request), nullptr, std::chrono::seconds(1));
+              if (reply.status == 200) {
+                if (auto object = ParseObject(reply.body)) {
+                  auto doc = SessionCore::ParseStatement(*object);
+                  ReportProgress(report, doc);
+                  if (doc.Terminal()) return;
+                }
+              }
+            } catch (...) {}  // telemetry cannot break a result stream
+            lock.lock();
+          }
+        }) {}
+  ~ProgressWatch() {
+    { std::lock_guard lock(mutex_); stopped_ = true; }
+    changed_.notify_all();
+    thread_.join();
+  }
+ private:
+  std::mutex mutex_;
+  std::condition_variable changed_;
+  bool stopped_ = false;
+  std::thread thread_;
+};
+
+class ProgressReader : public ResultReader {
+ public:
+  ProgressReader(std::shared_ptr<ResultReader> reader, std::shared_ptr<ProgressWatch> watch)
+      : reader_(std::move(reader)), watch_(std::move(watch)) {}
+  const std::string& statement_id() const override { return reader_->statement_id(); }
+  std::shared_ptr<arrow::Schema> schema() const override { return reader_->schema(); }
+  std::shared_ptr<arrow::RecordBatch> Next() override {
+    try { auto batch = reader_->Next(); if (!batch) watch_.reset(); return batch; }
+    catch (...) { watch_.reset(); throw; }
+  }
+  void Close() override { watch_.reset(); reader_->Close(); }
+ private:
+  std::shared_ptr<ResultReader> reader_;
+  std::shared_ptr<ProgressWatch> watch_;
+};
+}  // namespace
+
+ExecuteResult SessionCore::Finish(StatementDocument doc, uint64_t serial, const std::string& ipc_compression,
+                                  const std::function<void(const StatementDocument&)>& progress) {
   SetRunning(serial, doc.statement_id);
   try {
-    if (!doc.Terminal() && doc.result_kind != "update") doc = Wait(doc.statement_id);
+    if (progress) {
+      ReportProgress(progress, doc);
+      int pause_ms = 25;
+      while (!doc.Terminal() && !(doc.result_kind == "rows" && !doc.partitions.empty())) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(pause_ms));
+        pause_ms = std::min(250, pause_ms * 2);
+        doc = Status(doc.statement_id, 0);
+        ReportProgress(progress, doc);
+      }
+    } else if (!doc.Terminal() && doc.result_kind != "update") doc = Wait(doc.statement_id);
     if (doc.error && doc.state != "succeeded") throw *doc.error;
     if (doc.result_kind == "rows") {
+      std::shared_ptr<ProgressWatch> watch;
+      if (progress) {
+        try { watch = std::make_shared<ProgressWatch>(shared_from_this(), doc.statement_id, progress); }
+        catch (...) {}  // exhausted observer resources must not fail the SQL
+      }
       ExecuteResult result;
       result.statement_id = doc.statement_id;
       if (doc.partitions.size() > 1 && (doc.partition_order == "interleaved" || doc.partition_order == "any")) {
@@ -995,6 +1126,7 @@ ExecuteResult SessionCore::Finish(StatementDocument doc, uint64_t serial, const 
       } else {
         result.reader = Fetch(doc.statement_id, 0, 0, serial, ipc_compression);
       }
+      if (watch) result.reader = std::make_shared<ProgressReader>(result.reader, std::move(watch));
       return result;
     }
   } catch (...) {
@@ -1012,7 +1144,11 @@ ExecuteResult SessionCore::Execute(const std::string& target, const json::value*
                                    arrow::RecordBatchReader* parameters, const StatementOptions& options) {
   CheckOpen();
   auto request = client->Request(http::verb::post, target, true);
-  request.set(http::field::accept, kArrowStream);
+  request.set(http::field::accept, options.on_progress ? "application/json" : kArrowStream);
+  if (options.on_progress) {
+    request.set(http::field::prefer, "respond-async");
+    request.set("Chargewire-Retain-Result", "false");
+  }
   request.set("Idempotency-Key", options.idempotency_key.empty() ? RandomKey() : options.idempotency_key);
   if (options.timeout_ms) request.set("Chargewire-Statement-Timeout", std::to_string(*options.timeout_ms));
   if (options.retain_result) request.set("Chargewire-Retain-Result", *options.retain_result ? "true" : "false");
@@ -1080,7 +1216,7 @@ ExecuteResult SessionCore::Execute(const std::string& target, const json::value*
       EndRun(serial);
       throw Error(status, "client_protocol_error", "the statement document is not JSON");
     }
-    return Finish(ParseStatement(*object), serial, options.ipc_compression);
+    return Finish(ParseStatement(*object), serial, options.ipc_compression, options.on_progress);
   }
   EndRun(serial);
   throw ProblemOf(status, text, content_type);
@@ -1104,11 +1240,11 @@ std::shared_ptr<ResultReader> SessionCore::MakePartitioned(const std::string& st
     return reply;
   };
   std::vector<std::unique_ptr<PartStream>> parts;
-  parts.push_back(std::make_unique<PartStream>(nullptr, first ? std::move(first) : open(0, *transport)));
+  parts.push_back(std::make_unique<PartStream>(client, nullptr, first ? std::move(first) : open(0, *transport)));
   for (int i = 1; i < partitions; i++) {
     auto own = client->NewTransport();
     auto reply = open(i, *own);
-    parts.push_back(std::make_unique<PartStream>(std::move(own), std::move(reply)));
+    parts.push_back(std::make_unique<PartStream>(client, std::move(own), std::move(reply)));
   }
   // Closing early cancels the statement, which ends every partition's stream.
   auto self = shared_from_this();
@@ -1238,6 +1374,12 @@ StatementDocument Session::Status(const std::string& statement_id, int wait_s) {
   return core_->Status(statement_id, wait_s);
 }
 
+std::shared_ptr<void> Session::WatchProgress(const std::string& statement_id,
+                                             std::function<void(const StatementDocument&)> report) {
+  try { return std::make_shared<ProgressWatch>(core_, statement_id, std::move(report)); }
+  catch (...) { return {}; }
+}
+
 StatementDocument Session::Wait(const std::string& statement_id) {
   const uint64_t serial = core_->BeginRun();
   core_->SetRunning(serial, statement_id);
@@ -1346,7 +1488,7 @@ int64_t IngestParts(SessionCore& core, const std::string& table, SharedBatches& 
   for (int part = 0; part < parts; part++) {
     senders.emplace_back([&, part] {
       try {
-        auto transport = core.client->NewTransport();
+        BorrowedTransport transport(*core.client);
         auto request = core.client->Request(http::verb::post, base + "/parts/" + std::to_string(part), true);
         request.set(http::field::content_type, kArrowStream);
         request.set("Idempotency-Key", RandomKey());
@@ -1480,7 +1622,13 @@ void Session::Close() {
   } catch (const Error&) {
   }
   core_->closed = true;
-  core_->transport->Close();
+  // The connection goes back to the client for the next session, unless a reader still
+  // holds it (a result read past the session's close): that one is closed and stays.
+  if (core_->transport && core_->transport->Idle()) {
+    core_->client->Recycle(std::move(core_->transport));
+  } else if (core_->transport) {
+    core_->transport->Close();
+  }
 }
 
 // ---- Client ----
@@ -1641,6 +1789,8 @@ bool Client::SignedIn() const {
 
 std::string Client::access_token() { return core_->Token(); }
 
+uint64_t Client::connections_opened() const { return core_->connections_opened.load(std::memory_order_relaxed); }
+
 std::unique_ptr<Session> Client::CreateSession(const json::object& options) {
   auto transport = core_->NewTransport();
   auto request = core_->Request(http::verb::post, core_->V1("/sessions"), true);
@@ -1651,10 +1801,9 @@ std::unique_ptr<Session> Client::CreateSession(const json::object& options) {
   if (!object || String(*object, "session_id").empty()) {
     throw Error(reply.status, "client_protocol_error", "the session answer has no session_id");
   }
+  // The connection that created the session is kept for its statements.
   auto core = std::make_shared<SessionCore>(core_, String(*object, "session_id"),
-                                            Integer(*object, "idle_timeout_s").value_or(0));
-  // Keep the connection that created the session for its statements.
-  core->transport = std::move(transport);
+                                            Integer(*object, "idle_timeout_s").value_or(0), std::move(transport));
   return std::make_unique<Session>(std::move(core));
 }
 
