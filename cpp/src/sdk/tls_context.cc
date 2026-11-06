@@ -333,10 +333,18 @@ int TlsContext::RefusalIndex() {
 TlsContext::TlsContext(const TlsOptions& options) : options_(options) {
   current_ = Build(1);
   last_check_ = Clock::now();
-  if (!options_.client_crl_file.empty()) {
+  // The files as loaded, so a change from now on is seen (one between a look and a load
+  // would be: the next look compares against what was loaded).
+  for (const std::string& path : {options_.certificate_chain_file, options_.private_key_file,
+                                  options_.client_ca_file, options_.client_crl_file}) {
+    if (!path.empty()) watched_.push_back({path});
+  }
+  for (Watched& file : watched_) {
     std::error_code ec;
-    crl_mtime_ = std::filesystem::last_write_time(options_.client_crl_file, ec);
-    crl_size_ = std::filesystem::file_size(options_.client_crl_file, ec);
+    file.mtime = std::filesystem::last_write_time(file.path, ec);
+    file.size = ec ? 0 : std::filesystem::file_size(file.path, ec);
+  }
+  if (!options_.client_crl_file.empty()) {
     if (options_.on_crl_reload) {
       options_.on_crl_reload(true, "loaded the client CRL file " + options_.client_crl_file);
       for (const auto& note : current_.notes) options_.on_crl_reload(true, note);
@@ -388,38 +396,55 @@ TlsContext::Current TlsContext::Build(uint64_t generation) const {
 }
 
 void TlsContext::MaybeReload() {
-  if (options_.client_crl_file.empty()) return;
   std::unique_lock lock(mutex_, std::try_to_lock);
   if (!lock.owns_lock()) return;  // another thread is looking
   const auto now = Clock::now();
   if (now - last_check_ < options_.crl_check_interval) return;
   last_check_ = now;
-  std::error_code ec;
-  const auto mtime = std::filesystem::last_write_time(options_.client_crl_file, ec);
-  const auto size = ec ? 0 : std::filesystem::file_size(options_.client_crl_file, ec);
-  if (ec) {
-    if (options_.on_crl_reload) {
-      options_.on_crl_reload(false, "cannot read the client CRL file " + options_.client_crl_file +
-                                        " (" + ec.message() + "); the last one loaded stays in force");
+  // What a reload would read: the certificate chain and key (a renewal), the client CA,
+  // the CRL, against what was loaded.
+  std::vector<std::pair<std::size_t, Watched>> changed;  // index, as it is now
+  for (std::size_t i = 0; i < watched_.size(); ++i) {
+    const Watched& file = watched_[i];
+    std::error_code ec;
+    Watched seen{file.path};
+    seen.mtime = std::filesystem::last_write_time(file.path, ec);
+    seen.size = ec ? 0 : std::filesystem::file_size(file.path, ec);
+    if (ec) {
+      if (options_.on_crl_reload) {
+        options_.on_crl_reload(false, "cannot read " + file.path + " (" + ec.message() + "); the one loaded stays in force");
+      }
+      return;  // a file mid-replacement: look again next time
     }
-    return;
+    if (seen.mtime != file.mtime || seen.size != file.size) changed.emplace_back(i, seen);
   }
-  if (mtime == crl_mtime_ && size == crl_size_) return;
+  if (changed.empty()) return;
+  // Named as what changed: the CRL alone (the common case, with its own wording), or the
+  // TLS files that did.
+  std::string what, others;
+  bool crl = false;
+  for (const auto& [index, seen] : changed) {
+    if (!options_.client_crl_file.empty() && seen.path == options_.client_crl_file) {
+      crl = true;
+    } else {
+      others += (others.empty() ? "" : ", ") + seen.path;
+    }
+  }
+  if (crl) what = "the client CRL file " + options_.client_crl_file;
+  if (!others.empty()) what += (what.empty() ? "" : " and ") + std::string("the TLS files (") + others + ")";
   try {
     current_ = Build(current_.generation + 1);
-    // Only now: a reload that failed (the CRL, or the server's key or CA mid-rotation) is
-    // tried again at the next look, not left until the CRL file changes again.
-    crl_mtime_ = mtime;
-    crl_size_ = size;
+    // Only now: a reload that failed (a key and certificate mid-rotation, say) is tried
+    // again at the next look, not left until the files change again.
+    for (const auto& [index, seen] : changed) watched_[index] = seen;
     if (options_.on_crl_reload) {
-      options_.on_crl_reload(true, "reloaded the client CRL file " + options_.client_crl_file);
+      options_.on_crl_reload(true, "reloaded " + what);
       for (const auto& note : current_.notes) options_.on_crl_reload(true, note);
     }
   } catch (const std::exception& e) {
     if (options_.on_crl_reload) {
-      options_.on_crl_reload(false, "reloading the client CRL file " + options_.client_crl_file + " failed (" +
-                                        e.what() + "); the last one loaded stays in force, and the reload "
-                                        "is tried again");
+      options_.on_crl_reload(false, "reloading " + what + " failed (" + e.what() +
+                                        "); the last one loaded stays in force, and the reload is tried again");
     }
   }
 }

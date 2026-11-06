@@ -187,6 +187,10 @@ struct StatementOptions {
   // any_order the batches come as they arrive; without, in the result's order.
   int result_partitions = 8;           // Chargewire-Result-Partitions (1: one stream)
   bool any_order = false;              // Chargewire-Result-Order: any
+  // Observe status about four times a second, through execution and result consumption.
+  // Called on a monitoring thread once results open; exceptions are ignored.
+  // Uses an asynchronous submission, then streams without forcing result retention.
+  std::function<void(const StatementDocument&)> on_progress;
 };
 
 // The record batches of a result, read from the network as they arrive. A stream that
@@ -295,6 +299,9 @@ class Session {
   StatementDocument Status(const std::string& statement_id, int wait_s = 0);
   // Polls until the statement finishes; returns its final document.
   StatementDocument Wait(const std::string& statement_id);
+  // Observes on a separate, bounded transport. Release the handle to stop and join.
+  std::shared_ptr<void> WatchProgress(const std::string& statement_id,
+                                    std::function<void(const StatementDocument&)> report);
   // A partition of a statement's result (§6.4), from batch `from_batch`, accepting the
   // Arrow buffer compression in `ipc_compression` (as StatementOptions::ipc_compression).
   std::shared_ptr<ResultReader> FetchResult(const std::string& statement_id, int64_t partition = 0,
@@ -388,6 +395,12 @@ class Client {
 
   // A new session (§5.1) with these options (catalog, schema, autocommit, ...).
   std::unique_ptr<Session> CreateSession(const json::object& options = {});
+
+  // How many connections this client has opened. A session's connection, and a partition
+  // stream's, go back to the client when their last response was read to the end, and the
+  // next session or stream takes one of those instead of opening a new one; so a client
+  // that opens sessions one after another opens one connection.
+  uint64_t connections_opened() const;
 
  private:
   std::shared_ptr<ClientCore> core_;

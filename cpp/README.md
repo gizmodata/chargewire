@@ -113,3 +113,14 @@ buffers must fit before decompression. The limit covers ingest, partitioned inge
 and Arrow prepared parameters, including dictionary messages. Oversized input is
 rejected with HTTP 413 `payload_too_large` before the declared allocation. Split
 larger uploads into smaller record batches; the limit is per message, not per upload.
+
+### Query progress and TLS renewal
+
+Set `StatementOptions::on_progress` to observe status while an execution runs and its Arrow
+results stream. Callbacks receive the statement document; exceptions are ignored. The watcher
+uses a separate bounded transport and stops when the reader closes. Explicit result retention
+still takes precedence.
+
+The server reloads replaced certificate, key, client CA and CRL files for new TLS connections.
+Existing connections retain their context. An invalid replacement does not replace the last
+working context. The C++ client reuses idle connections and reads results in full-size buffers.

@@ -1937,6 +1937,9 @@ Task<Response> Api::GetStatement(Request& request, const std::string& session_id
       seen = co_await statement->changed().WaitChange(seen, deadline);
     }
   }
+  // A progress observer may be waiting for the partition layout before opening its
+  // Arrow readers. Apply the same bounded split decision as the streamed path.
+  SettleSplitIfDue(*statement, statement->submitted());
   co_return JsonResponse(http::status::ok, StatementDocument(*session, *statement));
 }
 

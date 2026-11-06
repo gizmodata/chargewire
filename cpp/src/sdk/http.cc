@@ -512,6 +512,9 @@ class HttpServer::Impl {
       // algorithm the second waited for the client's delayed ACK of the first: every
       // small request took 40 ms on Linux (GET /chargewire, a status poll, SELECT 1).
       socket.set_option(tcp::no_delay(true), ec);
+      // A send buffer a result stream's writes run ahead into, rather than block on the
+      // reader after each few hundred KiB.
+      socket.set_option(net::socket_base::send_buffer_size(4 * 1024 * 1024), ec);
       auto executor = socket.get_executor();
       net::co_spawn(executor, Serve(std::move(socket)), net::detached);
     }

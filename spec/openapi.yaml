@@ -14,14 +14,14 @@
 openapi: 3.1.1
 info:
   title: Chargewire
-  version: 2.2.3
+  version: 2.3.0
   summary: SQL over HTTP, with Apache Arrow IPC streams for results, parameters and uploads.
   description: |
     Chargewire is an open protocol for running SQL against a database server over plain HTTP.
     Control messages are small JSON documents; query results, Arrow query parameters and bulk
     uploads are Arrow IPC streams (`application/vnd.apache.arrow.stream`).
 
-    This document describes the endpoints of protocol version 1 (specification 2.2.3). The
+    This document describes the endpoints of protocol version 1 (specification 2.3.0). The
     specification is the definition: each operation names the section it comes from.
 
     **Base path.** Endpoints live under `/chargewire`; a server may mount them under another
@@ -1578,7 +1578,7 @@ components:
         protocol_versions: ["1"]
         server:
           name: chargewire-duckdb
-          version: 2.2.3
+          version: 2.3.0
         capabilities: [prepared_statements, transactions, ingest, partitioned_ingest, long_poll, ipc_compression_zstd, ipc_compression_lz4_frame, result_partitions, openapi]
         auth:
           grant_types: [password]
