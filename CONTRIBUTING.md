@@ -38,3 +38,4 @@ one commit with `git commit --amend -s`, or a series with `git rebase --signoff 
 ## Code of conduct
 
 This project follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+
