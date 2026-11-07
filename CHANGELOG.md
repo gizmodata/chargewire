@@ -7,6 +7,8 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-11-07
+
 ### Added
 
 - **Lazy connect to a stopped server** (spec §3.1, §11.2). The discovery document gets an
