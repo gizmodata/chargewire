@@ -14,6 +14,8 @@ def test_discovery_describes_the_server(server):
     # Gone before 1.0: retention is core, and split results are result_partitions (§3.1).
     assert not {"result_retention", "partitioned_results"} & set(doc["capabilities"]), doc
     assert "draft" not in doc, doc
+    # Only a stand-in for a stopped server says "state" (§3.1, §11.2); a server that serves never does.
+    assert "state" not in doc, doc
     assert doc["server"]["name"]
     assert "password" in doc["auth"]["grant_types"] or doc["auth"]["grant_types"]
 

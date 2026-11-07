@@ -9,6 +9,22 @@ spec's version is the repository's version.
 
 ### Added
 
+- **Lazy connect to a stopped server** (spec §3.1, §11.2). The discovery document gets an
+  optional, open `state`: a stand-in answering for a stopped server sends `"stopped"` (and
+  SHOULD), and a server never sends it. A client that sees it when it connects SHOULD connect
+  lazily: no sign-in and no session until the first request that does work, connection checks
+  and closes sending nothing before that, and a wrong credential reported by that first
+  request. A connection pool that opens connections on a timer then no longer starts a stopped
+  server for nobody. Additive: a client that doesn't know `state` signs in as before.
+  `spec/openapi.yaml` describes `state`, and the conformance suite checks that a server doesn't
+  send it.
+- C++ client: lazy connect, with `ConnectOptions::connect_lazily_when_stopped` (off by default):
+  the sign-ins and `Client::CreateSession` send nothing after the one discovery request when the
+  server is stopped, and the session's first request that does work signs in and creates it.
+  `Discovery::state` reports the discovery document's `state`. The client also reads its
+  capabilities from the discovery document it fetched to check the protocol's spelling,
+  instead of asking for it a second time.
+
 - C++ client: `Client::current_access_token()` reads the current access token as it is, never
   renewed and without sending anything.
 

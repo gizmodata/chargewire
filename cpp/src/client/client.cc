@@ -372,7 +372,10 @@ class ClientCore {
       Transport probe(options.host, options.port, tls, options.connect_timeout);
       Reply current = probe.Exchange(Request(http::verb::get, options.base_path, false));
       auto object = current.status == 200 ? ParseObject(current.body) : std::nullopt;
-      if (object && String(*object, "protocol") == "chargewire") return;
+      if (object && String(*object, "protocol") == "chargewire") {
+        dialect_document = std::move(*object);  // the discovery document: AskDiscovery reads it
+        return;
+      }
       Reply old = probe.Exchange(Request(http::verb::get, detail::LegacyRoot(), false));
       object = old.status == 200 ? ParseObject(old.body) : std::nullopt;
       if (object && detail::IsLegacyProtocol(String(*object, "protocol"))) {
@@ -435,6 +438,7 @@ class ClientCore {
   }
 
   std::string Token() {
+    SignInIfPending();
     std::optional<json::object> again;
     {
       std::lock_guard lock(token_mutex);
@@ -460,6 +464,7 @@ class ClientCore {
   // transports.
   bool may_fall_back = false;
   std::once_flag dialect_once;
+  std::optional<json::object> dialect_document;  // the discovery document ResolveDialect read
   std::shared_ptr<std::atomic<bool>> legacy = std::make_shared<std::atomic<bool>>(false);
 
   std::mutex token_mutex;
@@ -470,25 +475,75 @@ class ClientCore {
   std::mutex auth_mutex;
   std::unique_ptr<Transport> auth_transport;
 
+  // The discovery document, asked once (auth_mutex held): its capabilities, and whether it
+  // says the server is stopped (§3.1 `state`).
+  void AskDiscovery() {
+    if (capabilities) return;
+    const std::string& base = BasePath();
+    std::optional<json::object> object;
+    if (dialect_document) {  // asked already, to resolve the dialect
+      object = std::move(dialect_document);
+      dialect_document.reset();
+    } else {
+      if (!auth_transport) auth_transport = NewTransport();
+      Reply reply = auth_transport->Exchange(Request(http::verb::get, base, false));
+      if (reply.status == 200) object = ParseObject(reply.body);
+    }
+    capabilities.emplace();
+    if (object) {
+      if (auto* caps = object->if_contains("capabilities"); caps != nullptr && caps->is_array()) {
+        for (const auto& cap : caps->as_array()) {
+          if (cap.is_string()) capabilities->push_back(std::string(cap.as_string()));
+        }
+      }
+      stopped = String(*object, "state") == "stopped";
+    }
+  }
+
   // Whether the server lists `capability` in its discovery document (asked once).
   bool Offers(std::string_view capability) {
     std::lock_guard lock(auth_mutex);
-    if (!capabilities) {
-      if (!auth_transport) auth_transport = NewTransport();
-      Reply reply = auth_transport->Exchange(Request(http::verb::get, BasePath(), false));
-      capabilities.emplace();
-      if (auto object = reply.status == 200 ? ParseObject(reply.body) : std::nullopt) {
-        if (auto* caps = object->if_contains("capabilities"); caps != nullptr && caps->is_array()) {
-          for (const auto& cap : caps->as_array()) {
-            if (cap.is_string()) capabilities->push_back(std::string(cap.as_string()));
-          }
-        }
-      }
-    }
+    AskDiscovery();
     return std::find(capabilities->begin(), capabilities->end(), capability) != capabilities->end();
   }
   bool OffersPartitions() { return Offers("result_partitions"); }
   std::optional<std::vector<std::string>> capabilities;
+  bool stopped = false;
+
+  // Lazy connect (§11.2, ConnectOptions::connect_lazily_when_stopped): whether sign-ins and new
+  // sessions wait for the first request that does work. A discovery that fails decides
+  // nothing: the client connects as usual, and the sign-in reports what is wrong.
+  bool ConnectLazily() {
+    if (!options.connect_lazily_when_stopped) return false;
+    std::lock_guard lock(auth_mutex);
+    try {
+      AskDiscovery();
+    } catch (const Error&) {
+      return false;
+    }
+    return stopped;
+  }
+
+  // A sign-in held back by lazy connect, sent now: before the first request that needs a
+  // token. Its error is the one the connect would have given.
+  void SignInIfPending() {
+    {
+      std::lock_guard lock(token_mutex);
+      if (!pending_grant) return;
+    }
+    std::lock_guard first(first_sign_in_mutex);
+    std::optional<json::object> grant;
+    {
+      std::lock_guard lock(token_mutex);
+      grant = pending_grant;
+    }
+    if (!grant) return;  // another thread signed in meanwhile
+    SignIn(*grant);
+    std::lock_guard lock(token_mutex);
+    pending_grant.reset();
+  }
+  std::optional<json::object> pending_grant;  // under token_mutex
+  std::mutex first_sign_in_mutex;
 };
 
 // A connection for one call (a discovery, a session's creation), back to the client's pool
@@ -524,6 +579,32 @@ class SessionCore : public std::enable_shared_from_this<SessionCore> {
     if (closed) throw Error(0, "client_session_closed", "the session is closed");
   }
 
+  // POST /sessions (§5.1): this session's id, idle timeout and connection.
+  void Create(const json::object& options) {
+    auto created = client->NewTransport();
+    auto request = client->Request(http::verb::post, client->V1("/sessions"), true);
+    ClientCore::SetJson(request, json::object{{"options", options}});
+    Reply reply = created->Exchange(std::move(request));
+    if (reply.status != 201 && reply.status != 200) throw ProblemOf(reply);
+    auto object = ParseObject(reply.body);
+    if (!object || String(*object, "session_id").empty()) {
+      throw Error(reply.status, "client_protocol_error", "the session answer has no session_id");
+    }
+    id = String(*object, "session_id");
+    idle_timeout_s = Integer(*object, "idle_timeout_s").value_or(0);
+    transport = std::move(created);  // kept for the session's statements
+  }
+  // Before a request that does work: a session lazy connect held back (§11.2) is created now,
+  // after the sign-in it waited for.
+  void EnsureCreated() {
+    CheckOpen();
+    if (!pending) return;
+    Create(pending_options);
+    pending = false;
+  }
+  bool pending = false;  // not created yet (lazy connect)
+  json::object pending_options;
+
   Reply Call(http::verb verb, const std::string& target, const json::value* body = nullptr,
              std::chrono::milliseconds timeout = kNoTimeout) {
     CheckOpen();
@@ -550,6 +631,7 @@ class SessionCore : public std::enable_shared_from_this<SessionCore> {
   }
 
   std::shared_ptr<arrow::Table> Metadata(const std::string& kind, const std::vector<std::pair<std::string, std::string>>& query) {
+    EnsureCreated();
     std::string target = Path("/metadata/" + kind);
     char separator = '?';
     for (const auto& [key, value] : query) {
@@ -1359,14 +1441,19 @@ Session::~Session() {
 const std::string& Session::id() const { return core_->id; }
 int64_t Session::idle_timeout_s() const { return core_->idle_timeout_s; }
 
-json::object Session::Get() { return core_->CallJson(http::verb::get, core_->Path(""), nullptr, {200}); }
+json::object Session::Get() {
+  core_->EnsureCreated();
+  return core_->CallJson(http::verb::get, core_->Path(""), nullptr, {200});
+}
 
 json::object Session::SetOptions(const json::object& options) {
+  core_->EnsureCreated();
   json::value body = json::object{{"options", options}};
   return core_->CallJson(http::verb::patch, core_->Path(""), &body, {200});
 }
 
 ExecuteResult Session::Execute(const std::string& sql, const StatementOptions& options) {
+  core_->EnsureCreated();
   json::object body{{"sql", sql}};
   if (!options.parameters.is_null()) body["parameters"] = options.parameters;
   json::value value = std::move(body);
@@ -1374,7 +1461,7 @@ ExecuteResult Session::Execute(const std::string& sql, const StatementOptions& o
 }
 
 StatementDocument Session::Submit(const std::string& sql, int wait_s, const StatementOptions& options) {
-  core_->CheckOpen();
+  core_->EnsureCreated();
   auto request = core_->client->Request(http::verb::post, core_->Path("/statements"), true);
   json::object body{{"sql", sql}};
   if (!options.parameters.is_null()) body["parameters"] = options.parameters;
@@ -1396,6 +1483,7 @@ StatementDocument Session::Submit(const std::string& sql, int wait_s, const Stat
 }
 
 StatementDocument Session::Status(const std::string& statement_id, int wait_s) {
+  core_->EnsureCreated();
   return core_->Status(statement_id, wait_s);
 }
 
@@ -1431,11 +1519,13 @@ std::shared_ptr<ResultReader> Session::FetchResult(const std::string& statement_
 }
 
 void Session::CancelStatement(const std::string& statement_id) {
+  if (core_->pending) return;  // never created: it has no statements
   Reply reply = core_->End(http::verb::post, core_->Path("/statements/" + statement_id + "/cancel"), kCancelLimit);
   if (reply.status != 200 && reply.status != 202 && reply.status != 204) throw ProblemOf(reply);
 }
 
 void Session::DeleteStatement(const std::string& statement_id) {
+  if (core_->pending) return;  // never created: it has no statements
   Reply reply = core_->End(http::verb::delete_, core_->Path("/statements/" + statement_id));
   // Gone already (404), or the token no longer stands (401): either way nothing is left open.
   if (reply.status != 200 && reply.status != 204 && reply.status != 401 && reply.status != 404) throw ProblemOf(reply);
@@ -1443,10 +1533,17 @@ void Session::DeleteStatement(const std::string& statement_id) {
 
 void Session::CancelRunning() { core_->CancelRunning(); }
 
-void Session::Commit() { core_->CallJson(http::verb::post, core_->Path("/commit"), nullptr, {200, 204}); }
-void Session::Rollback() { core_->CallJson(http::verb::post, core_->Path("/rollback"), nullptr, {200, 204}); }
+void Session::Commit() {
+  core_->EnsureCreated();
+  core_->CallJson(http::verb::post, core_->Path("/commit"), nullptr, {200, 204});
+}
+void Session::Rollback() {
+  core_->EnsureCreated();
+  core_->CallJson(http::verb::post, core_->Path("/rollback"), nullptr, {200, 204});
+}
 
 std::unique_ptr<PreparedStatement> Session::Prepare(const std::string& sql) {
+  core_->EnsureCreated();
   json::value body = json::object{{"sql", sql}};
   json::object answer = core_->CallJson(http::verb::post, core_->Path("/prepared"), &body, {200, 201});
   return std::make_unique<PreparedStatement>(core_, String(answer, "prepared_id"),
@@ -1565,7 +1662,7 @@ int64_t IngestParts(SessionCore& core, const std::string& table, SharedBatches& 
 }  // namespace
 
 int64_t Session::Ingest(const std::string& table, arrow::RecordBatchReader& data, const IngestOptions& options) {
-  core_->CheckOpen();
+  core_->EnsureCreated();
   // Read up to two batches ahead: an upload of one batch (or none) goes as one stream.
   std::vector<std::shared_ptr<arrow::RecordBatch>> ahead;
   const bool may_split = options.parts > 1 && core_->client->Offers("partitioned_ingest");
@@ -1639,11 +1736,16 @@ std::shared_ptr<arrow::Table> Session::TypeInfo(std::optional<int> data_type) {
 }
 
 json::object Session::ServerInfo() {
+  core_->EnsureCreated();
   return core_->CallJson(http::verb::get, core_->Path("/metadata/server-info"), nullptr, {200});
 }
 
 void Session::Close() {
   if (core_->closed) return;
+  if (core_->pending) {  // never created (lazy connect): nothing to end, nothing sent
+    core_->closed = true;
+    return;
+  }
   try {
     // Bounded: a client that exits must not hang on a server that is gone, or resuming.
     core_->End(http::verb::delete_, core_->Path(""));
@@ -1681,6 +1783,7 @@ Discovery Client::Discover() {
     discovery.server_name = String(server->as_object(), "name");
     discovery.server_version = String(server->as_object(), "version");
   }
+  discovery.state = String(*object, "state");
   if (auto* caps = object->if_contains("capabilities"); caps != nullptr && caps->is_array()) {
     for (const auto& c : caps->as_array()) {
       if (c.is_string()) discovery.capabilities.emplace_back(c.as_string());
@@ -1704,23 +1807,32 @@ json::object Client::Health() {
   return *object;
 }
 
+// With lazy connect to a stopped server (§11.2) a sign-in is only noted: it is sent before the
+// first request that needs a token.
 void Client::SignInWithPassword(const std::string& username, const std::string& password) {
   json::object grant{{"grant_type", "password"}, {"username", username}, {"password", password}};
-  core_->SignIn(grant);
+  const bool lazily = core_->ConnectLazily();
+  if (!lazily) core_->SignIn(grant);
   std::lock_guard lock(core_->token_mutex);
+  if (lazily) core_->pending_grant = grant;
   core_->renew_grant = std::move(grant);
 }
 
 void Client::SignInWithToken(const std::string& subject_token) {
-  core_->SignIn(json::object{{"grant_type", "token_exchange"}, {"subject_token", subject_token}});
+  json::object grant{{"grant_type", "token_exchange"}, {"subject_token", subject_token}};
+  const bool lazily = core_->ConnectLazily();
+  if (!lazily) core_->SignIn(grant);
   std::lock_guard lock(core_->token_mutex);
+  if (lazily) core_->pending_grant = std::move(grant);
   core_->renew_grant.reset();
 }
 
 void Client::SignInWithClientCertificate() {
   json::object grant{{"grant_type", "client_certificate"}};
-  core_->SignIn(grant);
+  const bool lazily = core_->ConnectLazily();
+  if (!lazily) core_->SignIn(grant);
   std::lock_guard lock(core_->token_mutex);
+  if (lazily) core_->pending_grant = grant;
   core_->renew_grant = std::move(grant);
 }
 
@@ -1808,6 +1920,7 @@ void Client::SetAccessToken(const std::string& access_token) {
   core_->token = access_token;
   core_->expires_at = {};
   core_->renew_grant.reset();
+  core_->pending_grant.reset();
 }
 
 bool Client::SignedIn() const {
@@ -1822,18 +1935,13 @@ std::string Client::current_access_token() const { return core_->CurrentToken();
 uint64_t Client::connections_opened() const { return core_->connections_opened.load(std::memory_order_relaxed); }
 
 std::unique_ptr<Session> Client::CreateSession(const json::object& options) {
-  auto transport = core_->NewTransport();
-  auto request = core_->Request(http::verb::post, core_->V1("/sessions"), true);
-  ClientCore::SetJson(request, json::object{{"options", options}});
-  Reply reply = transport->Exchange(std::move(request));
-  if (reply.status != 201 && reply.status != 200) throw ProblemOf(reply);
-  auto object = ParseObject(reply.body);
-  if (!object || String(*object, "session_id").empty()) {
-    throw Error(reply.status, "client_protocol_error", "the session answer has no session_id");
+  auto core = std::make_shared<SessionCore>(core_, "", 0, nullptr);
+  if (core_->ConnectLazily()) {
+    core->pending = true;  // created at its first request that does work
+    core->pending_options = options;
+  } else {
+    core->Create(options);
   }
-  // The connection that created the session is kept for its statements.
-  auto core = std::make_shared<SessionCore>(core_, String(*object, "session_id"),
-                                            Integer(*object, "idle_timeout_s").value_or(0), std::move(transport));
   return std::make_unique<Session>(std::move(core));
 }
 
