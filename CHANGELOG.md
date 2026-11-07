@@ -7,6 +7,8 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-11-07
+
 ### Changed (clarified)
 
 - **Lazy connect: session options and transaction calls before the first request are not work**
