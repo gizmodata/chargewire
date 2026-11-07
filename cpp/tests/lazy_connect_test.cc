@@ -56,9 +56,9 @@ Answer DiscoveryDocument(bool stopped) {
 // sign-ins are answered server_resuming; a password other than "pw" is refused.
 struct Stand {
   explicit Stand(bool stopped, int resuming = 0)
-      : rows(OneBatch()), stub([this, stopped, resuming](const Seen& request, int nth) -> Answer {
+      : rows(OneBatch()), stopped_now(stopped), stub([this, resuming](const Seen& request, int nth) -> Answer {
           const std::string path = request.target.substr(0, request.target.find('?'));
-          if (request.method == "GET" && path == kRoot) return DiscoveryDocument(stopped);
+          if (request.method == "GET" && path == kRoot) return DiscoveryDocument(stopped_now);
           if (request.method == "POST" && path == kSignIn) {
             if (nth < resuming) return Resuming("1");
             if (request.body.find(R"("password":"pw")") == std::string::npos) {
@@ -67,7 +67,13 @@ struct Stand {
             }
             return Token();
           }
-          if (request.method == "POST" && path == kNewSession) return Created();
+          if (request.method == "POST" && path == kNewSession) {
+            if (request.body.find("bogus") != std::string::npos) {
+              return {400, "application/problem+json",
+                      R"({"status":400,"code":"unknown_option","detail":"no option bogus"})", {}};
+            }
+            return Created();
+          }
           if (request.method == "POST" && path == kSession + "/statements") {
             return {200, "application/vnd.apache.arrow.stream", rows, {{"Chargewire-Statement-Id", "st1"}}};
           }
@@ -90,6 +96,7 @@ struct Stand {
   }
 
   std::string rows;
+  std::atomic<bool> stopped_now;  // what discovery says now
   StubServer stub;
 };
 
@@ -177,6 +184,63 @@ TEST(LazyConnect, DiscoveryReportsTheState) {
   EXPECT_EQ(wc::Client(stopped.stub.Options()).Discover().state, "stopped");
   Stand serving(/*stopped=*/false);
   EXPECT_EQ(wc::Client(serving.stub.Options()).Discover().state, "");
+}
+
+// Session options set before the first request that does work are not work: they go with the
+// session's creation. A commit or rollback then has nothing to end.
+TEST(LazyConnect, OptionsBeforeTheFirstStatementGoWithTheSessionsCreation) {
+  Stand stand(/*stopped=*/true);
+  auto client = stand.Connect();
+  auto session = client->CreateSession({{"catalog", "lake"}});
+  auto report = session->SetOptions({{"autocommit", false}, {"schema", "analytics"}});
+  EXPECT_EQ(report.at("options").as_object().at("schema"), "analytics");
+  session->Commit();
+  session->Rollback();
+  EXPECT_EQ(stand.Sent(), std::vector<std::string>{"GET " + kRoot});
+  EXPECT_EQ(Answer42(*session), 42);
+  EXPECT_EQ(stand.Sent(), (std::vector<std::string>{"GET " + kRoot, "POST " + kSignIn, "POST " + kNewSession,
+                                                    "POST " + kSession + "/statements"}));
+  for (const auto& s : stand.stub.Requests()) {
+    if (s.target != kNewSession) continue;
+    auto options = boost::json::parse(s.body).as_object().at("options").as_object();
+    EXPECT_EQ(options.at("catalog"), "lake");
+    EXPECT_EQ(options.at("schema"), "analytics");
+    EXPECT_EQ(options.at("autocommit"), false);
+  }
+}
+
+TEST(LazyConnect, AnOptionTheServerRefusesFailsTheFirstStatement) {
+  Stand stand(/*stopped=*/true);
+  auto client = stand.Connect();
+  auto session = client->CreateSession();
+  EXPECT_NO_THROW(session->SetOptions({{"bogus", 1}}));
+  EXPECT_EQ(stand.Sent(), std::vector<std::string>{"GET " + kRoot});
+  try {
+    session->Execute("SELECT 42");
+    FAIL() << "ran with a refused option";
+  } catch (const wc::Error& e) {
+    EXPECT_EQ(e.status(), 400);
+    EXPECT_EQ(e.code(), "unknown_option");
+  }
+  EXPECT_EQ(stand.stub.Count("POST", kSession + "/statements"), 0);
+}
+
+// Laziness is decided per connection, from the discovery that connection reads.
+TEST(LazyConnect, EachConnectionReadsDiscoveryAsItConnects) {
+  Stand stand(/*stopped=*/true);
+  auto first = stand.Connect();
+  auto first_session = first->CreateSession();
+  EXPECT_EQ(stand.Sent(), std::vector<std::string>{"GET " + kRoot});
+  stand.stopped_now = false;  // the server has started since
+  auto second = stand.Connect();
+  auto second_session = second->CreateSession();
+  EXPECT_EQ(stand.Sent(), (std::vector<std::string>{"GET " + kRoot, "GET " + kRoot, "POST " + kSignIn,
+                                                    "POST " + kNewSession}));
+  stand.stopped_now = true;  // and stopped again
+  auto third = stand.Connect();
+  auto third_session = third->CreateSession();
+  EXPECT_EQ(stand.Sent().size(), 5u);
+  EXPECT_EQ(third_session->id(), "");
 }
 
 }  // namespace

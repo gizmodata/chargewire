@@ -1529,9 +1529,13 @@ while the server is stopped, and a client that sees it when it connects SHOULD c
   What the client needs from the server (its capabilities, grant types, name) comes from that
   same discovery document.
 - The client signs in and creates its session at the first request that does work: a
-  statement (submitted or prepared), metadata (§10), an ingest, a transaction call (commit,
-  rollback, `autocommit` set to `false`), or setting session options. That sign-in is what
-  starts the server, and the `server_resuming` wait above follows it.
+  statement (submitted or prepared), metadata (§10), or an ingest. That sign-in is what starts
+  the server, and the `server_resuming` wait above follows it.
+- Setting session options before that first request (`catalog`, `schema`, `autocommit`, a
+  product's session settings or tags) is not work. The client keeps them and sends them with
+  the session's creation (§5.1 `options`), or sets them right after it and before that first
+  request runs; an option the server refuses then fails that first request. A commit or a
+  rollback before that first request has nothing to end, and sends nothing.
 - Before that first request, checking the connection (a pool's validation, a ping, a
   driver's "is it alive" call) answers that it is alive and sends nothing; so do closing it
   and reading its client-side properties.
@@ -1539,7 +1543,10 @@ while the server is stopped, and a client that sees it when it connects SHOULD c
   error connecting would have reported.
 - After the first sign-in the connection behaves as any other.
 
-A client that doesn't know `state` signs in when it connects, as before.
+A client decides this for each connection, from the discovery document it reads as that
+connection connects, never once for a process or a pool: a server stopped when one connection
+opened may be serving when the next one does. A client that doesn't know `state` signs in
+when it connects, as before.
 
 ## 12. Versioning
 

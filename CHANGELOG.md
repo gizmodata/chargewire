@@ -7,6 +7,21 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Changed (clarified)
+
+- **Lazy connect: session options and transaction calls before the first request are not work**
+  (spec §11.2), as the ADBC (2.2.4) and JDBC (2.2.6) drivers already do. Setting session options
+  (`catalog`, `schema`, `autocommit`, a product's session settings or tags) before the first
+  request that does work is kept and sent with the session's creation, or set right after it and
+  before that request; an option the server refuses fails that first request. A commit or
+  rollback before it has nothing to end and sends nothing. The work that signs in is a statement,
+  metadata or an ingest. A client decides laziness for each connection, from the discovery
+  document it reads as that connection connects, never once for a process or a pool.
+- C++ client: on a lazily connected session, `Session::SetOptions` before the first request that
+  does work keeps the options for the session's creation (and answers with the options kept),
+  and `Session::Commit` and `Session::Rollback` send nothing; in 2.4.0 each of them signed in
+  and created the session. Each `Client` already read discovery itself.
+
 ## [2.4.0] - 2026-11-07
 
 ### Added
