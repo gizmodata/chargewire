@@ -1447,7 +1447,13 @@ json::object Session::Get() {
 }
 
 json::object Session::SetOptions(const json::object& options) {
-  core_->EnsureCreated();
+  core_->CheckOpen();
+  if (core_->pending) {
+    // Lazy connect (§11.2): not work. Kept, and sent with the session's creation, where an
+    // option the server refuses fails the first request that does work.
+    for (const auto& [name, value] : options) core_->pending_options[name] = value;
+    return json::object{{"options", core_->pending_options}, {"errors", json::object{}}};
+  }
   json::value body = json::object{{"options", options}};
   return core_->CallJson(http::verb::patch, core_->Path(""), &body, {200});
 }
@@ -1534,10 +1540,14 @@ void Session::DeleteStatement(const std::string& statement_id) {
 void Session::CancelRunning() { core_->CancelRunning(); }
 
 void Session::Commit() {
+  core_->CheckOpen();
+  if (core_->pending) return;  // lazy connect: no session yet, so no transaction to end
   core_->EnsureCreated();
   core_->CallJson(http::verb::post, core_->Path("/commit"), nullptr, {200, 204});
 }
 void Session::Rollback() {
+  core_->CheckOpen();
+  if (core_->pending) return;  // lazy connect: no session yet, so no transaction to end
   core_->EnsureCreated();
   core_->CallJson(http::verb::post, core_->Path("/rollback"), nullptr, {200, 204});
 }

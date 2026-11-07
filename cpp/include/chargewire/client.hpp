@@ -82,10 +82,13 @@ struct ConnectOptions {
   // (SignInWithPassword, SignInWithToken, SignInWithClientCertificate) and CreateSession then
   // send nothing after that one discovery request; the sign-in and the session happen at the
   // session's first request that does work (a statement, a prepare, metadata, an ingest,
-  // commit or rollback, session options, server info), and that sign-in is what starts the
-  // server (its server_resuming wait follows). Until then a session's id is empty, and closing
-  // it, cancelling or deleting its statements send nothing; a wrong credential is reported by
-  // that first request, as the sign-in would have. Without "state" (a server that serves),
+  // server info), and that sign-in is what starts the server (its server_resuming wait
+  // follows). Until then a session's id is empty; closing it, cancelling or deleting its
+  // statements, and Commit and Rollback (there is no transaction) send nothing; SetOptions
+  // keeps the options for the session's creation (an option the server refuses then fails that
+  // first request) and answers with the options kept. A wrong credential is reported by that
+  // first request, as the sign-in would have. Each Client decides from its own discovery
+  // request, made as it signs in or creates its first session. Without "state" (a server that serves),
   // or with this off (the default), sign-ins and sessions happen at once, as always.
   bool connect_lazily_when_stopped = false;
   // Empty: "chargewire-client-cpp/<version>".
