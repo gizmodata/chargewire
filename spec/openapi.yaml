@@ -1573,6 +1573,14 @@ components:
             openapi:
               description: This OpenAPI document, with capability `openapi`
               type: string
+        state:
+          description: |
+            That the server does not serve right now (spec §3.1): `stopped`, sent only by a
+            stand-in answering for a stopped server, and a client SHOULD then connect lazily
+            (spec §11.2). Absent: the server serves. An open value: a client treats one it
+            doesn't know as absent.
+          type: string
+          examples: [stopped]
       example:
         protocol: chargewire
         protocol_versions: ["1"]

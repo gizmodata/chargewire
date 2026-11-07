@@ -77,6 +77,17 @@ struct ConnectOptions {
   // stops waiting: the call throws the server_resuming error at once (e.g. on Ctrl-C). It
   // runs on the calling thread; an exception it throws is ignored. Empty: waits silently.
   std::function<bool(const ResumeProgress&)> on_resuming;
+  // Lazy connect (spec §11.2): when the server's discovery document says "state": "stopped"
+  // (a stand-in answering for a stopped server), connecting starts nothing. The sign-ins
+  // (SignInWithPassword, SignInWithToken, SignInWithClientCertificate) and CreateSession then
+  // send nothing after that one discovery request; the sign-in and the session happen at the
+  // session's first request that does work (a statement, a prepare, metadata, an ingest,
+  // commit or rollback, session options, server info), and that sign-in is what starts the
+  // server (its server_resuming wait follows). Until then a session's id is empty, and closing
+  // it, cancelling or deleting its statements send nothing; a wrong credential is reported by
+  // that first request, as the sign-in would have. Without "state" (a server that serves),
+  // or with this off (the default), sign-ins and sessions happen at once, as always.
+  bool connect_lazily_when_stopped = false;
   // Empty: "chargewire-client-cpp/<version>".
   std::string user_agent;
 };
@@ -131,6 +142,9 @@ struct Discovery {
   std::string server_version;
   std::vector<std::string> capabilities;
   std::vector<std::string> grant_types;
+  // "stopped" from a stand-in for a stopped server (spec §3.1, §11.2); empty: the server serves.
+  // An open value: treat one you don't know as empty.
+  std::string state;
   bool Has(const std::string& capability) const;
 };
 
@@ -285,7 +299,7 @@ class Session {
   Session(const Session&) = delete;
   Session& operator=(const Session&) = delete;
 
-  const std::string& id() const;
+  const std::string& id() const;  // empty until a lazily connected session is created
   int64_t idle_timeout_s() const;
   // The session document (§5.2): its current options.
   json::object Get();
@@ -404,7 +418,9 @@ class Client {
   // The current access token as it is, never renewed: sends nothing. Empty when not signed in.
   std::string current_access_token() const;
 
-  // A new session (§5.1) with these options (catalog, schema, autocommit, ...).
+  // A new session (§5.1) with these options (catalog, schema, autocommit, ...). With lazy
+  // connect to a stopped server (ConnectOptions::connect_lazily_when_stopped), created at its
+  // first request that does work.
   std::unique_ptr<Session> CreateSession(const json::object& options = {});
 
   // How many connections this client has opened. A session's connection, and a partition

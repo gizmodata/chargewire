@@ -187,6 +187,11 @@ Everything else in this document is core: every server implements it. A feature 
 after 1.0 that a client must ask for, or that changes what a request means, comes with a
 capability of its own (§12).
 
+`state` (optional) says that the server does not serve right now. Its one value in version 1
+is `"stopped"`, sent only by a stand-in that answers for a stopped server (§11.2); a server
+never sends `state` about itself, and a document without it describes a server that serves.
+It is an open value: a client treats a value it doesn't know as if `state` were absent.
+
 ### 3.2 `GET /chargewire/v1/health`
 
 `200` with `{"status": "serving"}` when the server accepts new work, otherwise `503`
@@ -1515,6 +1520,27 @@ Sessions, statements and tokens from before the stop may be gone once the server
 their requests then get `session_not_found` (§5.6) or `invalid_token` (§4.2), as after any
 restart.
 
+**Lazy connect.** Because a sign-in starts a stopped server, a client that only connects
+(a connection pool opening and replacing its idle connections on a timer, say) would start it
+for nobody. So a stand-in SHOULD add `"state": "stopped"` to the discovery document (§3.1)
+while the server is stopped, and a client that sees it when it connects SHOULD connect lazily:
+
+- Connecting returns a usable connection without signing in and without creating a session.
+  What the client needs from the server (its capabilities, grant types, name) comes from that
+  same discovery document.
+- The client signs in and creates its session at the first request that does work: a
+  statement (submitted or prepared), metadata (§10), an ingest, a transaction call (commit,
+  rollback, `autocommit` set to `false`), or setting session options. That sign-in is what
+  starts the server, and the `server_resuming` wait above follows it.
+- Before that first request, checking the connection (a pool's validation, a ping, a
+  driver's "is it alive" call) answers that it is alive and sends nothing; so do closing it
+  and reading its client-side properties.
+- A wrong credential or an unreachable server is reported by that first request, with the
+  error connecting would have reported.
+- After the first sign-in the connection behaves as any other.
+
+A client that doesn't know `state` signs in when it connects, as before.
+
 ## 12. Versioning
 
 The major version is in the path (`/chargewire/v1`). Within a major version, changes are
@@ -1533,7 +1559,7 @@ So that additions break nothing, clients MUST:
   `cancel_reason` is a generic one (the token, session or statement is gone, for no reason
   the client can name), and so is an unknown failed flow's `error.code`; an unknown
   `transaction` value is reported as unknown; an unknown health `reason` is a generic
-  `not_serving`.
+  `not_serving`; an unknown discovery `state` is treated as absent (the server serves).
 
 A value that changes how a client must read a response (a new `result.kind`, a new
 `partition_order`, a new compression codec) reaches only a client that asked for it. Any
