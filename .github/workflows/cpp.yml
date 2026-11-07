@@ -1,0 +1,112 @@
+name: cpp
+
+# The C++ SDK and client library (cpp/): builds them and runs chargewire-client-tests (unit,
+# stub-server and live tests against the chargewire-duckdb reference server, which they start)
+# and chargewire-sdk-tests, on pull requests and pushes that touch cpp/.
+#
+# DuckDB is not built here (about 10 minutes on a laptop, far more on a runner): the job uses
+# DuckDB's own release build of v2.0.0, the commit scripts/build-duckdb.sh pins, checked by
+# hash. Arrow is built by scripts/build-arrow.sh and cached, keyed on its script and the
+# compiler. The conformance suite against chargewire-duckdb stays a local check
+# (conformance/README.md).
+
+on:
+  pull_request:
+    paths:
+      - "cpp/**"
+      - ".github/workflows/cpp.yml"
+  push:
+    branches: [main]
+    paths:
+      - "cpp/**"
+      - ".github/workflows/cpp.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  # DuckDB's release build of the commit scripts/build-duckdb.sh pins (v2.0.0 is d54cbbe).
+  DUCKDB_VERSION: v2.0.0
+  DUCKDB_LIBS_SHA256: 993ad89e7dfca66cd6da994c2cad090c2fc160ddf9f550498a098ab4bb13cfb1
+  CC: gcc-14
+  CXX: g++-14
+  # GCC needs 2 GB and more for some of Beast's and Arrow's files: Ninja's default (one job
+  # per CPU, plus two) can run the runner's 16 GB out of memory.
+  CMAKE_BUILD_PARALLEL_LEVEL: 3
+  CHARGEWIRE_DEPS_DIR: ${{ github.workspace }}/cpp/.deps
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: cpp
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Packages (the compiler, Ninja, OpenSSL 3), retried
+        run: |
+          for attempt in 1 2 3; do
+            if sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends g++-14 ninja-build libssl-dev; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep $((attempt * 15))
+          done
+          echo "COMPILER_VERSION=$($CXX -dumpfullversion)" >> "$GITHUB_ENV"
+          $CXX --version
+          cmake --version
+
+      - name: The DuckDB release matches the pinned commit
+        run: |
+          if ! grep -qx "DUCKDB_VERSION_NAME=$DUCKDB_VERSION" scripts/build-duckdb.sh; then
+            echo "::error::scripts/build-duckdb.sh no longer pins DuckDB $DUCKDB_VERSION: update DUCKDB_VERSION and DUCKDB_LIBS_SHA256 here"
+            exit 1
+          fi
+
+      - name: DuckDB (release build, checked by hash)
+        run: |
+          prefix="$CHARGEWIRE_DEPS_DIR/duckdb-install"
+          mkdir -p "$prefix/include" "$prefix/lib" "$RUNNER_TEMP/duckdb"
+          curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+            --output "$RUNNER_TEMP/duckdb/libs.tar.gz" \
+            "https://github.com/duckdb/duckdb/releases/download/$DUCKDB_VERSION/duckdb-shared-libs-linux-amd64.tar.gz"
+          echo "$DUCKDB_LIBS_SHA256  $RUNNER_TEMP/duckdb/libs.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/duckdb/libs.tar.gz" -C "$RUNNER_TEMP/duckdb"
+          mv "$RUNNER_TEMP/duckdb/libduckdb.so" "$prefix/lib/"
+          mv "$RUNNER_TEMP"/duckdb/*.h "$prefix/include/"
+
+      - name: Arrow from the cache
+        id: arrow
+        uses: actions/cache@v6
+        with:
+          path: cpp/.deps/arrow-install
+          key: arrow-${{ runner.os }}-${{ env.CXX }}-${{ env.COMPILER_VERSION }}-${{ hashFiles('cpp/scripts/build-arrow.sh') }}
+
+      - name: Arrow (scripts/build-arrow.sh), retried for its downloads
+        if: steps.arrow.outputs.cache-hit != 'true'
+        run: |
+          for attempt in 1 2 3; do
+            if ./scripts/build-arrow.sh; then break; fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep $((attempt * 15))
+          done
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCHARGEWIRE_BUILD_TESTS=ON
+          cmake --build build
+
+      - name: chargewire-client-tests
+        timeout-minutes: 20
+        run: ./build/chargewire-client-tests
+
+      - name: chargewire-sdk-tests
+        timeout-minutes: 10
+        run: ./build/chargewire-sdk-tests

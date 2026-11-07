@@ -298,4 +298,7 @@ TEST(CloseNeverRenews, ClosesOnAResumingServerAreBounded) {
   }
 }
 
+// Planted to prove .github/workflows/cpp.yml fails on a failing test; removed in the next commit.
+TEST(CiGateProof, FailsOnPurpose) { FAIL() << "planted failure"; }
+
 }  // namespace

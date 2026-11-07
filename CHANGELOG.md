@@ -12,6 +12,13 @@ spec's version is the repository's version.
 - C++ client: `Client::current_access_token()` reads the current access token as it is, never
   renewed and without sending anything.
 
+### Changed
+
+- CI builds the C++ SDK and client on Linux (GCC 14) and runs `chargewire-client-tests` and
+  `chargewire-sdk-tests` on every pull request and push to main that touches `cpp/`
+  (`.github/workflows/cpp.yml`). The site's `check` now reports on every pull request, and runs
+  its steps only when the pull request touches what the site is made from.
+
 ### Fixed
 
 - **C++ client: closes and cancels never sign in.** The client renews a password or
