@@ -265,6 +265,8 @@ class PreparedStatement {
   ExecuteResult Execute(const StatementOptions& options = {});
   // Runs it once per row of `parameters` (an Arrow stream matching parameter_schema).
   ExecuteResult Execute(arrow::RecordBatchReader& parameters, const StatementOptions& options = {});
+  // DELETE (§7.3). Never signs in and gives up after 3 s; a statement already gone (404) or a
+  // token that no longer stands (401) counts as closed.
   void Close();
 
  private:
@@ -306,6 +308,8 @@ class Session {
   // Arrow buffer compression in `ipc_compression` (as StatementOptions::ipc_compression).
   std::shared_ptr<ResultReader> FetchResult(const std::string& statement_id, int64_t partition = 0,
                                             int64_t from_batch = 0, const std::string& ipc_compression = "");
+  // Neither signs in. A cancel gives up after 5 s, a delete after 3 s; a delete of a statement
+  // already gone (404), or refused for a token that no longer stands (401), is done.
   void CancelStatement(const std::string& statement_id);
   void DeleteStatement(const std::string& statement_id);
   // Cancels what this session runs now (§6.8): the statement being executed, when its
@@ -336,7 +340,8 @@ class Session {
   std::shared_ptr<arrow::Table> TypeInfo(std::optional<int> data_type = std::nullopt);
   json::object ServerInfo();
 
-  // Ends the session (§5.4). Later calls fail.
+  // Ends the session (§5.4). Later calls fail. Never signs in, gives up after 3 s (a server
+  // resuming included), and ignores errors: a session the server no longer has is ended.
   void Close();
 
  private:
@@ -359,7 +364,11 @@ class Client {
   json::object Health();
 
   // Sign-in (§4.1). The password and client_certificate grants are repeated by themselves
-  // shortly before their token expires, so a long-lived session keeps working.
+  // shortly before their token expires, on the next request that does work, so a long-lived
+  // session keeps working. Requests that end or stop something never sign in: closes
+  // (Session::Close, PreparedStatement::Close, DeleteStatement, an ingest's abort) and cancels
+  // (CancelRunning, CancelStatement, closing a split result early) carry the token the client
+  // has; a server that was stopped and wakes on a sign-in (§11.2) stays stopped.
   void SignInWithPassword(const std::string& username, const std::string& password);
   // The token_exchange grant: a token from an identity provider the server trusts.
   void SignInWithToken(const std::string& subject_token);
@@ -392,6 +401,8 @@ class Client {
   // The current access token (renewed first when a password or certificate sign-in is
   // about to expire).
   std::string access_token();
+  // The current access token as it is, never renewed: sends nothing. Empty when not signed in.
+  std::string current_access_token() const;
 
   // A new session (§5.1) with these options (catalog, schema, autocommit, ...).
   std::unique_ptr<Session> CreateSession(const json::object& options = {});

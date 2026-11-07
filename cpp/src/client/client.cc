@@ -37,6 +37,12 @@ namespace {
 
 constexpr const char* kArrowStream = "application/vnd.apache.arrow.stream";
 constexpr auto kNoTimeout = std::chrono::milliseconds(0);
+// Requests that end or stop something (closes, aborts, cancels) give up after these, even
+// while the server answers server_resuming: a client that is closing must not wait minutes
+// for a stopped server to start again.
+constexpr auto kCloseLimit = std::chrono::milliseconds(3000);
+constexpr auto kCancelLimit = std::chrono::milliseconds(5000);
+constexpr auto kCancelConnectLimit = std::chrono::milliseconds(2000);
 
 // The code of an error answer that carries none (no problem document, as a proxy's own
 // error page): the client's, so it can't be taken for a server's code (spec §11).
@@ -383,13 +389,18 @@ class ClientCore {
 
   std::string V1(std::string_view path) { return BasePath() + "/v1" + std::string(path); }
 
-  http::request<http::string_body> Request(http::verb verb, const std::string& target, bool authorized) {
+  // `renew` false: the token the client has, never renewed first. Requests that end or stop
+  // something (closes, aborts, cancels) send that: renewing is a sign-in, and a server that
+  // was stopped and wakes on a sign-in (spec §11.2) must not start again to be told
+  // goodbye. A token that no longer stands gets 401, and the thing is gone anyway.
+  http::request<http::string_body> Request(http::verb verb, const std::string& target, bool authorized,
+                                           bool renew = true) {
     http::request<http::string_body> request(verb, target, 11);
     request.set(http::field::host, host_header);
     request.set(http::field::user_agent, options.user_agent.empty() ? DefaultUserAgent() : options.user_agent);
     request.set(http::field::accept, "application/json");
     if (authorized) {
-      const std::string bearer = Token();
+      const std::string bearer = renew ? Token() : CurrentToken();
       if (!bearer.empty()) request.set(http::field::authorization, "Bearer " + bearer);
     }
     return request;
@@ -416,6 +427,11 @@ class ClientCore {
     const int64_t lifetime = Integer(*object, "expires_in").value_or(0);
     expires_at = lifetime > 0 ? std::chrono::steady_clock::now() + std::chrono::seconds(lifetime)
                               : std::chrono::steady_clock::time_point{};
+  }
+
+  std::string CurrentToken() {
+    std::lock_guard lock(token_mutex);
+    return token;
   }
 
   std::string Token() {
@@ -514,6 +530,13 @@ class SessionCore : public std::enable_shared_from_this<SessionCore> {
     auto request = client->Request(verb, target, true);
     if (body != nullptr) ClientCore::SetJson(request, *body);
     return transport->Exchange(std::move(request), nullptr, timeout);
+  }
+
+  // A request that ends or stops something: with the token the client has (never renewed),
+  // and given up after `limit`, server_resuming included.
+  Reply End(http::verb verb, const std::string& target, std::chrono::milliseconds limit = kCloseLimit) {
+    CheckOpen();
+    return transport->Exchange(client->Request(verb, target, true, /*renew=*/false), nullptr, limit);
   }
 
   json::object CallJson(http::verb verb, const std::string& target, const json::value* body,
@@ -649,10 +672,10 @@ class SessionCore : public std::enable_shared_from_this<SessionCore> {
       statement_id = running_id;
     }
     try {
-      auto cancel = client->NewTransport(std::chrono::seconds(2));
+      auto cancel = client->NewTransport(kCancelConnectLimit);
       const std::string target = statement_id.empty() ? Path("/cancel") : Path("/statements/" + statement_id + "/cancel");
-      auto request = client->Request(http::verb::post, target, true);
-      cancel->Exchange(std::move(request), nullptr, std::chrono::seconds(5));
+      auto request = client->Request(http::verb::post, target, true, /*renew=*/false);
+      cancel->Exchange(std::move(request), nullptr, kCancelLimit);
     } catch (const Error&) {
       // Best effort: the statement may have finished, or the server gone.
     }
@@ -1250,9 +1273,10 @@ std::shared_ptr<ResultReader> SessionCore::MakePartitioned(const std::string& st
   auto self = shared_from_this();
   auto cancel = [self, statement_id] {
     try {
-      auto t = self->client->NewTransport(std::chrono::seconds(2));
-      t->Exchange(self->client->Request(http::verb::post, self->Path("/statements/" + statement_id + "/cancel"), true),
-                  nullptr, std::chrono::seconds(5));
+      auto t = self->client->NewTransport(kCancelConnectLimit);
+      t->Exchange(self->client->Request(http::verb::post, self->Path("/statements/" + statement_id + "/cancel"), true,
+                                        /*renew=*/false),
+                  nullptr, kCancelLimit);
     } catch (const Error&) {
     }
   };
@@ -1316,8 +1340,9 @@ ExecuteResult PreparedStatement::Execute(arrow::RecordBatchReader& parameters, c
 void PreparedStatement::Close() {
   if (closed_ || core_->closed) return;
   closed_ = true;
-  Reply reply = core_->Call(http::verb::delete_, core_->Path("/prepared/" + id_));
-  if (reply.status != 204 && reply.status != 200 && reply.status != 404) throw ProblemOf(reply);
+  Reply reply = core_->End(http::verb::delete_, core_->Path("/prepared/" + id_));
+  // Gone already (404), or the token no longer stands (401): either way nothing is left open.
+  if (reply.status != 204 && reply.status != 200 && reply.status != 401 && reply.status != 404) throw ProblemOf(reply);
 }
 
 // ---- Session ----
@@ -1406,11 +1431,14 @@ std::shared_ptr<ResultReader> Session::FetchResult(const std::string& statement_
 }
 
 void Session::CancelStatement(const std::string& statement_id) {
-  core_->CallJson(http::verb::post, core_->Path("/statements/" + statement_id + "/cancel"), nullptr, {200, 202, 204});
+  Reply reply = core_->End(http::verb::post, core_->Path("/statements/" + statement_id + "/cancel"), kCancelLimit);
+  if (reply.status != 200 && reply.status != 202 && reply.status != 204) throw ProblemOf(reply);
 }
 
 void Session::DeleteStatement(const std::string& statement_id) {
-  core_->CallJson(http::verb::delete_, core_->Path("/statements/" + statement_id), nullptr, {200, 204});
+  Reply reply = core_->End(http::verb::delete_, core_->Path("/statements/" + statement_id));
+  // Gone already (404), or the token no longer stands (401): either way nothing is left open.
+  if (reply.status != 200 && reply.status != 204 && reply.status != 401 && reply.status != 404) throw ProblemOf(reply);
 }
 
 void Session::CancelRunning() { core_->CancelRunning(); }
@@ -1510,7 +1538,7 @@ int64_t IngestParts(SessionCore& core, const std::string& table, SharedBatches& 
   for (auto& sender : senders) sender.join();
   auto abort = [&] {
     try {
-      core.CallJson(http::verb::delete_, base, nullptr, {204, 404});  // nothing is written
+      core.End(http::verb::delete_, base);  // nothing is written
     } catch (const Error&) {
     }
   };
@@ -1617,8 +1645,8 @@ json::object Session::ServerInfo() {
 void Session::Close() {
   if (core_->closed) return;
   try {
-    // Bounded: a client that exits must not hang on a server that is gone.
-    core_->Call(http::verb::delete_, core_->Path(""), nullptr, std::chrono::seconds(3));
+    // Bounded: a client that exits must not hang on a server that is gone, or resuming.
+    core_->End(http::verb::delete_, core_->Path(""));
   } catch (const Error&) {
   }
   core_->closed = true;
@@ -1788,6 +1816,8 @@ bool Client::SignedIn() const {
 }
 
 std::string Client::access_token() { return core_->Token(); }
+
+std::string Client::current_access_token() const { return core_->CurrentToken(); }
 
 uint64_t Client::connections_opened() const { return core_->connections_opened.load(std::memory_order_relaxed); }
 

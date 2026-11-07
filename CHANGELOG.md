@@ -7,6 +7,37 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Added
+
+- C++ client: `Client::current_access_token()` reads the current access token as it is, never
+  renewed and without sending anything.
+
+### Changed
+
+- CI builds the C++ SDK and client on Linux (GCC 14) and runs `chargewire-client-tests` and
+  `chargewire-sdk-tests` on every pull request and push to main that touches `cpp/`
+  (`.github/workflows/cpp.yml`). The site's `check` now reports on every pull request, and runs
+  its steps only when the pull request touches what the site is made from.
+
+### Fixed
+
+- **C++ client: closes and cancels never sign in.** The client renews a password or
+  client-certificate sign-in shortly before its token expires, on whatever request comes next,
+  and that included requests that end or stop something. Closing a session, a prepared
+  statement or a statement, aborting an ingest, or cancelling late in a token's life signed in
+  just to close: on a server that was stopped and wakes on a sign-in (§11.2), that started it
+  again for nobody, or undid a person's Stop. These requests now carry the token the client
+  has: `Session::Close`, `PreparedStatement::Close`, `Session::DeleteStatement`, an ingest's
+  abort, `Session::CancelRunning`, `Session::CancelStatement` and the cancel sent when a split
+  result is closed early (and the destructors that close). Requests that do work renew as before.
+- **C++ client: closes give up within seconds on a server that is resuming.**
+  `PreparedStatement::Close`, `Session::DeleteStatement` and an ingest's abort retried
+  `server_resuming` for up to `resume_timeout` (10 minutes by default); like `Session::Close`
+  they now give up after 3 s, and `Session::CancelStatement` after 5 s.
+- **C++ client: a 401 or 404 on a close counts as closed.** `PreparedStatement::Close` threw on a
+  401 (a token that no longer stands), and `Session::DeleteStatement` on a 401 or a 404 (already
+  gone); nothing is left open in either case, so both now return.
+
 ## [2.3.0] - 2026-11-06
 
 ### Added

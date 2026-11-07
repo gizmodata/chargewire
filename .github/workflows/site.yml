@@ -1,7 +1,9 @@
 name: site
 
-# The protocol's site (site/), on pull requests and pushes that touch it or what it is made
-# from (the spec, the OpenAPI document, the conformance suite's README and test files):
+# The protocol's site (site/), on pushes to main that touch it or what it is made from (the
+# spec, the OpenAPI document, the conformance suite's README and test files), and on every pull
+# request: `check` is a required status, so it reports on each one, and runs its steps only
+# when the pull request touches those paths (otherwise it succeeds at once).
 #   - check: the generated pages (specification, endpoints, conformance) match their sources
 #     and every diagram is rendered from its current source; spec/openapi.yaml lints clean
 #     (Redocly CLI and openapi-spec-validator); the site builds, which fails on a broken
@@ -23,13 +25,8 @@ on:
       - "conformance/README.md"
       - "conformance/tests/test_*.py"
       - ".github/workflows/site.yml"
+  # Every pull request (no paths: `check` must report); the job looks at what changed.
   pull_request:
-    paths:
-      - "site/**"
-      - "spec/**"
-      - "conformance/README.md"
-      - "conformance/tests/test_*.py"
-      - ".github/workflows/site.yml"
   workflow_dispatch:
     inputs:
       ga:
@@ -62,20 +59,53 @@ jobs:
         working-directory: site
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2  # a pull request's merge commit and its parents
+      # A pull request that touches none of the push trigger's paths has nothing to check
+      # here; anything else (a push, a manual run, a diff that can't be read) checks all.
+      - name: Whether this run has the site to check
+        id: scope
+        working-directory: .
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then
+            echo "site=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! changed=$(git diff --name-only HEAD^1 HEAD); then
+            echo "::warning::could not list the pull request's changes; checking the site"
+            echo "site=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "$changed"
+          if grep -qE '^(site/|spec/|conformance/README\.md$|conformance/tests/test_[^/]*\.py$|\.github/workflows/site\.yml$)' <<<"$changed"; then
+            echo "site=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "site=false" >> "$GITHUB_OUTPUT"
+            echo "Nothing the site is made from changed: the remaining steps are skipped."
+          fi
       - uses: actions/setup-node@v7
+        if: steps.scope.outputs.site == 'true'
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: site/package-lock.json
       - uses: astral-sh/setup-uv@v10.3.0
+        if: steps.scope.outputs.site == 'true'
       - run: npm ci
+        if: steps.scope.outputs.site == 'true'
       - name: Generated pages and diagrams match their sources
+        if: steps.scope.outputs.site == 'true'
         run: npm run check:generated
       - name: OpenAPI lint
+        if: steps.scope.outputs.site == 'true'
         run: ../spec/scripts/lint-openapi.sh
       - name: Build (fails on a broken internal link)
+        if: steps.scope.outputs.site == 'true'
         run: npm run build
       - name: The public site (DOCS_GA=true) has nothing of the preview left in it
+        if: steps.scope.outputs.site == 'true'
         run: |
           # Proves the switch on every run, before it is flipped: a second build with it on
           # (or this build, when it is on already), checked by scripts/check_ga_build.py.
@@ -87,6 +117,7 @@ jobs:
           fi
           python3 scripts/check_ga_build.py "$out"
       - name: External links
+        if: steps.scope.outputs.site == 'true'
         uses: lycheeverse/lychee-action@v2
         with:
           # gizmodata's repositories are internal until GA: an anonymous check gets 404, so
