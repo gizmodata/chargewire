@@ -100,15 +100,6 @@ void Statement::SetRows(std::shared_ptr<arrow::Schema> schema, bool finish_if_ab
   changed_.Notify();
 }
 
-void Statement::SetUpdate(std::optional<int64_t> rows_affected) {
-  {
-    std::lock_guard lock(mutex_);
-    kind_ = Kind::kUpdate;
-    rows_affected_ = rows_affected;
-  }
-  changed_.Notify();
-}
-
 std::size_t Statement::Route() const {
   const std::size_t count = partitions_.size();
   if (count == 1) return 0;
@@ -237,6 +228,24 @@ void Statement::Finish() {
       DecideSplit(true);  // the whole result is known: split by its size
       Terminate(StatementState::kSucceeded, std::nullopt);
     }
+  }
+  changed_.Notify();
+}
+
+void Statement::FinishUpdate(std::optional<int64_t> rows_affected) {
+  {
+    std::lock_guard lock(mutex_);
+    if (IsTerminalLocked()) {
+      return;
+    }
+    // The result and the end under one lock: a document says "update" only together with
+    // "succeeded". A cancel request (cancel_reason_) that came while the engine worked, or
+    // after, did not stop the work: what the statement changed is changed, and saying
+    // "cancelled" would tell the client it wasn't.
+    kind_ = Kind::kUpdate;
+    rows_affected_ = rows_affected;
+    produced_all_ = true;
+    Terminate(StatementState::kSucceeded, std::nullopt);
   }
   changed_.Notify();
 }

@@ -224,13 +224,19 @@ if(CHARGEWIRE_BUILD_TESTS)
                              CHARGEWIRE_TEST_DEFAULT_SERVER="$<TARGET_FILE:chargewire-duckdb>")
   add_dependencies(chargewire-client-tests chargewire-duckdb)
   # The SDK's own tests: the security-event limiter, session lifetime, retained results'
-  # expiry, the plain handler, the statement ids engines are told and the OpenAPI document,
-  # against a server started in the test process.
+  # expiry, the plain handler, the statement ids engines are told, the OpenAPI document and
+  # the one step in which a statement without rows gets its result and its end, against a
+  # server started in the test process.
   add_executable(chargewire-sdk-tests tests/security_events_test.cc tests/sessions_test.cc
                  tests/statements_test.cc tests/plain_handler_test.cc tests/browser_sign_in_test.cc
                  tests/statement_ids_test.cc tests/openapi_test.cc
                  tests/forwarded_test.cc tests/session_authority_test.cc tests/upload_limits_test.cc
-                 tests/legacy_dialect_test.cc tests/app_endpoint_test.cc)
+                 tests/legacy_dialect_test.cc tests/app_endpoint_test.cc tests/update_outcome_test.cc)
   target_include_directories(chargewire-sdk-tests PRIVATE src/sdk)
   target_link_libraries(chargewire-sdk-tests PRIVATE chargewire chargewire_client GTest::gtest_main)
+  # The DuckDB backend's tests, against a server started in the test process on an in-memory
+  # database: what update_outcome_test.cc plays, with real statements.
+  add_executable(chargewire-duckdb-tests tests/duckdb_update_outcome_test.cc)
+  target_link_libraries(chargewire-duckdb-tests PRIVATE chargewire_duckdb GTest::gtest_main)
+  set_target_properties(chargewire-duckdb-tests PROPERTIES BUILD_RPATH "${CHARGEWIRE_DUCKDB_PREFIX}/lib")
 endif()

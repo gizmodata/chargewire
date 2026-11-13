@@ -90,11 +90,14 @@ console stops it at once.
 
 ## Test
 
-The client library's tests (unit, and live against `chargewire-duckdb`, which they start):
+The client library's tests (unit, and live against `chargewire-duckdb`, which they start), the
+SDK's own, and the DuckDB backend's (each of the last two starts a server in the test process):
 
 ```bash
 cmake -S . -B build -G Ninja -DCHARGEWIRE_BUILD_TESTS=ON && cmake --build build
 ./build/chargewire-client-tests
+./build/chargewire-sdk-tests
+./build/chargewire-duckdb-tests
 ```
 
 The conformance suite:

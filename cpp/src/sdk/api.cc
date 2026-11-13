@@ -1269,21 +1269,23 @@ void Api::Run(std::shared_ptr<Session> session, std::shared_ptr<Statement> state
             break;  // cancelled, or over the retention quota
           }
         }
-      } else {
-        // A statement without rows is answered as soon as its outcome is known (a streamed
-        // submit returns at HasOutcome(), spec §6.1), before Finish(). The session must show
-        // what the statement did to its transaction and options by then (spec §5.2): a client
-        // that read the session at once saw the state before it, BEGIN still "none" and COMMIT
-        // still "open", and a client deciding from that whether a lost session's statement may
-        // run again (§5.7) could run it alone after a BEGIN.
+        outcome.rows.reset();  // the engine runs one result at a time
+        // Before the statement ends, so a client that reads the session once its statement
+        // is over sees what the statement did to the transaction (spec §5.2).
         apply_session_changes();
-        statement->SetUpdate(outcome.rows_affected);
+        statement->Finish();
+      } else {
+        // A statement without rows gets its result and its end in one step (spec §6.2): its
+        // outcome is what answers a streamed submit (HasOutcome(), spec §6.1), and a document
+        // that says "update" must not still say "running". The session shows what the
+        // statement did to its transaction and options before that (spec §5.2): a client
+        // that reads the session as soon as its answer comes must not see the state before
+        // the statement, BEGIN still "none" and COMMIT still "open" (a client deciding from
+        // that whether a lost session's statement may run again, §5.7, could run it alone
+        // after a BEGIN).
+        apply_session_changes();
+        statement->FinishUpdate(outcome.rows_affected);
       }
-      outcome.rows.reset();  // the engine runs one result at a time
-      // Before the statement ends, so a client that reads the session once its statement
-      // is over sees what the statement did to the transaction (spec §5.2).
-      apply_session_changes();
-      statement->Finish();
     } catch (const Error& error) {
       session->RefreshTransaction();
       statement->Fail(error);
@@ -1403,7 +1405,9 @@ Task<Response> Api::Launch(Request& request, std::shared_ptr<Session> session, S
     ScheduleTimeout(session, statement, *timeout);
   }
 
-  // Wait for the outcome (streamed) or for the end (status document), within limits.
+  // Wait for the outcome (streamed) or for the end (status document), within limits. A
+  // statement without rows has its outcome only when it has ended (FinishUpdate()), so its
+  // streamed answer is its final document.
   const auto wait = prefs.respond_async
                         ? std::chrono::seconds(0)
                         : std::min(prefs.wait.value_or(streamed ? state_.options.max_wait

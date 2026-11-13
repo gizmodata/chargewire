@@ -297,8 +297,8 @@ def test_sql_begin_opens_and_commit_ends_a_transaction(chargewire, session_id):
 
 
 def test_the_session_shows_the_transaction_as_soon_as_a_streamed_answer_comes(chargewire, session_id):
-    """A statement without rows on the streamed path (Accept: Arrow) is answered as soon as its
-    outcome is known (§6.1), and the session must already show what it did to the transaction
+    """A statement without rows on the streamed path (Accept: Arrow) is answered as soon as it
+    has ended (§6.1), and the session must already show what it did to the transaction
     (§5.2): a client reading the session at once is deciding whether a lost session's statement
     may run again (§5.7). A server that set the outcome before reading the transaction answered
     BEGIN with the session still "none", and COMMIT still "open", now and then (Chargewire 2.2.0

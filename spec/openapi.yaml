@@ -476,9 +476,10 @@ paths:
       description: |
         Runs a statement (spec §6.1). With `Accept: application/vnd.apache.arrow.stream` and
         no `Prefer: respond-async`, a query's result streams in the response (`200`, Arrow);
-        a statement that returns no rows answers `200` with its statement document. Otherwise
-        the answer is `201` with the statement document, after waiting up to `Prefer: wait=N`.
-        Clients must check `Content-Type`.
+        a statement that returns no rows answers `200` with its statement document, finished:
+        `succeeded`, with its `update` result (a document never says `queued` or `running`
+        with an `update` result, spec §6.2). Otherwise the answer is `201` with the statement
+        document, after waiting up to `Prefer: wait=N`. Clients must check `Content-Type`.
 
         An error found before execution, and a statement that has failed or been cancelled by
         the time the server answers, is an error response with `Chargewire-Statement-Id`.

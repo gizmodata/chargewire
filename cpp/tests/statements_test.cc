@@ -11,6 +11,7 @@
 #include <memory>
 
 #include <arrow/api.h>
+#include <boost/json.hpp>
 
 #include "statements.hpp"
 #include "chargewire/errors.hpp"
@@ -19,6 +20,7 @@ namespace {
 
 using chargewire::Error;
 using chargewire::ErrorCode;
+using chargewire::detail::CancelReason;
 using chargewire::detail::ReadStep;
 using chargewire::detail::Statement;
 using chargewire::detail::WallClock;
@@ -135,6 +137,66 @@ TEST_F(RetainedResult, TheBatchesStayUntilTheLastReadEnds) {
   statement_->EndRead(0);
   EXPECT_EQ(reserved_, 0);
   EXPECT_EQ(statement_->Describe().active_readers, 0);
+}
+
+// A statement without rows gets its result and its end in one step (spec §6.2): there is
+// no moment at which its document says "running" with an update result. (Issue
+// gizmodata/hardcharger#42: the two were set one after the other, and a streamed submit
+// answered in between.)
+TEST(UpdateResult, ComesWithTheEndNeverBefore) {
+  Statement statement("q_u", Statement::Config{});
+  ASSERT_TRUE(statement.BeginRunning());
+  EXPECT_FALSE(statement.HasOutcome());
+  auto running = statement.Document(std::nullopt);
+  EXPECT_EQ(running.at("state"), boost::json::value("running"));
+  EXPECT_TRUE(running.at("result").is_null());
+
+  statement.FinishUpdate(3);
+  EXPECT_TRUE(statement.HasOutcome());
+  EXPECT_TRUE(statement.IsTerminal());
+  EXPECT_FALSE(statement.HasRows());
+  auto done = statement.Document(std::nullopt);
+  EXPECT_EQ(done.at("state"), boost::json::value("succeeded"));
+  EXPECT_EQ(done.at("result"), (boost::json::object{{"kind", "update"}, {"rows_affected", 3}}));
+  EXPECT_TRUE(done.contains("finished_at"));
+  EXPECT_FALSE(done.contains("progress"));
+}
+
+TEST(UpdateResult, WithoutACountWhenTheEngineHasNone) {
+  Statement statement("q_u", Statement::Config{});
+  ASSERT_TRUE(statement.BeginRunning());
+  statement.FinishUpdate(std::nullopt);
+  EXPECT_EQ(statement.Document(std::nullopt).at("result"), (boost::json::object{{"kind", "update"}}));
+}
+
+// A cancellation requested while the engine worked, which the engine finished anyway: the
+// statement's change is made, so it succeeded (spec §6.8). Ending it "cancelled" told the
+// client the change had not happened.
+TEST(UpdateResult, ACancellationThatCameTooLateChangesNothing) {
+  for (const CancelReason reason : {CancelReason::kClient, CancelReason::kTimeout, CancelReason::kSessionClosed}) {
+    Statement statement("q_u", Statement::Config{});
+    ASSERT_TRUE(statement.BeginRunning());
+    EXPECT_TRUE(statement.RequestCancel(reason));  // running: the caller interrupts the engine
+    statement.FinishUpdate(1);                     // the engine had done the work
+    auto doc = statement.Document(std::nullopt);
+    EXPECT_EQ(doc.at("state"), boost::json::value("succeeded"));
+    EXPECT_EQ(doc.at("result"), (boost::json::object{{"kind", "update"}, {"rows_affected", 1}}));
+    EXPECT_FALSE(doc.contains("error"));
+    EXPECT_FALSE(doc.contains("cancel_reason"));
+    EXPECT_FALSE(statement.error().has_value());
+    EXPECT_FALSE(statement.RequestCancel(CancelReason::kClient));  // finished: a no-op
+  }
+}
+
+// A statement cancelled while queued never starts, and nothing ends it twice.
+TEST(UpdateResult, DoesNotReviveAStatementThatHasEnded) {
+  Statement statement("q_u", Statement::Config{});
+  EXPECT_FALSE(statement.RequestCancel(CancelReason::kClient));  // queued: cancelled at once
+  EXPECT_FALSE(statement.BeginRunning());
+  statement.FinishUpdate(1);
+  auto doc = statement.Document(std::nullopt);
+  EXPECT_EQ(doc.at("state"), boost::json::value("cancelled"));
+  EXPECT_TRUE(doc.at("result").is_null());
 }
 
 }  // namespace
