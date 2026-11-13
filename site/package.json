@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@astrojs/starlight": "0.42.6",
-    "astro": "7.4.0",
+    "astro": "7.4.12",
     "github-slugger": "2.0.0",
     "js-yaml": "4.3.2",
     "sharp": "0.35.5",
