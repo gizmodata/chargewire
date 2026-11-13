@@ -61,7 +61,11 @@ class Statement {
   // Moves queued -> running. False if the statement was cancelled while queued.
   bool BeginRunning();
   void SetRows(std::shared_ptr<arrow::Schema> schema, bool finish_if_abandoned = false);
-  void SetUpdate(std::optional<int64_t> rows_affected);
+  // Ends a statement that returns no rows: its result and its terminal state in one step, so
+  // no reader ever finds an update result on a statement that is still running (spec §6.2).
+  // The engine has done the statement's work by now, so a cancellation that was requested
+  // too late to stop it changes nothing: the statement succeeded (spec §6.8).
+  void FinishUpdate(std::optional<int64_t> rows_affected);
   // Adds a result batch. For an unretained result, waits for the reader to make room.
   // False means stop producing: the statement was cancelled or exceeded its quota.
   bool AddBatch(std::shared_ptr<arrow::RecordBatch> batch);
@@ -83,7 +87,8 @@ class Statement {
   StatementState state() const;
   bool IsTerminal() const;
   bool CancelRequested() const;
-  // True once the statement has produced its outcome (rows or update) or ended.
+  // True once the statement has produced its outcome or ended: a statement with rows from
+  // SetRows() on, one without rows only when it ends (FinishUpdate()).
   bool HasOutcome() const;
   bool HasRows() const;
   // The failure, for a failed or cancelled statement.

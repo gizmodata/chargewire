@@ -794,7 +794,10 @@ How the server answers depends on `Accept` and `Prefer`:
   `Content-Type: application/vnd.apache.arrow.stream`, and `Chargewire-Statement-Id`
   naming the statement. A statement that returns no rows (DML, DDL) answers
   `200` with a JSON statement document ([§6.2](#62-the-statement-document)) instead; clients MUST check
-  `Content-Type`.
+  `Content-Type`. That document is the finished statement's, `succeeded` with its
+  `update` result; a server that stops waiting for a long statement answers with
+  the document as it stands, its `result` still `null` ([§6.2](#62-the-statement-document)), and the client
+  follows the statement ([§6.3](#63-status-get-chargewirev1sessionssession_idstatementsstatement_id)).
 - **Status document.** Otherwise the server answers `201` with the statement
   document ([§6.2](#62-the-statement-document)) and `Location: /chargewire/v1/sessions/{session_id}/statements/{statement_id}`.
   With `Prefer: wait=N` the server MAY hold the response up to N seconds for the
@@ -845,6 +848,13 @@ returns rows has a `rows` result as soon as its schema is known, while it runs t
 `partitions` then list the partitions decided so far ([§6.10](#610-partitioned-results)), with `batches` and `rows`
 `null`, and `retained` says whether the result is kept ([§6.5](#65-retention-and-resumption)). A failed or cancelled
 statement's `result` is `null`.
+
+A statement that returns no rows gets its `update` result (below) and its `succeeded`
+state in one step. A server MUST NOT send a statement document that says `queued` or
+`running` with an `update` result, on any path: the answer to a submit ([§6.1](#61-submit-post-chargewirev1sessionssession_idstatements), [§7.2](#72-post-preparedprepared_idexecute)), a
+status request ([§6.3](#63-status-get-chargewirev1sessionssession_idstatementsstatement_id)), a cancel's answer ([§6.8](#68-cancel-and-close)) or an idempotent replay ([§6.7](#67-idempotent-submission)). A client
+that reads `"state": "running"` polls on, so such a document would cost it a round trip
+for a statement that is over, or leave it reporting a state its result contradicts.
 
 A cancelled statement's `cancel_reason` is one of `client`, `timeout`, `session_closed`,
 `killed`, `cancelled`, `privilege_revoked` or `server_shutdown`. `killed`: an
@@ -981,6 +991,11 @@ whose response was lost, including DML.
 - `POST …/statements/{statement_id}/cancel`: `202`. Cancelling a queued statement
   removes it from the queue; it never starts. Cancelling a finished statement is a
   no-op (`202`).
+- A cancellation stops work that is still to be done; it never reports work that was
+  done as undone. A statement that returns no rows and whose change the engine had
+  made when the cancellation reached it (a cancel, a session cancel, or its timeout,
+  [§6.9](#69-timeouts)) is `succeeded`, with its `update` result: a server MUST NOT end it `cancelled`,
+  which would tell the client that a change it now has to live with never happened.
 - `DELETE …/statements/{statement_id}`: the client is done with the statement. Its
   result is freed and its id forgotten (`204`). A query still running is cancelled; a
   statement that changes data runs to the end with its rows discarded, as when its

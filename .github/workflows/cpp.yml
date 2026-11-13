@@ -1,8 +1,9 @@
 name: cpp
 
 # The C++ SDK and client library (cpp/): builds them and runs chargewire-client-tests (unit,
-# stub-server and live tests against the chargewire-duckdb reference server, which they start)
-# and chargewire-sdk-tests, on pull requests and pushes that touch cpp/.
+# stub-server and live tests against the chargewire-duckdb reference server, which they start),
+# chargewire-sdk-tests and chargewire-duckdb-tests (the DuckDB backend in the test process), on
+# pull requests and pushes that touch cpp/.
 #
 # DuckDB is not built here (about 10 minutes on a laptop, far more on a runner): the job uses
 # DuckDB's own release build of v2.0.0, the commit scripts/build-duckdb.sh pins, checked by
@@ -110,3 +111,7 @@ jobs:
       - name: chargewire-sdk-tests
         timeout-minutes: 10
         run: ./build/chargewire-sdk-tests
+
+      - name: chargewire-duckdb-tests
+        timeout-minutes: 10
+        run: ./build/chargewire-duckdb-tests

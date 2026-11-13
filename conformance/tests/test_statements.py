@@ -47,11 +47,78 @@ def test_statement_without_rows_reports_rows_affected(chargewire, session_id):
     doc = chargewire.execute(session_id=session_id, sql="INSERT INTO affected SELECT * FROM range(5)")
     assert doc["result"] == {"kind": "update", "rows_affected": 5}
 
-    # Asking for Arrow doesn't change that: the answer is a JSON document.
+    # Asking for Arrow doesn't change that: the answer is a JSON document, the finished
+    # statement's (§6.1).
     response = chargewire.submit(session_id=session_id, sql="DELETE FROM affected WHERE v < 2", arrow=True)
     assert response.status_code == 200, response.text
     assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["state"] == "succeeded", response.text
     assert response.json()["result"] == {"kind": "update", "rows_affected": 2}
+
+
+def update_only_with_succeeded(doc: dict, where: str) -> None:
+    """§6.2: a statement document carries an `update` result only once it says `succeeded`."""
+    if (doc.get("result") or {}).get("kind") == "update":
+        assert doc["state"] == "succeeded", (where, doc)
+
+
+def test_an_update_result_comes_only_with_succeeded(chargewire, session_id):
+    """A statement that returns no rows gets its `update` result and its `succeeded` state in
+    one step (§6.2), so no answer says `running` with an update result: not a streamed
+    submit's (§6.1) or a streamed prepared execution's (§7.2), not a status request's (§6.3),
+    not an idempotent replay's (§6.7). A server that set the result first and the state a moment
+    later answered {"state": "running", "result": {"kind": "update", "rows_affected": 1}} to a
+    streamed `CREATE TABLE ... AS` now and then (Chargewire's C++ SDK before 2.4.2: about 1 answer
+    in 700 with four cores, nearly every one with one), and a client that reads `state` then
+    polls a statement that is over. Many rounds over each kind of statement and each path, so
+    the window shows if it is there."""
+    chargewire.execute(session_id=session_id, sql="CREATE TABLE one_step (v INTEGER)")
+    prepared = chargewire.http.post(url=f"{chargewire.session_url(session_id)}/prepared", headers=chargewire.headers(),
+                                    json={"sql": "INSERT INTO one_step VALUES (?)"})
+    assert prepared.status_code == 201, prepared.text
+    execute_url = f"{chargewire.session_url(session_id)}/prepared/{prepared.json()['prepared_id']}/execute"
+    one_row, no_count = {"kind": "update", "rows_affected": 1}, {"kind": "update"}
+    for round_ in range(100):
+        statements = [
+            (f"CREATE TABLE one_step_{round_} AS SELECT 1 AS id, 'hello' AS body", one_row),
+            ("INSERT INTO one_step VALUES (1)", one_row),
+            ("SET enable_progress_bar = false", no_count),
+            ("BEGIN", no_count),
+            ("COMMIT", no_count),
+        ]
+        for sql, result in statements:
+            # Streamed submit: the answer is the finished statement, and so is every later read.
+            key = f"one-step-{round_}-{sql}"
+            response = chargewire.submit(session_id=session_id, sql=sql, arrow=True, headers={"Idempotency-Key": key})
+            assert response.status_code == 200, response.text
+            assert response.headers["content-type"].startswith("application/json"), response.text
+            doc = response.json()
+            assert (doc["state"], doc["result"]) == ("succeeded", result), (round_, sql, doc)
+            again = chargewire.status(session_id=session_id, statement_id=doc["statement_id"])
+            assert (again["state"], again["result"]) == ("succeeded", result), (round_, sql, again)
+            replay = chargewire.submit(session_id=session_id, sql=sql, arrow=True, headers={"Idempotency-Key": key})
+            assert replay.status_code == 200, replay.text
+            assert replay.json()["statement_id"] == doc["statement_id"], (round_, sql)
+            assert (replay.json()["state"], replay.json()["result"]) == ("succeeded", result), (round_, sql)
+
+        # Streamed prepared execution (§7.2): answered as a streamed submit is.
+        response = chargewire.http.post(url=execute_url, headers=chargewire.headers(Accept=ARROW_STREAM),
+                                        json={"parameters": [2]})
+        assert response.status_code == 200, response.text
+        assert (response.json()["state"], response.json()["result"]) == ("succeeded", one_row), (round_, response.text)
+
+        # Accepted at once (respond-async), then read until it ends: every document on the way.
+        response = chargewire.submit(session_id=session_id, sql="INSERT INTO one_step VALUES (3)",
+                                     headers={"Prefer": "respond-async"})
+        assert response.status_code == 201, response.text
+        doc = response.json()
+        update_only_with_succeeded(doc=doc, where=("respond-async", round_))
+        while doc["state"] in ("queued", "running"):
+            doc = chargewire.status(session_id=session_id, statement_id=doc["statement_id"])
+            update_only_with_succeeded(doc=doc, where=("status", round_))
+        assert (doc["state"], doc["result"]) == ("succeeded", one_row), (round_, doc)
+    rows = chargewire.query(session_id=session_id, sql="SELECT v, count(*) AS n FROM one_step GROUP BY v ORDER BY v")
+    assert rows.to_pylist() == [{"v": 1, "n": 100}, {"v": 2, "n": 100}, {"v": 3, "n": 100}]
 
 
 def test_statement_that_expands_into_several_returns_rows(chargewire, session_id):

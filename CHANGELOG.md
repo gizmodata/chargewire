@@ -7,6 +7,57 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Changed (clarified)
+
+- **An `update` result comes only with `succeeded`** (spec §6.1, §6.2). A statement that
+  returns no rows gets its result and its terminal state in one step: a server MUST NOT send a
+  statement document that says `queued` or `running` with an `update` result, on any path
+  (the answer to a submit or a prepared execution, a status request, a cancel's answer, an
+  idempotent replay), and the streamed answer of a statement without rows is the finished
+  statement's. The text did not say which state that document is in. Clients need no change:
+  one that reads `state` no longer meets a `running` it has to poll past.
+- **A cancellation that comes after the work is done changes nothing** (spec §6.8). A statement
+  that returns no rows and whose change the engine had made when a cancel, a session cancel or
+  its timeout reached it is `succeeded` with its `update` result; a server MUST NOT end it
+  `cancelled`.
+
+### Fixed
+
+- C++ SDK: a statement without rows could answer `"state": "running"` together with its final
+  result, `{"state": "running", "result": {"kind": "update", "rows_affected": 1}}`
+  ([gizmodata/hardcharger#42](https://github.com/gizmodata/hardcharger/issues/42)). Since the
+  first release the SDK set such a statement's result, then read the session's options and
+  transaction, then set its state; a streamed submit (`Accept: application/vnd.apache.arrow.stream`)
+  or a streamed prepared execution is answered at the result, and a status request, a cancel or
+  an idempotent replay could read the statement in between. With a server built on the SDK
+  (Hardcharger 2.12.0) held to one CPU nearly every streamed `INSERT`, `CREATE TABLE ... AS`,
+  `SET`, `BEGIN` and `COMMIT` answered so, with four about 1 in 700. A driver that reads
+  `state` then polled a statement that was over: one more request per statement (measured with
+  Hardcharger's Python ADBC driver 2.5.0: 3 requests for an `INSERT` instead of 2). The result
+  and the state are now set in one step,
+  after the session shows what the statement did (spec §5.2), so the answer comes no later
+  than before.
+- C++ SDK: a cancel, a session cancel or a timeout that arrived in that same window, after
+  the engine had done a statement's work, ended the statement `cancelled` (with the
+  `statement_cancelled` or `statement_timeout` error), although its change was made and its
+  streamed answer had already reported `rows_affected`; the `cancelled` document also still
+  carried the `update` result, where a cancelled statement's result is `null` (spec §6.2). Such
+  a statement now ends `succeeded`: a cancellation that is too late to stop the work is a
+  no-op, as for a statement that has finished. A cancellation that reaches the engine while it
+  works stops it as before.
+
+### Added
+
+- Conformance: `test_an_update_result_comes_only_with_succeeded` runs `CREATE TABLE ... AS`,
+  `INSERT`, `SET`, `BEGIN` and `COMMIT` on the streamed path 100 times each, with a streamed
+  prepared execution, a `respond-async` submit read to its end and an idempotent replay, and
+  `test_statement_without_rows_reports_rows_affected` now checks the streamed answer's `state`.
+  A server built on the C++ SDK before this release fails them now and then (nearly always on
+  one CPU).
+- C++ tests: `chargewire-sdk-tests` and the new `chargewire-duckdb-tests` hold the engine thread
+  right after a statement's work and read the statement over every path, and send a cancel, a
+  session cancel and a timeout there (`cpp/tests/update_outcome.hpp`); CI runs both.
+
 ## [2.4.1] - 2026-11-07
 
 ### Changed (clarified)
