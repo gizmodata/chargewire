@@ -7,6 +7,8 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [2.4.2] - 2026-11-13
+
 ### Changed (clarified)
 
 - **An `update` result comes only with `succeeded`** (spec §6.1, §6.2). A statement that
