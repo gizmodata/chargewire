@@ -38,6 +38,36 @@ between servers; the defaults are `chargewire-duckdb`'s:
 and the `CHARGEWIRE_TEST_AUTHZ_*` variables its docstring describes; on a server without
 privileges (`chargewire-duckdb`) it skips, saying so.
 
+## Read-only sessions
+
+[`test_read_only.py`](tests/test_read_only.py) holds spec §5.8 with SQL any engine has: the
+option and what a server without it answers, one refusal per write path (each with its twin
+that works in a read-write session), every door back to read-write, replacement sessions, and
+what a reader keeps. On a server without the `read_only_sessions` capability these tests skip,
+saying so; `CHARGEWIRE_TEST_REQUIRE_READ_ONLY=1` makes that a failure, for the run of a server
+that must have it (`chargewire-duckdb`'s own run sets it).
+
+[`test_read_only_duckdb.py`](tests/test_read_only_duckdb.py), marked `duckdb`, is for servers
+on DuckDB that read this machine's files (`chargewire-duckdb`, Hardcharger; deselect with `-m
+"not duckdb"`): the statements, settings and functions DuckDB has for changing something, each
+refused however it is reached, and a long list of what a reader uses, each still working in a
+read-only session (queries of every shape, deep plans, `DESCRIBE`/`SHOW`/`SUMMARIZE`,
+`EXPLAIN`, the catalog functions, CSV, Parquet and JSON files, every spelling of a reader's
+settings). Its tests marked `duckdb_extensions` install an extension from DuckDB's repository
+and fail when that is impossible (deselect with `-m "not duckdb_extensions"`): an attached
+SQLite database, a DuckLake with time travel, files over HTTP (`httpfs`), spatial files, and
+an attached PostgreSQL (`CHARGEWIRE_TEST_POSTGRES`: a throwaway server's connection string;
+without it that one test skips). Not covered for want of test data here: Iceberg and Delta
+tables, MySQL, full-text search.
+
+Every refusal in both files is checked for its code and for having changed nothing: the rows,
+the catalog, the attached databases, the files of a scratch directory, the settings as a second
+session sees them, sequences and secrets are compared before and after.
+
+A server the suite starts gets a home directory of its own for the run (`HOME`), removed
+afterwards, so nothing a test makes a server do (a persistent secret, an extension installed)
+reaches the user's `~/.duckdb`, and nothing is left over from an earlier run.
+
 ## Every response against the OpenAPI document
 
 [`openapi_check.py`](tests/openapi_check.py) holds every response the suite receives to

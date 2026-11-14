@@ -261,7 +261,20 @@ class EngineSession {
   // (a session log) can. The default ignores it.
   virtual void Ending(std::string_view reason) { (void)reason; }
 
-  // Applies session options; returns the ones that failed, by name.
+  // Makes this session read-only for the rest of its life (spec §5.8). From the moment it
+  // returns, the engine refuses with Error(ErrorCode::kReadOnly) everything the spec calls a
+  // change, on every path (Execute, Prepare, ExecutePrepared, Ingest, SetOptions), whatever SQL
+  // arrives, and nothing sent through the session undoes it: there is no way back. The engine
+  // decides what a statement does; the SDK keeps the option, its one-way rule and the session
+  // document, and refuses bulk ingest itself. Throws when it can't do so now
+  // (Error(ErrorCode::kInvalidOptionValue): a transaction with work in it is open, spec §5.8);
+  // the session then stays as it was. Called on the session's engine thread, at most once per
+  // session unless it threw, and only when BackendCapabilities::read_only_sessions is set. The
+  // default throws not_implemented.
+  virtual void SetReadOnly();
+
+  // Applies session options; returns the ones that failed, by name. Never receives
+  // `read_only`: that option is the SDK's (SetReadOnly).
   virtual OptionErrors SetOptions(const boost::json::object& options);
   // The session's current options.
   virtual boost::json::object Options();
@@ -317,6 +330,10 @@ struct BackendCapabilities {
   bool prepared_statements = false;  // EngineSession::Prepare() and ExecutePrepared() (spec §7)
   bool transactions = false;         // Commit(), Rollback() and autocommit false (spec §5.5)
   bool ingest = false;               // EngineSession::Ingest(): bulk and partitioned ingest (spec §8)
+  // EngineSession::SetReadOnly(): the read_only session option (spec §5.8). Only an engine
+  // that enforces it sets this. Without it the SDK answers unknown_option for read_only and
+  // never passes the option on, so a session is never reported read-only when it is not.
+  bool read_only_sessions = false;
 };
 
 class Backend {
@@ -332,7 +349,8 @@ class Backend {
   // id (spec §2.3), the one its client holds: an engine that shows or takes session ids
   // (a sessions table, a command that ends a session, logs) uses this one, so a client
   // finds its own session without a second id to translate. `options` are the create
-  // request's session options (spec §5.1): one that fails fails the create, so throw its
+  // request's session options (spec §5.1), without `read_only` (the SDK calls SetReadOnly()
+  // on the new session before it answers): one that fails fails the create, so throw its
   // error (unknown_option or invalid_option_value, naming the option).
   virtual std::unique_ptr<EngineSession> OpenSession(const Principal& principal, const std::string& session_id,
                                                      const boost::json::object& options) = 0;

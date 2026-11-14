@@ -7,7 +7,7 @@ name: cpp
 #
 # DuckDB is not built here (about 10 minutes on a laptop, far more on a runner): the job uses
 # DuckDB's own release build of v2.0.0, the commit scripts/build-duckdb.sh pins, checked by
-# hash. Arrow is built by scripts/build-arrow.sh and cached, keyed on its script and the
+# hash, and that commit's headers for the one file that uses DuckDB's internal ones. Arrow is built by scripts/build-arrow.sh and cached, keyed on its script and the
 # compiler. The conformance suite against chargewire-duckdb stays a local check
 # (conformance/README.md).
 
@@ -82,6 +82,17 @@ jobs:
           tar -xzf "$RUNNER_TEMP/duckdb/libs.tar.gz" -C "$RUNNER_TEMP/duckdb"
           mv "$RUNNER_TEMP/duckdb/libduckdb.so" "$prefix/lib/"
           mv "$RUNNER_TEMP"/duckdb/*.h "$prefix/include/"
+
+      # The guard of read-only sessions (src/duckdb/duckdb_read_only_guard.cc) compiles against
+      # DuckDB's internal headers, which the release archive does not have: the headers of the
+      # same commit, from DuckDB's repository.
+      - name: DuckDB's internal headers of the pinned commit, retried
+        run: |
+          for attempt in 1 2 3; do
+            if ./scripts/duckdb-headers.sh; then break; fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep $((attempt * 15))
+          done
 
       - name: Arrow from the cache
         id: arrow

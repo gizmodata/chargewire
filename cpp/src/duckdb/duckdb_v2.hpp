@@ -21,6 +21,22 @@ inline std::string ToString(duckdb_v2_str text) {
 // The Chargewire error (and SQLSTATE, where the SQL standard has one) for a DuckDB error.
 inline chargewire::Error Translate(DUCKDB_V2_ERROR code, std::string message) {
   using chargewire::ErrorCode;
+  // DuckDB's own refusals of a write are read_only (spec §11): in a READ ONLY transaction
+  // (every transaction of a read-only session, spec §5.8, is one) and on a database attached
+  // read-only (a read-only server). DuckDB has no error code of their own, so its code and the
+  // words its message begins with decide: an error of another kind begins with that kind's
+  // name, whatever names and literals of the statement follow. The answer is worded here and
+  // carries nothing of DuckDB's message, which can quote the statement.
+  if (code == DUCKDB_V2_ERROR_DATABASE_TRANSACTION &&
+      message.starts_with("TransactionContext Error: Cannot write to database")) {
+    return chargewire::Error(ErrorCode::kReadOnly,
+                             "the statement would change data, and its transaction is read-only", "25006");
+  }
+  if (message.starts_with("Invalid Input Error: Cannot execute statement of type") &&
+      message.substr(0, message.find('\n')).ends_with("which is attached in read-only mode!")) {
+    return chargewire::Error(ErrorCode::kReadOnly,
+                             "the statement would change a database that is attached read-only", "25006");
+  }
   switch (code) {
     case DUCKDB_V2_ERROR_QUERY_PARSER:
     case DUCKDB_V2_ERROR_QUERY_SYNTAX:

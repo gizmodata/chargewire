@@ -43,10 +43,12 @@ jq . session.json
     "catalog": "memory",
     "schema": "main",
     "autocommit": true,
-    "duckdb_arrow_lossless_conversion": false
+    "duckdb_arrow_lossless_conversion": false,
+    "read_only": false
   },
   "transaction": "none",
-  "idle_timeout_s": 900
+  "idle_timeout_s": 900,
+  "idle_in_transaction_timeout_s": 0
 }
 ```
 

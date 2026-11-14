@@ -1,12 +1,14 @@
 // One Chargewire session on its own DuckDB connection.
 #pragma once
 
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "duckdb_upload.hpp"
+#include "duckdb_read_only.hpp"
 #include "duckdb_v2.hpp"
 #include "duckdb_values.hpp"
 #include "chargewire/backend.hpp"
@@ -31,6 +33,8 @@ class DuckDBSession : public chargewire::EngineSession {
 
   void Interrupt() override;
   std::optional<double> Progress() override;
+  // Read-only sessions (spec §5.8; duckdb_read_only.hpp says how DuckDB is held to it).
+  void SetReadOnly() override;
   chargewire::OptionErrors SetOptions(const boost::json::object& options) override;
   boost::json::object Options() override;
   bool TakeOptionsChanged() override { return std::exchange(options_changed_, false); }
@@ -40,6 +44,17 @@ class DuckDBSession : public chargewire::EngineSession {
 
  protected:
   duckdb_v2_connection_handle connection() const { return connection_.get(); }
+
+  // Whether SetReadOnly() made this session read-only.
+  bool read_only() const { return read_only_; }
+  // The lists a read-only session is held to (ReadOnlyPolicy::Default() unless set). A server
+  // that embeds this adapter adds the table functions it knows to read, or its own settings,
+  // before the session becomes read-only: the session's guard takes the policy then.
+  void set_read_only_policy(std::shared_ptr<const ReadOnlyPolicy> policy) { read_only_policy_ = std::move(policy); }
+  const ReadOnlyPolicy& read_only_policy() const { return *read_only_policy_; }
+  // In a read-only session: runs SQL of the server's own that the session's guard is not to
+  // judge (the adapter's transactions; a server's own bookkeeping). Never the client's text.
+  void RunOwnSql(std::string_view sql);
   // The field metadata keys that carry a column's default in table schemas
   // (metadata/tables?include_schema=true; Flight SQL has none). A server may add the key
   // its older clients read; none: not reported.
@@ -51,6 +66,41 @@ class DuckDBSession : public chargewire::EngineSession {
       std::shared_ptr<arrow::RecordBatchReader> tables);
 
  private:
+  // Runs one statement of the client's in a read-only session, with these values: its kind
+  // is held to the policy before DuckDB binds anything, a transaction statement is run by the
+  // adapter itself (false: there is no result), and anything else is handed to DuckDB, whose
+  // plan the session's guard refuses or lets run. Throws read_only for a refusal.
+  bool RunReadOnly(duckdb_v2_sql_statement_handle statement, const BoundValues& bound, ArrowResult& result);
+  // Before DuckDB binds a statement of a read-only session: the screen of what binding
+  // itself would run (ScreenBeforeBinding), for the statement and for the definition of every
+  // view and macro it reaches, whoever defined them. Throws read_only.
+  void ScreenReadOnly(duckdb_v2_sql_statement_handle statement);
+  // The kind alone, from DuckDB's parser: before anything of the statement is bound.
+  void CheckReadOnlyKind(duckdb_v2_sql_statement_handle statement) const;
+  void RunReadOnlyTransactionStatement(duckdb_v2_sql_statement_handle statement);
+  // Before any work in the session. Read-write: starts the transaction a SQL COMMIT or
+  // ROLLBACK left owed. Read-only: ends the READ ONLY transaction the last work ran in, if
+  // the client has none open, and starts the one this work runs in.
+  void BeginWork();
+  void EnsureReadOnlyTransaction();
+  // For the adapter's own queries (the session's options): ends, when it goes, the READ ONLY
+  // transaction that was started for them, so a session in manual commit holds no
+  // transaction, and no snapshot, before its client has run anything in it.
+  class OwnReadOnlyWork {
+   public:
+    explicit OwnReadOnlyWork(DuckDBSession& session)
+        : session_(session), was_open_(session.read_only_transaction_open_) {}
+    ~OwnReadOnlyWork() {
+      if (session_.read_only_ && !was_open_) session_.EndReadOnlyTransaction(true);
+    }
+
+   private:
+    DuckDBSession& session_;
+    bool was_open_;
+  };
+  // Ends the read-only transaction DuckDB has open, if any; a commit that fails is a rollback.
+  void EndReadOnlyTransaction(bool commit);
+
   void EndTransaction(std::string_view sql);
   // Notes a transaction statement (BEGIN, COMMIT, ...) that just ran. With autocommit off
   // a SQL COMMIT or ROLLBACK starts the next transaction, as the commit and rollback
@@ -72,6 +122,28 @@ class DuckDBSession : public chargewire::EngineSession {
   // DuckDB whether an open one has been aborted.
   chargewire::TransactionState transaction_ = chargewire::TransactionState::kNone;
   bool transaction_owed_ = false;  // autocommit off, and a SQL COMMIT/ROLLBACK just ended one
+  // Read-only (SetReadOnly): one-way, never cleared.
+  bool read_only_ = false;
+  std::shared_ptr<const ReadOnlyPolicy> read_only_policy_;
+  std::shared_ptr<ReadOnlyGuard> read_only_guard_;  // installed by SetReadOnly, for the connection's life
+  // The definitions of the views and macros of every DuckDB catalog, by lower-case name, as of
+  // the catalog versions in the stamp (ScreenReadOnly).
+  std::string definitions_stamp_;
+  std::multimap<std::string, std::string> view_definitions_;
+  std::multimap<std::string, std::string> macro_definitions_;
+  // The views whose own definition, or one it reaches, does not pass the screen: binding one
+  // of them runs something. A statement is refused if it can name one in a way the screen
+  // cannot follow (in a string), and the metadata listing does not bind them.
+  std::set<std::string> unreadable_views_;
+  // Reads the definitions again if a catalog changed (ScreenReadOnly).
+  void LoadReadOnlyDefinitions();
+  // Screens the definitions of everything `pending` names, and of what those name. Throws read_only.
+  void FollowReadOnlyDefinitions(ReadOnlyReferences pending);
+  // Read-only: whether DuckDB has a transaction open now. Only the adapter starts and ends
+  // DuckDB's transactions then, always READ ONLY, so this is exact.
+  bool read_only_transaction_open_ = false;
+  // Read-write: a statement ran in the transaction that is open (SetReadOnly refuses then).
+  bool work_in_transaction_ = false;
   boost::json::value session_tag_ = nullptr;
   bool options_changed_ = false;  // a statement ran that can move the current catalog/schema
 };
