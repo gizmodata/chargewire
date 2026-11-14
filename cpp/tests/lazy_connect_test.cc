@@ -225,6 +225,27 @@ TEST(LazyConnect, AnOptionTheServerRefusesFailsTheFirstStatement) {
   EXPECT_EQ(stand.stub.Count("POST", kSession + "/statements"), 0);
 }
 
+// Spec §5.8: a server that ignores the read_only option (this stand-in knows no option but
+// "bogus") answers with a session that writes. The client closes it and reports an error, at
+// creation or, connected lazily, at the first request that does work; it never runs a
+// statement in it.
+TEST(LazyConnect, AReadOnlySessionTheServerDoesNotConfirmIsAnErrorAndIsClosed) {
+  for (const bool stopped : {false, true}) {
+    Stand stand(stopped);
+    auto client = stand.Connect();
+    try {
+      auto session = client->CreateSession({{"read_only", true}});
+      EXPECT_TRUE(stopped) << "a session the server did not confirm was handed out";
+      session->Execute("SELECT 42");
+      FAIL() << "ran in a session that is not read-only";
+    } catch (const wc::Error& e) {
+      EXPECT_EQ(e.code(), "client_read_only_not_confirmed") << e.detail();
+    }
+    EXPECT_EQ(stand.stub.Count("POST", kSession + "/statements"), 0);
+    EXPECT_EQ(stand.stub.Count("DELETE", kSession), 1);
+  }
+}
+
 // Laziness is decided per connection, from the discovery that connection reads.
 TEST(LazyConnect, EachConnectionReadsDiscoveryAsItConnects) {
   Stand stand(/*stopped=*/true);

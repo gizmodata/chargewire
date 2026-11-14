@@ -44,9 +44,30 @@ between servers; the defaults are `chargewire-duckdb`'s:
 and the `CHARGEWIRE_TEST_AUTHZ_*` variables its docstring describes; on a server without
 privileges (`chargewire-duckdb`) it skips, saying so.
 
+## Read-only sessions
+
+[`test_read_only.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_read_only.py) holds spec [§5.8](/specification/#58-read-only-sessions) with SQL any engine has: the
+option and what a server without it answers, one refusal per write path (each with its twin
+that works in a read-write session), every door back to read-write, replacement sessions, and
+what a reader keeps. On a server without the `read_only_sessions` capability these tests skip,
+saying so; `CHARGEWIRE_TEST_REQUIRE_READ_ONLY=1` makes that a failure, for the run of a server
+that must have it (`chargewire-duckdb`'s own run sets it).
+
+[`test_read_only_duckdb.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_read_only_duckdb.py), marked `duckdb`, is for servers
+on DuckDB that read this machine's files (`chargewire-duckdb`, Hardcharger; deselect with `-m
+"not duckdb"`): the statements, settings and functions DuckDB has for changing something, each
+refused, and a long list of what a reader uses, each still working in a read-only session
+(queries of every shape, `DESCRIBE`/`SHOW`/`SUMMARIZE`, `EXPLAIN`, the catalog functions, CSV,
+Parquet and JSON files). Its tests marked `duckdb_extensions` load an extension and fail when it
+cannot be loaded (deselect with `-m "not duckdb_extensions"`): an attached SQLite database, a
+DuckLake with time travel, files over HTTP (`httpfs`), spatial files, and an attached PostgreSQL
+(`CHARGEWIRE_TEST_POSTGRES`: a throwaway server's connection string; without it that one test
+skips). Not covered for want of test data here: Iceberg and Delta tables, MySQL, full-text
+search.
+
 ## What each file covers
 
-259 test functions (some run several cases), in the suite's [`tests/`](https://github.com/gizmodata/chargewire/tree/main/conformance/tests):
+302 test functions (some run several cases), in the suite's [`tests/`](https://github.com/gizmodata/chargewire/tree/main/conformance/tests):
 
 | File | Tests | Covers |
 |---|---|---|
@@ -66,6 +87,8 @@ privileges (`chargewire-duckdb`) it skips, saying so.
 | [`test_prepare_describe.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_prepare_describe.py) | 7 | [§7](/specification/#7-prepared-statements): preparing a query describes its result without running it. |
 | [`test_prepared.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_prepared.py) | 16 | [§7](/specification/#7-prepared-statements): prepared statements, with JSON and Arrow bind parameters. |
 | [`test_principals.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_principals.py) | 2 | [§9.2](/specification/#92-handles-are-bound-to-their-principal) and [§9.3](/specification/#93-results-are-governed-data): every handle is bound to its principal, and [§4.4](/specification/#44-client-certificate-sign-in-optional-capability-mtls_identity): a forwarded certificate header is no certificate. |
+| [`test_read_only.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_read_only.py) | 27 | [§5.8](/specification/#58-read-only-sessions): read-only sessions (capability `read_only_sessions`). |
+| [`test_read_only_duckdb.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_read_only_duckdb.py) | 16 | [§5.8](/specification/#58-read-only-sessions) on a DuckDB server (`chargewire-duckdb`, Hardcharger): the ways DuckDB lets a session change something that are not in the portable tests, each refused with `403 read_only` in a read-only session, and what a reader uses, each still working there. |
 | [`test_results.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_results.py) | 18 | [§6.3](/specification/#63-status-get-chargewirev1sessionssession_idstatementsstatement_id)–[§6.6](/specification/#66-errors-during-a-result-stream) and [§8.2](/specification/#82-compression): async results, retention, resumption, incomplete streams, compression. |
 | [`test_sessions.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_sessions.py) | 26 | [§5](/specification/#5-sessions): sessions, options, transactions, and handles bound to their principal. |
 | [`test_statements.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_statements.py) | 19 | [§6](/specification/#6-statements): statements, the two response paths, and bind parameters. |

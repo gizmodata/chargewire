@@ -52,8 +52,17 @@ class Session {
   // Safe from any thread.
   void CheckEnded();
 
+  // The session's options as the session document shows them: the engine's (set_options),
+  // and the SDK's own read_only when the backend has read-only sessions (spec §5.8).
   json::object options() const;
   void set_options(json::object options);
+
+  // The read_only option (spec §5.8). OfferReadOnly(): the backend has read-only sessions,
+  // so the option is listed. MarkReadOnly(): the engine session is read-only now
+  // (EngineSession::SetReadOnly() returned); there is no way to unmark it.
+  void OfferReadOnly();
+  void MarkReadOnly();
+  bool read_only() const;
 
   // The session's transaction as the engine last reported it (spec §5.2).
   TransactionState transaction() const;
@@ -161,6 +170,8 @@ class Session {
 
   mutable std::mutex mutex_;
   json::object options_;
+  bool read_only_offered_ = false;
+  bool read_only_ = false;  // one-way: set by MarkReadOnly(), never cleared
   TransactionState transaction_ = TransactionState::kNone;
   std::map<std::string, std::shared_ptr<Statement>> statements_;
   std::map<std::string, std::shared_ptr<PreparedStatement>> prepared_;

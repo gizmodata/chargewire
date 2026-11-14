@@ -592,7 +592,28 @@ class SessionCore : public std::enable_shared_from_this<SessionCore> {
     }
     id = String(*object, "session_id");
     idle_timeout_s = Integer(*object, "idle_timeout_s").value_or(0);
+    // A session asked to be read-only is one only when the server's answer says so (spec
+    // §5.8): a server that ignored the option made a session that writes. That session is
+    // closed, and the caller gets an error, never a connection it believes to be read-only.
+    if (const json::value* asked = options.if_contains("read_only"); asked != nullptr && asked->is_bool() &&
+                                                                     asked->as_bool() && !ConfirmsReadOnly(*object)) {
+      try {
+        created->Exchange(client->Request(http::verb::delete_, client->V1("/sessions/" + id), true));
+      } catch (const std::exception&) {
+      }
+      id.clear();
+      throw Error(reply.status, "client_read_only_not_confirmed",
+                  "the server did not confirm that the session is read-only (its answer has no \"read_only\": true "
+                  "among the session's options): it has no read-only sessions, and the session was closed");
+    }
     transport = std::move(created);  // kept for the session's statements
+  }
+  // Whether a session document, or the answer to an options request, shows read_only true.
+  static bool ConfirmsReadOnly(const json::object& answer) {
+    const json::value* options = answer.if_contains("options");
+    if (options == nullptr || !options->is_object()) return false;
+    const json::value* read_only = options->as_object().if_contains("read_only");
+    return read_only != nullptr && read_only->is_bool() && read_only->as_bool();
   }
   // Before a request that does work: a session lazy connect held back (§11.2) is created now,
   // after the sign-in it waited for.
@@ -1455,7 +1476,27 @@ json::object Session::SetOptions(const json::object& options) {
     return json::object{{"options", core_->pending_options}, {"errors", json::object{}}};
   }
   json::value body = json::object{{"options", options}};
-  return core_->CallJson(http::verb::patch, core_->Path(""), &body, {200});
+  json::object report = core_->CallJson(http::verb::patch, core_->Path(""), &body, {200});
+  // read_only is the one option whose failure is never left to the caller to notice (spec
+  // §5.8): the options request answers 200 also when the server refused it, and the session
+  // then still writes.
+  if (const json::value* asked = options.if_contains("read_only");
+      asked != nullptr && asked->is_bool() && asked->as_bool() && !SessionCore::ConfirmsReadOnly(report)) {
+    std::string code = "client_read_only_not_confirmed";
+    std::string detail = "the server did not confirm that the session is read-only";
+    if (const json::value* errors = report.if_contains("errors"); errors != nullptr && errors->is_object()) {
+      if (const json::value* error = errors->as_object().if_contains("read_only"); error != nullptr && error->is_object()) {
+        if (const json::value* c = error->as_object().if_contains("code"); c != nullptr && c->is_string()) {
+          code = std::string(c->as_string());
+        }
+        if (const json::value* d = error->as_object().if_contains("detail"); d != nullptr && d->is_string()) {
+          detail = std::string(d->as_string());
+        }
+      }
+    }
+    throw Error(200, std::move(code), std::move(detail));
+  }
+  return report;
 }
 
 ExecuteResult Session::Execute(const std::string& sql, const StatementOptions& options) {

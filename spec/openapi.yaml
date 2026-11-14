@@ -327,7 +327,8 @@ paths:
       description: |
         Opens a session, optionally setting options (spec §5.1). An option the server doesn't
         have, or a bad value, fails the request (`400 unknown_option` or
-        `invalid_option_value`) and no session is created.
+        `invalid_option_value`) and no session is created. `read_only: true` opens a
+        read-only session (spec §5.8).
       requestBody:
         required: false
         content:
@@ -1546,7 +1547,7 @@ components:
             The optional features the server supports (spec §3.1). Version 1's:
             `prepared_statements`, `transactions`, `ingest`, `partitioned_ingest`, `long_poll`,
             `ipc_compression_lz4_frame`, `ipc_compression_zstd`, `result_partitions`,
-            `result_locations`, `mtls_identity`, `oauth_browser`, `openapi`.
+            `result_locations`, `read_only_sessions`, `mtls_identity`, `oauth_browser`, `openapi`.
           type: array
           uniqueItems: true
           items:
@@ -1588,7 +1589,7 @@ components:
         server:
           name: chargewire-duckdb
           version: 2.4.2
-        capabilities: [prepared_statements, transactions, ingest, partitioned_ingest, long_poll, ipc_compression_zstd, ipc_compression_lz4_frame, result_partitions, openapi]
+        capabilities: [prepared_statements, transactions, ingest, partitioned_ingest, read_only_sessions, long_poll, ipc_compression_zstd, ipc_compression_lz4_frame, result_partitions, openapi]
         auth:
           grant_types: [password]
         links:
@@ -1762,6 +1763,13 @@ components:
         session_tag:
           description: JSON recorded with the session for observability
           type: object
+        read_only:
+          description: |
+            `true`: the session is read-only and stays so (spec §5.8, capability
+            `read_only_sessions`). A server with the capability shows it for every session; a
+            server without it answers `unknown_option`. A client treats a session as read-only
+            only when the server's answer shows `true` here.
+          type: boolean
     SessionRequest:
       type: object
       properties:

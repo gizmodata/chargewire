@@ -38,6 +38,27 @@ between servers; the defaults are `chargewire-duckdb`'s:
 and the `CHARGEWIRE_TEST_AUTHZ_*` variables its docstring describes; on a server without
 privileges (`chargewire-duckdb`) it skips, saying so.
 
+## Read-only sessions
+
+[`test_read_only.py`](tests/test_read_only.py) holds spec §5.8 with SQL any engine has: the
+option and what a server without it answers, one refusal per write path (each with its twin
+that works in a read-write session), every door back to read-write, replacement sessions, and
+what a reader keeps. On a server without the `read_only_sessions` capability these tests skip,
+saying so; `CHARGEWIRE_TEST_REQUIRE_READ_ONLY=1` makes that a failure, for the run of a server
+that must have it (`chargewire-duckdb`'s own run sets it).
+
+[`test_read_only_duckdb.py`](tests/test_read_only_duckdb.py), marked `duckdb`, is for servers
+on DuckDB that read this machine's files (`chargewire-duckdb`, Hardcharger; deselect with `-m
+"not duckdb"`): the statements, settings and functions DuckDB has for changing something, each
+refused, and a long list of what a reader uses, each still working in a read-only session
+(queries of every shape, `DESCRIBE`/`SHOW`/`SUMMARIZE`, `EXPLAIN`, the catalog functions, CSV,
+Parquet and JSON files). Its tests marked `duckdb_extensions` load an extension and fail when it
+cannot be loaded (deselect with `-m "not duckdb_extensions"`): an attached SQLite database, a
+DuckLake with time travel, files over HTTP (`httpfs`), spatial files, and an attached PostgreSQL
+(`CHARGEWIRE_TEST_POSTGRES`: a throwaway server's connection string; without it that one test
+skips). Not covered for want of test data here: Iceberg and Delta tables, MySQL, full-text
+search.
+
 ## Every response against the OpenAPI document
 
 [`openapi_check.py`](tests/openapi_check.py) holds every response the suite receives to

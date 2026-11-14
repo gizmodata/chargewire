@@ -16,7 +16,8 @@
 > **`chargewire-duckdb` is for testing and development, not production.** It has one password,
 > and whoever signs in is the administrator, with all of DuckDB's power: reading and
 > writing local files, attaching databases, loading extensions, reaching the network.
-> `--read-only` protects only the database file. It has no users, access control, file
+> `--read-only` protects only the database file (a session's `read_only` option, below, is what
+> makes one session change nothing). It has no users, access control, file
 > guards, audit log or metrics. It listens on `127.0.0.1` unless told otherwise; keep it
 > there. To serve data to people, run [Hardcharger](https://github.com/gizmodata/hardcharger),
 > which is built on this SDK and adds all of that.
@@ -107,6 +108,48 @@ cd ../conformance
 uv venv .venv && uv pip install --python .venv/bin/python -e .
 CHARGEWIRE_TEST_SERVER_BINARY=../cpp/build/chargewire-duckdb .venv/bin/python -m pytest -q
 ```
+
+### Read-only sessions
+
+The `read_only` session option (spec §5.8) makes a session that changes nothing and cannot be
+made read-write again. The SDK owns the option: it parses it, keeps the one-way rule, puts
+`read_only` into every session document itself and refuses bulk ingest. The engine gets one
+call, `EngineSession::SetReadOnly()`, and from then on refuses with `ErrorCode::kReadOnly`
+whatever would change something. A backend lists `BackendCapabilities::read_only_sessions` only
+if it enforces that; without it the SDK answers `unknown_option` for `read_only` and never
+passes the option on, so no server built on the SDK reports a session read-only that is not.
+
+`chargewire-duckdb`'s adapter (`src/duckdb/`, which a server can build on) holds a read-only
+session by three things together, because none is enough alone (`src/duckdb/duckdb_read_only.hpp`):
+
+1. Every transaction of the session is a DuckDB `READ ONLY` transaction that the adapter
+   starts; the client's `BEGIN`, `COMMIT` and `ROLLBACK` are run by the adapter and never
+   reach DuckDB, so no statement opens a transaction that writes.
+2. Only listed kinds of statement run (DuckDB's parser names the kind): queries, `EXPLAIN`,
+   transaction statements, `USE`, `SET VARIABLE`, `SET` of a listed setting (applied at session
+   scope whatever the statement says), listed reading `PRAGMA`s, and a `PIVOT` whose values come
+   from the data. Everything else is refused: writes, temporary objects, `COPY`, `EXPORT`,
+   `ATTACH`, `INSTALL`, `LOAD`, `CALL`, `CHECKPOINT`, SQL `PREPARE` and `EXECUTE`.
+3. A statement runs only when every operator and table function of its physical plan
+   (`EXPLAIN (FORMAT JSON)`, planned once more before it runs) is on a list of those known to
+   read. The plan names a function however it is reached: directly, behind a macro, inside
+   text given to a function that runs SQL.
+
+All of these are allow-lists (`ReadOnlyPolicy`): a kind of statement, an operator or a table
+function that is not listed is refused, also one that a later DuckDB or an extension adds. The
+error says which name was refused. A server that embeds the adapter adds the table functions it
+knows to read (`DuckDBSession::set_read_only_policy`) or replaces the plan check with its own
+(`DuckDBSession::CheckReadOnlyPlan`, which also saves the second planning). `chargewire-duckdb`
+itself has no setting to add names.
+
+> [!IMPORTANT]
+> **Read-only is not a sandbox.** It promises that a session changes nothing through SQL the
+> server can classify: statements, and the operators and table functions of their plans. It
+> does not see what a *scalar* function does. DuckDB's own that change something are refused by
+> the read-only transaction; a scalar function of an extension that an administrator installed
+> and that writes or sends something on its own is not. It also says nothing about what a
+> session may read or which hosts a query may contact (that is access control), and an
+> extension that DuckDB loads on demand for a query is loaded for a read-only session too.
 
 ### Ingest message limits
 
