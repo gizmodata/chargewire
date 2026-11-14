@@ -7,6 +7,8 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-11-14
+
 ### Added
 
 - **Read-only sessions** (spec §5.8, capability `read_only_sessions`;
