@@ -1119,6 +1119,15 @@ def test_a_listed_setting_is_set_for_the_session_only_and_can_be_reset(chargewir
     everyone_elses = one(chargewire, observer, ALL_SETTINGS)
     default = one(chargewire, ro, current)
     assert default == one(chargewire, observer, current)
+    # Embedders may override initial settings (Hardcharger enables its progress
+    # reporting). Exercise an actual change, and compare RESET with a fresh reader's
+    # RESET rather than assuming the engine default equals the server's initial value.
+    if value in ("true", "false") and default.lower() in ("true", "false"):
+        value = "false" if default.lower() == "true" else "true"
+    resetter = chargewire.new_session(options={"read_only": True})
+    succeeded(chargewire, resetter, f"RESET {setting}")
+    reset_default = one(chargewire, resetter, current)
+    chargewire.http.delete(url=chargewire.session_url(resetter), headers=chargewire.headers()).raise_for_status()
     succeeded(chargewire, ro, f"SET {setting} = {value}")
     try:
         changed = one(chargewire, ro, current)
@@ -1129,7 +1138,7 @@ def test_a_listed_setting_is_set_for_the_session_only_and_can_be_reset(chargewir
         assert one(chargewire, chargewire.new_session(), current) == default  # nor for a session made afterwards
     finally:
         succeeded(chargewire, ro, f"RESET {setting}")
-    assert one(chargewire, ro, current) == default
+    assert one(chargewire, ro, current) == reset_default
     assert one(chargewire, observer, ALL_SETTINGS) == everyone_elses
 
 
@@ -1381,11 +1390,15 @@ def test_what_a_reader_uses_still_works(chargewire, duck, ro, table, files, unch
     # One session for all of them, as a reader has: a refusal names the statement. Each is
     # also run in the read-write session, so a statement that fails for another reason
     # shows as that, not as a read-only refusal. And reading changes nothing either.
+    # Run writable twins before the snapshot: their first call can install/load a
+    # known extension (e.g. autocomplete on Windows). The reader's whole run must
+    # still leave the database, settings, extensions and files unchanged.
+    for sql in reads(table, files):
+        twin = chargewire.submit(session_id=duck, sql=sql, arrow=True)
+        assert twin.status_code == 200, (sql, twin.text)
     failures = []
     with unchanged(tables=[table]):
         for sql in reads(table, files):
-            twin = chargewire.submit(session_id=duck, sql=sql, arrow=True)
-            assert twin.status_code == 200, (sql, twin.text)
             response = chargewire.submit(session_id=ro, sql=sql, arrow=True)
             if response.status_code != 200:
                 failures.append(f"{sql}\n    -> {response.status_code} {response.text}")

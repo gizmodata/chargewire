@@ -7,6 +7,19 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [2.5.1] - 2026-11-14
+
+### Fixed
+
+- The read-only conformance suite respects a server's initial boolean settings and compares
+  RESET against a fresh reader's reset value. Embedders can enable progress reporting by
+  default without making a valid session setting fail the test.
+- Read-only query checks run their writable positive twins before taking the unchanged-state
+  snapshot. A writable twin's first use can install a known extension, such as autocomplete
+  on Windows; every subsequent read-only query must still leave state unchanged.
+
+The protocol and SDK implementation are unchanged.
+
 ## [2.5.0] - 2026-11-14
 
 ### Added
