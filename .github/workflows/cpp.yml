@@ -5,11 +5,9 @@ name: cpp
 # chargewire-sdk-tests and chargewire-duckdb-tests (the DuckDB backend in the test process), on
 # pull requests and pushes that touch cpp/.
 #
-# DuckDB is not built here (about 10 minutes on a laptop, far more on a runner): the job uses
-# DuckDB's own release build of v2.0.0, the commit scripts/build-duckdb.sh pins, checked by
-# hash, and that commit's headers for the one file that uses DuckDB's internal ones. Arrow is built by scripts/build-arrow.sh and cached, keyed on its script and the
-# compiler. The conformance suite against chargewire-duckdb stays a local check
-# (conformance/README.md).
+# Build the pinned DuckDB source with the binding-transaction recovery patch. Cache
+# the install by compiler and recipe so required tests exercise the shipped engine.
+# Arrow is built and cached separately.
 
 on:
   pull_request:
@@ -31,9 +29,6 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
-  # DuckDB's release build of the commit scripts/build-duckdb.sh pins (v2.0.0 is d54cbbe).
-  DUCKDB_VERSION: v2.0.0
-  DUCKDB_LIBS_SHA256: 993ad89e7dfca66cd6da994c2cad090c2fc160ddf9f550498a098ab4bb13cfb1
   CC: gcc-14
   CXX: g++-14
   # GCC needs 2 GB and more for some of Beast's and Arrow's files: Ninja's default (one job
@@ -64,35 +59,16 @@ jobs:
           $CXX --version
           cmake --version
 
-      - name: The DuckDB release matches the pinned commit
-        run: |
-          if ! grep -qx "DUCKDB_VERSION_NAME=$DUCKDB_VERSION" scripts/build-duckdb.sh; then
-            echo "::error::scripts/build-duckdb.sh no longer pins DuckDB $DUCKDB_VERSION: update DUCKDB_VERSION and DUCKDB_LIBS_SHA256 here"
-            exit 1
-          fi
+      - name: Patched DuckDB from the cache
+        id: duckdb
+        uses: actions/cache@v6
+        with:
+          path: cpp/.deps/duckdb-install
+          key: duckdb-${{ runner.os }}-${{ env.CXX }}-${{ env.COMPILER_VERSION }}-${{ hashFiles('cpp/scripts/build-duckdb.sh', 'cpp/scripts/patch-duckdb*.cmake') }}
 
-      - name: DuckDB (release build, checked by hash)
-        run: |
-          prefix="$CHARGEWIRE_DEPS_DIR/duckdb-install"
-          mkdir -p "$prefix/include" "$prefix/lib" "$RUNNER_TEMP/duckdb"
-          curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
-            --output "$RUNNER_TEMP/duckdb/libs.tar.gz" \
-            "https://github.com/duckdb/duckdb/releases/download/$DUCKDB_VERSION/duckdb-shared-libs-linux-amd64.tar.gz"
-          echo "$DUCKDB_LIBS_SHA256  $RUNNER_TEMP/duckdb/libs.tar.gz" | sha256sum --check
-          tar -xzf "$RUNNER_TEMP/duckdb/libs.tar.gz" -C "$RUNNER_TEMP/duckdb"
-          mv "$RUNNER_TEMP/duckdb/libduckdb.so" "$prefix/lib/"
-          mv "$RUNNER_TEMP"/duckdb/*.h "$prefix/include/"
-
-      # The guard of read-only sessions (src/duckdb/duckdb_read_only_guard.cc) compiles against
-      # DuckDB's internal headers, which the release archive does not have: the headers of the
-      # same commit, from DuckDB's repository.
-      - name: DuckDB's internal headers of the pinned commit, retried
-        run: |
-          for attempt in 1 2 3; do
-            if ./scripts/duckdb-headers.sh; then break; fi
-            if [ "$attempt" = 3 ]; then exit 1; fi
-            sleep $((attempt * 15))
-          done
+      - name: Build the pinned DuckDB with transaction recovery
+        if: steps.duckdb.outputs.cache-hit != 'true'
+        run: ./scripts/build-duckdb.sh
 
       - name: Arrow from the cache
         id: arrow

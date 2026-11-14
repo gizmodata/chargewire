@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(chargewire VERSION 2.5.1 LANGUAGES C CXX)
+project(chargewire VERSION 2.5.2 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -247,7 +247,7 @@ if(CHARGEWIRE_BUILD_TESTS)
   target_link_libraries(chargewire-sdk-tests PRIVATE chargewire chargewire_client GTest::gtest_main)
   # The DuckDB backend's tests, against a server started in the test process on an in-memory
   # database: what update_outcome_test.cc plays, with real statements.
-  add_executable(chargewire-duckdb-tests tests/duckdb_update_outcome_test.cc tests/duckdb_read_only_test.cc)
+  add_executable(chargewire-duckdb-tests tests/duckdb_update_outcome_test.cc tests/duckdb_read_only_test.cc tests/duckdb_binding_commit_test.cc)
   target_link_libraries(chargewire-duckdb-tests PRIVATE chargewire_duckdb GTest::gtest_main)
   set_target_properties(chargewire-duckdb-tests PROPERTIES BUILD_RPATH "${CHARGEWIRE_DUCKDB_PREFIX}/lib")
 endif()

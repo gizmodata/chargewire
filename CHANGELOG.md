@@ -7,6 +7,18 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [2.5.2] - 2026-11-14
+
+### Fixed
+
+- The DuckDB reference server rolls back and cleans up a failed internal binding
+  transaction without invalidating the shared database. Ordinary writable connections
+  and read-only-session enforcement retain their existing behavior.
+- Source builds and CI use the same pinned engine with this recovery patch. Installed
+  extensions use the configured repository rather than an unshipped build directory.
+
+The wire protocol is unchanged.
+
 ## [2.5.1] - 2026-11-14
 
 ### Fixed
