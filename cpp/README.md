@@ -34,6 +34,11 @@ cmake --build build
 
 Boost 1.92 (Beast, JSON, URL) is fetched by CMake. OpenSSL 3 comes from the system.
 
+The DuckDB build script applies a transaction-recovery patch to the pinned engine.
+Use that build for the reference server: DuckDB's unpatched release library does not
+include the fix. Projects embedding the adapter can provide their own DuckDB build,
+but must apply the same patch to obtain this recovery behavior.
+
 DuckDB builds in its core extensions (core_functions, parquet, json, icu); the rest load
 at run time. A server that wants more built in lists them in a CMake file of
 `duckdb_extension_load()` calls and names it in `CHARGEWIRE_DUCKDB_EXTENSION_CONFIGS`
@@ -165,8 +170,9 @@ first statement after a view or macro changed anywhere reads the definitions aga
 
 The guard is the one file that uses DuckDB's internal headers (`src/duckdb/duckdb_read_only_guard.cc`):
 the v2 C API shows nothing of a bound statement and cannot run one that was inspected.
-`scripts/build-duckdb.sh` installs those headers; with DuckDB's own release libraries,
-`scripts/duckdb-headers.sh` fetches them for the pinned commit.
+`scripts/build-duckdb.sh` installs those headers alongside the patched library.
+`scripts/duckdb-headers.sh` can fetch headers alone for the pinned commit; it does not
+patch or replace an existing library.
 
 > [!IMPORTANT]
 > **Read-only is not a sandbox.** It promises that a session changes nothing through SQL the

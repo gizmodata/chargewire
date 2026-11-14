@@ -28,16 +28,18 @@ if [ -n "${CHARGEWIRE_DUCKDB_EXTENSION_CONFIGS:-}" ]; then
 fi
 
 mkdir -p "$DEPS"
-if [ ! -d "$SRC/.git" ]; then
+if [ ! -e "$SRC/.git" ]; then
   git clone --quiet --filter=blob:none https://github.com/duckdb/duckdb.git "$SRC"
 fi
 git -C "$SRC" fetch --quiet --tags origin
 git -C "$SRC" checkout --quiet "$DUCKDB_COMMIT"
+cmake -DDUCKDB_SOURCE_DIR="$SRC" -P "$HERE/scripts/patch-duckdb-binding-commit.cmake"
 
 cmake -S "$SRC" -B "$BUILD" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$PREFIX" \
   -DOVERRIDE_GIT_DESCRIBE="$DUCKDB_VERSION_NAME" \
+  -DDUCKDB_CAPABILITIES="httplib;loadable_extensions" \
   -DBUILD_SHELL=OFF \
   -DBUILD_UNITTESTS=OFF \
   -DENABLE_SANITIZER=OFF \
