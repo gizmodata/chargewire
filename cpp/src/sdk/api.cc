@@ -552,6 +552,7 @@ Task<Response> Api::Discovery(Request&) {
     capabilities.emplace_back("ingest");
     capabilities.emplace_back("partitioned_ingest");
   }
+  if (engine.read_only_sessions) capabilities.emplace_back("read_only_sessions");  // spec §5.8
   for (const char* sdk : {"long_poll", "ipc_compression_zstd", "ipc_compression_lz4_frame", "result_partitions"}) {
     capabilities.emplace_back(sdk);
   }
@@ -1067,6 +1068,35 @@ json::object Api::SessionDocument(Session& session) const {
   };
 }
 
+// The read_only option of a create or options request (spec §5.8), taken out of `options`:
+// the option is the SDK's, and the engine never sees it. nullopt: the request doesn't set
+// it. Throws the option's error: unknown_option on a backend without read-only sessions (so
+// no adapter can accept the option and ignore it), invalid_option_value for a value that
+// is not a boolean.
+namespace {
+std::optional<bool> TakeReadOnlyOption(json::object& options, bool offered) {
+  const json::value* given = options.if_contains("read_only");
+  if (given == nullptr) return std::nullopt;
+  const json::value value = *given;
+  options.erase("read_only");
+  if (!offered) {
+    throw Error(ErrorCode::kUnknownOption, "this server has no read-only sessions");
+  }
+  if (!value.is_bool()) {
+    throw Error(ErrorCode::kInvalidOptionValue, "read_only must be true or false");
+  }
+  return value.as_bool();
+}
+}  // namespace
+
+// The refusal of a request that is a change by definition, in a read-only session (spec
+// §5.8). `what`: the kind of request, never its content.
+void Api::RefuseInReadOnlySession(const Session& session, std::string_view what) const {
+  if (session.read_only()) {
+    throw Error(ErrorCode::kReadOnly, std::format("{} is not allowed in a read-only session", what), "25006");
+  }
+}
+
 Task<Response> Api::CreateSession(Request& request) {
   const Principal principal = Authenticate(request);
   RejectIfDraining();
@@ -1078,17 +1108,35 @@ Task<Response> Api::CreateSession(Request& request) {
     }
     options = given->as_object();
   }
+  auto backend = state_.backend;
+  const bool read_only_offered = backend->Capabilities().read_only_sessions;
+  bool read_only = false;
+  try {
+    read_only = TakeReadOnlyOption(options, read_only_offered).value_or(false);
+  } catch (const Error& error) {
+    throw Error(error.code(), std::string("read_only: ") + error.what());  // §5.1: the detail names the option
+  }
 
   auto session = std::make_shared<Session>(NewId("s"), principal,
                                            net::make_strand(state_.engine_pool.get_executor()));
-  auto backend = state_.backend;
-  auto opened = co_await OnEngine(*session, [backend, principal, options, id = session->id()] {
+  auto opened = co_await OnEngine(*session, [backend, principal, options, read_only, id = session->id()] {
     auto engine = backend->OpenSession(principal, id, options);
+    // Read-only before the session is answered, so before any statement of the client can
+    // run in it (spec §5.8). A failure fails the create, as any option's does.
+    if (read_only) {
+      try {
+        engine->SetReadOnly();
+      } catch (const Error& error) {
+        throw Error(error.code(), std::string("read_only: ") + error.what(), error.sqlstate());
+      }
+    }
     json::object current = engine->Options();
     return std::make_pair(std::move(engine), std::move(current));
   });
   session->SetEngine(std::move(opened.first));
   session->set_options(std::move(opened.second));
+  if (read_only_offered) session->OfferReadOnly();
+  if (read_only) session->MarkReadOnly();
   session->Touch(ClientOf(request));
   // The engine's first answer (a session opened with autocommit off starts in one), on its
   // thread as every engine call is.
@@ -1119,14 +1167,38 @@ Task<Response> Api::UpdateSession(Request& request, const std::string& session_i
     throw Error(ErrorCode::kBadRequest, "'options' must be an object");
   }
   json::object options = given->as_object();
-  auto result = co_await OnEngine(*session, [session, options] {
-    OptionErrors errors = session->engine().SetOptions(options);
+  // read_only is the SDK's option (spec §5.8), applied before the request's other options.
+  OptionErrors read_only_error;
+  std::optional<bool> read_only;
+  try {
+    read_only = TakeReadOnlyOption(options, state_.backend->Capabilities().read_only_sessions);
+  } catch (const Error& error) {
+    read_only_error.emplace("read_only", error);
+  }
+  auto result = co_await OnEngine(*session, [session, options, read_only] {
+    OptionErrors errors;
+    // Decided here, on the session's engine strand: after every statement that was running
+    // or queued when the request came, and before any that comes later.
+    if (read_only && !*read_only && session->read_only()) {
+      // One-way: nothing sent through a read-only session makes it read-write.
+      errors.emplace("read_only", Error(ErrorCode::kReadOnly,
+                                        "a read-only session cannot be made read-write", "25006"));
+    } else if (read_only && *read_only && !session->read_only()) {
+      try {
+        session->engine().SetReadOnly();
+        session->MarkReadOnly();
+      } catch (const Error& error) {
+        errors.emplace("read_only", error);
+      }
+    }
+    for (auto& failed : session->engine().SetOptions(options)) errors.insert(std::move(failed));
     json::object current = session->engine().Options();
     return std::make_pair(std::move(errors), std::move(current));
   });
-  session->set_options(result.second);
+  for (auto& failed : read_only_error) result.first.insert(std::move(failed));
+  session->set_options(std::move(result.second));
   co_return JsonResponse(http::status::ok,
-                         json::object{{"options", std::move(result.second)},
+                         json::object{{"options", session->options()},
                                       {"errors", OptionErrorsDocument(result.first)}});
 }
 
@@ -1600,6 +1672,7 @@ Task<Response> Api::OpenIngest(Request& request, const std::string& session_id) 
   auto session = OwnSession(request, session_id);
   RequireCapability(&BackendCapabilities::ingest, "ingest");
   RejectIfDraining();
+  RefuseInReadOnlySession(*session, "bulk ingest");
   const json::object body = ParseObject(request.body);
   IngestTarget target = ParseIngestTarget([&](const char* name) -> std::optional<std::string> {
     const json::value* value = body.if_contains(name);
@@ -1725,6 +1798,8 @@ Task<Response> Api::Ingest(Request& request, const std::string& session_id) {
   auto session = OwnSession(request, session_id);
   RequireCapability(&BackendCapabilities::ingest, "ingest");
   RejectIfDraining();
+  // Before any of the body is read: a read-only session writes nothing (spec §5.8).
+  RefuseInReadOnlySession(*session, "bulk ingest");
   if (!request.body_source) {
     throw Error(ErrorCode::kBadRequest, "ingest needs an Arrow IPC stream body");
   }

@@ -1,6 +1,6 @@
 [project]
 name = "chargewire-conformance"
-version = "2.4.2"
+version = "2.5.0"
 description = "Black-box conformance tests for Chargewire servers"
 requires-python = ">=3.12"
 dependencies = [
@@ -20,4 +20,6 @@ markers = [
   "own_server: starts a server of its own with other flags (needs CHARGEWIRE_TEST_SERVER_BINARY)",
   "openapi_unchecked: sees responses the OpenAPI document does not describe, on purpose",
   "oauth: starts servers of its own with browser sign-in and a mock identity provider (needs CHARGEWIRE_TEST_SERVER_BINARY)",
+  "duckdb: read-only sessions on a DuckDB server that reads this machine's files (spec §5.8)",
+  "duckdb_extensions: load a DuckDB extension (sqlite_scanner, ducklake, httpfs, spatial, postgres_scanner)",
 ]

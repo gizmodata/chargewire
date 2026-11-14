@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(chargewire VERSION 2.4.2 LANGUAGES C CXX)
+project(chargewire VERSION 2.5.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -179,6 +179,7 @@ chargewire_windows_settings(chargewire_client)
 add_library(chargewire_duckdb
   src/duckdb/duckdb_backend.cc
   src/duckdb/duckdb_describe.cc
+  src/duckdb/duckdb_read_only.cc
   src/duckdb/duckdb_session.cc
   src/duckdb/duckdb_sql.cc
   src/duckdb/duckdb_upload.cc
@@ -231,12 +232,13 @@ if(CHARGEWIRE_BUILD_TESTS)
                  tests/statements_test.cc tests/plain_handler_test.cc tests/browser_sign_in_test.cc
                  tests/statement_ids_test.cc tests/openapi_test.cc
                  tests/forwarded_test.cc tests/session_authority_test.cc tests/upload_limits_test.cc
-                 tests/legacy_dialect_test.cc tests/app_endpoint_test.cc tests/update_outcome_test.cc)
+                 tests/legacy_dialect_test.cc tests/app_endpoint_test.cc tests/update_outcome_test.cc
+                 tests/read_only_test.cc)
   target_include_directories(chargewire-sdk-tests PRIVATE src/sdk)
   target_link_libraries(chargewire-sdk-tests PRIVATE chargewire chargewire_client GTest::gtest_main)
   # The DuckDB backend's tests, against a server started in the test process on an in-memory
   # database: what update_outcome_test.cc plays, with real statements.
-  add_executable(chargewire-duckdb-tests tests/duckdb_update_outcome_test.cc)
+  add_executable(chargewire-duckdb-tests tests/duckdb_update_outcome_test.cc tests/duckdb_read_only_test.cc)
   target_link_libraries(chargewire-duckdb-tests PRIVATE chargewire_duckdb GTest::gtest_main)
   set_target_properties(chargewire-duckdb-tests PROPERTIES BUILD_RPATH "${CHARGEWIRE_DUCKDB_PREFIX}/lib")
 endif()

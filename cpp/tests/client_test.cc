@@ -976,6 +976,41 @@ TEST_F(Live, SessionOptionsAndTransactions) {
   EXPECT_EQ(Scalar(*session_, "SELECT count(*) FROM tx_t"), 1);
 }
 
+// Spec §5.8: a read-only session changes nothing, and the client reports one only when the
+// server's answer shows it.
+TEST_F(Live, AReadOnlySessionRefusesWritesAndIsConfirmedByTheServer) {
+  session_->Execute("CREATE OR REPLACE TABLE ro_t (x INTEGER)");
+  auto reader = client_->CreateSession({{"read_only", true}});
+  EXPECT_EQ(reader->Get().at("options").as_object().at("read_only"), boost::json::value(true));
+  EXPECT_EQ(Scalar(*reader, "SELECT count(*) FROM ro_t"), 0);
+  try {
+    reader->Execute("INSERT INTO ro_t VALUES (1)");
+    FAIL() << "a read-only session wrote";
+  } catch (const wc::Error& e) {
+    EXPECT_EQ(e.status(), 403);
+    EXPECT_EQ(e.code(), "read_only");
+    EXPECT_EQ(e.sqlstate(), "25006");
+  }
+  // There is no way back, and the report says so.
+  auto report = reader->SetOptions({{"read_only", false}});
+  EXPECT_EQ(report.at("errors").as_object().at("read_only").as_object().at("code").as_string(), "read_only");
+  // A switch the server refuses is an error, not a report to overlook: with work in an open
+  // transaction the session stays read-write.
+  auto writer = client_->CreateSession();
+  writer->Execute("BEGIN");
+  writer->Execute("INSERT INTO ro_t VALUES (2)");
+  try {
+    writer->SetOptions({{"read_only", true}});
+    FAIL() << "the switch was reported as made";
+  } catch (const wc::Error& e) {
+    EXPECT_EQ(e.code(), "invalid_option_value");
+  }
+  writer->Execute("COMMIT");
+  EXPECT_NO_THROW(writer->SetOptions({{"read_only", true}}));
+  EXPECT_THROW(writer->Execute("INSERT INTO ro_t VALUES (3)"), wc::Error);
+  EXPECT_EQ(Scalar(*session_, "SELECT count(*) FROM ro_t"), 1);
+}
+
 TEST_F(Live, AClosedSessionIsGone) {
   auto session = client_->CreateSession();
   const std::string id = session->id();

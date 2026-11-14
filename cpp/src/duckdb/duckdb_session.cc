@@ -185,7 +185,7 @@ Described Describe(duckdb_v2_connection_handle connection,
 // What a statement does to the session's transaction, from its type and its first
 // keyword (tokens, so a leading comment is no keyword): BEGIN and START open one;
 // COMMIT, END, ROLLBACK and ABORT end it.
-enum class TransactionEffect { kNone, kBegin, kEnd };
+enum class TransactionEffect { kNone, kBegin, kCommit, kRollback };
 
 TransactionEffect TransactionEffectOf(duckdb_v2_connection_handle connection,
                                       duckdb_v2_sql_statement_handle statement) {
@@ -210,9 +210,8 @@ TransactionEffect TransactionEffectOf(duckdb_v2_connection_handle connection,
     std::transform(word.begin(), word.end(), word.begin(),
                    [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
     if (word == "BEGIN" || word == "START") return TransactionEffect::kBegin;
-    if (word == "COMMIT" || word == "END" || word == "ROLLBACK" || word == "ABORT") {
-      return TransactionEffect::kEnd;
-    }
+    if (word == "COMMIT" || word == "END") return TransactionEffect::kCommit;
+    if (word == "ROLLBACK" || word == "ABORT") return TransactionEffect::kRollback;
     return TransactionEffect::kNone;
   }
 }
@@ -256,6 +255,8 @@ bool HasNull(const json::value& parameters) {
 
 DuckDBSession::DuckDBSession(duckdb_v2_instance_handle instance, std::size_t batch_rows)
     : batch_rows_(batch_rows) {
+  static const auto kDefaultPolicy = std::make_shared<const ReadOnlyPolicy>(ReadOnlyPolicy::Default());
+  read_only_policy_ = kDefaultPolicy;
   Call([&](auto* err) { return duckdb_v2_connection_create(instance, connection_.out(), err); });
   Call([&](auto* err) { return duckdb_v2_connection_get_factory(connection_.get(), &factory_, err); });
   values_ = std::make_unique<ValueFactory>(factory_);
@@ -292,8 +293,21 @@ chargewire::StatementOutcome DuckDBSession::Execute(std::string_view sql,
     }
   }
   // Every statement but the last runs to completion; the last one's result is returned.
-  BeginOwedTransaction();
+  BeginWork();
+  work_in_transaction_ = true;  // also when the statement then fails; BEGIN, COMMIT and ROLLBACK reset it (Ran)
   for (std::size_t i = 0; i + 1 < statements.size(); i++) {
+    if (read_only_) {
+      const Gated gated = GateReadOnly(statements[i].get(), BoundValues{});
+      if (!gated.handled) {
+        if (gated.replacement.empty()) {
+          RunToEnd(connection_.get(), statements[i].get());
+        } else {
+          RunSql(connection_.get(), gated.replacement);
+        }
+      }
+      EnsureReadOnlyTransaction();  // a COMMIT or ROLLBACK just ended one: the next statement has its own
+      continue;
+    }
     RunToEnd(connection_.get(), statements[i].get());
     Ran(statements[i].get());
     BeginOwedTransaction();
@@ -303,6 +317,14 @@ chargewire::StatementOutcome DuckDBSession::Execute(std::string_view sql,
   const ParameterTypes types =
       HasNull(parameters) ? ParameterTypes::Load(connection_.get(), last->get()) : ParameterTypes();
   const BoundValues bound = values_->FromJson(parameters, types);
+  if (read_only_) {
+    const Gated gated = GateReadOnly(last->get(), bound);
+    if (gated.handled) return {};  // a transaction statement: no rows, no count
+    if (!gated.replacement.empty()) {
+      auto replaced = Parse(connection_.get(), gated.replacement);
+      last = std::make_shared<SqlStatement>(std::move(replaced.at(0)));
+    }
+  }
   const auto handles = bound.Handles();
   const auto names = bound.NameHandles();
   ArrowResult result;
@@ -312,7 +334,7 @@ chargewire::StatementOutcome DuckDBSession::Execute(std::string_view sql,
                                              handles.empty() ? nullptr : handles.data(),
                                              handles.size(), batch_rows_, result.out(), err);
   });
-  Ran(last->get());
+  if (!read_only_) Ran(last->get());
   return Outcome(result, last);
 }
 
@@ -321,6 +343,9 @@ std::unique_ptr<chargewire::PreparedStatement> DuckDBSession::Prepare(std::strin
   if (statements.size() != 1) {
     throw Error(ErrorCode::kSqlError, "a prepared statement is exactly one SQL statement");
   }
+  BeginWork();
+  // What can be told without the values: the kind. The plan is checked at every execution.
+  if (read_only_) CheckReadOnlyKind(statements[0].get());
   PreparedHandle prepared;
   Call([&](auto* err) {
     return duckdb_v2_prepared_statement_create(connection_.get(), statements[0].get(), false,
@@ -339,7 +364,16 @@ chargewire::StatementOutcome DuckDBSession::ExecutePrepared(chargewire::Prepared
                                                          const chargewire::Parameters& parameters) {
   auto& prepared = static_cast<DuckDBPrepared&>(statement);
   auto run = [&](const BoundValues& bound) {
-    BeginOwedTransaction();
+    BeginWork();
+    if (read_only_) {
+      // Every execution is checked as it runs (spec §7.2), also of a statement prepared
+      // while the session was read-write. A prepared statement is never one the adapter
+      // runs itself or rewrites: those kinds cannot be prepared.
+      const Gated gated = GateReadOnly(prepared.statement(), bound);
+      if (gated.handled || !gated.replacement.empty()) {
+        throw ReadOnlyRefusal(std::string("a prepared ") + std::string(StatementKindName(StatementType(prepared.statement()))));
+      }
+    }
     const auto handles = bound.Handles();
     const auto names = bound.NameHandles();
     ArrowResult result;
@@ -348,7 +382,8 @@ chargewire::StatementOutcome DuckDBSession::ExecutePrepared(chargewire::Prepared
           prepared.prepared(), names.empty() ? nullptr : names.data(),
           handles.empty() ? nullptr : handles.data(), handles.size(), batch_rows_, result.out(), err);
     });
-    Ran(prepared.statement());
+    work_in_transaction_ = true;
+    if (!read_only_) Ran(prepared.statement());
     // The prepared statement outlives its executions: the SDK destroys it on the
     // session's strand, after any statement that uses it.
     return Outcome(result, nullptr);
@@ -403,7 +438,11 @@ chargewire::StatementOutcome DuckDBSession::ExecutePrepared(chargewire::Prepared
 
 int64_t DuckDBSession::Ingest(const chargewire::IngestTarget& target,
                               std::shared_ptr<arrow::RecordBatchReader> rows) {
+  // The SDK refuses ingest in a read-only session before it reads the body; this holds for
+  // an ingest that was already on its way when the session became read-only.
+  if (read_only_) throw ReadOnlyRefusal("bulk ingest");
   BeginOwedTransaction();
+  work_in_transaction_ = true;
   return chargewire_duckdb::Ingest(connection_.get(), target, std::move(rows));
 }
 
@@ -509,6 +548,7 @@ std::shared_ptr<arrow::RecordBatchReader> DuckDBSession::Metadata(
   if (kind == MetadataKind::kTypeInfo) {
     return TypeInfo(filter.data_type);
   }
+  if (read_only_) BeginWork();
   // Filters are bound as parameters, never spliced into the SQL: one VARCHAR value (or
   // VARCHAR NULL) per named parameter.
   std::vector<std::string> names;
@@ -817,7 +857,8 @@ std::string SqlLiteral(std::string_view text) {
 }  // namespace
 
 chargewire::OptionErrors DuckDBSession::SetOptions(const json::object& options) {
-  BeginOwedTransaction();
+  const OwnReadOnlyWork own(*this);
+  BeginWork();
   // In a transaction, a USE that fails (a catalog or schema that isn't there) aborts the
   // transaction: one mistyped option threw away the work in it, and the answer said only that
   // the transaction was aborted. There, a missing one is reported without running USE.
@@ -868,6 +909,14 @@ chargewire::OptionErrors DuckDBSession::SetOptions(const json::object& options) 
       throw Error(ErrorCode::kInvalidOptionValue, "autocommit must be true or false");
     }
     const bool on = value.as_bool();
+    if (read_only_) {
+      // The adapter starts a read-only session's transactions as they are needed, READ ONLY:
+      // manual commit only means the next one stays open until the client ends it.
+      if (on && !autocommit_) EndReadOnlyTransaction(true);
+      autocommit_ = on;
+      transaction_ = on ? chargewire::TransactionState::kNone : chargewire::TransactionState::kOpen;
+      return;
+    }
     if (!on && autocommit_) {
       RunSql(connection_.get(), "BEGIN TRANSACTION");
     } else if (on && !autocommit_) {
@@ -875,6 +924,7 @@ chargewire::OptionErrors DuckDBSession::SetOptions(const json::object& options) 
     }
     autocommit_ = on;
     transaction_ = on ? chargewire::TransactionState::kNone : chargewire::TransactionState::kOpen;
+    work_in_transaction_ = false;
   });
   apply("session_tag", [&](const json::value& value) {
     if (!value.is_object() && !value.is_null()) {
@@ -902,6 +952,8 @@ chargewire::OptionErrors DuckDBSession::SetOptions(const json::object& options) 
 }
 
 json::object DuckDBSession::Options() {
+  const OwnReadOnlyWork own(*this);
+  if (read_only_) EnsureReadOnlyTransaction();
   json::object options{
       {"catalog", QueryText(connection_.get(), "SELECT current_database()")},
       {"schema", QueryText(connection_.get(), "SELECT current_schema()")},
@@ -932,6 +984,16 @@ void DuckDBSession::Commit() { EndTransaction("COMMIT"); }
 void DuckDBSession::Rollback() { EndTransaction("ROLLBACK"); }
 
 void DuckDBSession::EndTransaction(std::string_view sql) {
+  if (read_only_) {
+    if (transaction_ == chargewire::TransactionState::kNone) {
+      throw Error(ErrorCode::kExecutionError,
+                  std::string("TransactionContext Error: cannot ") + (sql == "COMMIT" ? "commit" : "rollback") +
+                      " - no transaction is active");
+    }
+    EndReadOnlyTransaction(sql == "COMMIT");
+    transaction_ = autocommit_ ? chargewire::TransactionState::kNone : chargewire::TransactionState::kOpen;
+    return;
+  }
   BeginOwedTransaction();
   RunSql(connection_.get(), sql);
   transaction_ = chargewire::TransactionState::kNone;
@@ -939,18 +1001,23 @@ void DuckDBSession::EndTransaction(std::string_view sql) {
     RunSql(connection_.get(), "BEGIN TRANSACTION");  // the next statement starts a new one
     transaction_ = chargewire::TransactionState::kOpen;
   }
+  work_in_transaction_ = false;
 }
 
 void DuckDBSession::Ran(duckdb_v2_sql_statement_handle statement) {
   switch (TransactionEffectOf(connection_.get(), statement)) {
     case TransactionEffect::kBegin:
       transaction_ = chargewire::TransactionState::kOpen;
+      work_in_transaction_ = false;
       break;
-    case TransactionEffect::kEnd:
+    case TransactionEffect::kCommit:
+    case TransactionEffect::kRollback:
       transaction_ = chargewire::TransactionState::kNone;
       transaction_owed_ = !autocommit_;
+      work_in_transaction_ = false;
       break;
     case TransactionEffect::kNone:
+      work_in_transaction_ = true;
       break;
   }
 }
@@ -959,14 +1026,296 @@ void DuckDBSession::BeginOwedTransaction() {
   if (!std::exchange(transaction_owed_, false)) return;
   RunSql(connection_.get(), "BEGIN TRANSACTION");
   transaction_ = chargewire::TransactionState::kOpen;
+  work_in_transaction_ = false;
 }
 
 chargewire::TransactionState DuckDBSession::Transaction() {
+  if (read_only_) {
+    // The SDK asks after every piece of work, once its rows are released: the READ ONLY
+    // transaction that work ran in ends here unless it is the client's own.
+    if (transaction_ == chargewire::TransactionState::kNone) {
+      EndReadOnlyTransaction(true);
+    } else if (transaction_ == chargewire::TransactionState::kOpen && read_only_transaction_open_ &&
+               TransactionAborted(connection_.get())) {
+      transaction_ = chargewire::TransactionState::kAborted;
+    }
+    return transaction_;
+  }
   BeginOwedTransaction();
   if (transaction_ == chargewire::TransactionState::kOpen && TransactionAborted(connection_.get())) {
     transaction_ = chargewire::TransactionState::kAborted;
   }
   return transaction_;
+}
+
+// ---- Read-only sessions (spec §5.8; duckdb_read_only.hpp) ----
+
+namespace {
+
+std::string StatementText(duckdb_v2_sql_statement_handle statement) {
+  duckdb_v2_str text{};
+  Call([&](auto* e) { return duckdb_v2_sql_statement_get_text(statement, &text, e); });
+  return ToString(text);
+}
+
+std::string Lower(std::string_view text) {
+  std::string out(text);
+  std::transform(out.begin(), out.end(), out.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return out;
+}
+
+bool HasParenthesis(const SqlToken& token) {
+  return token.type == DUCKDB_V2_TOKEN_TYPE_OPERATOR && token.text.find_first_of("()") != std::string::npos;
+}
+
+}  // namespace
+
+void DuckDBSession::SetReadOnly() {
+  if (read_only_) return;
+  if (transaction_ != chargewire::TransactionState::kNone) {
+    // DuckDB cannot turn an open read-write transaction into a read-only one, and whether
+    // it has written is not for the adapter to guess: the client ends it first. One in
+    // which nothing has run (autocommit just went off, or a commit just started the next)
+    // holds nothing, and is replaced by a READ ONLY one.
+    if (work_in_transaction_) {
+      throw Error(ErrorCode::kInvalidOptionValue,
+                  "read_only cannot be set while a transaction with work in it is open: commit or roll back first");
+    }
+    RunSql(connection_.get(), "ROLLBACK");
+  }
+  transaction_owed_ = false;
+  read_only_transaction_open_ = false;
+  if (!autocommit_) transaction_ = chargewire::TransactionState::kOpen;
+  read_only_ = true;
+}
+
+void DuckDBSession::BeginWork() {
+  if (!read_only_) {
+    BeginOwedTransaction();
+    return;
+  }
+  if (transaction_ == chargewire::TransactionState::kNone) EndReadOnlyTransaction(true);
+  EnsureReadOnlyTransaction();
+}
+
+void DuckDBSession::EnsureReadOnlyTransaction() {
+  if (read_only_transaction_open_) return;
+  try {
+    RunSql(connection_.get(), "BEGIN TRANSACTION READ ONLY");
+  } catch (const Error&) {
+    // DuckDB had one open that the adapter did not know of: nothing of a read-only session
+    // is lost with it, and the statement must not run in it.
+    RunSql(connection_.get(), "ROLLBACK");
+    RunSql(connection_.get(), "BEGIN TRANSACTION READ ONLY");
+  }
+  read_only_transaction_open_ = true;
+}
+
+void DuckDBSession::EndReadOnlyTransaction(bool commit) {
+  if (!read_only_transaction_open_) return;
+  try {
+    RunSql(connection_.get(), commit ? "COMMIT" : "ROLLBACK");
+  } catch (const Error&) {
+    // e.g. the commit of an aborted transaction. Whatever DuckDB did with it, none stays
+    // open that the adapter believes closed or the other way round.
+    try {
+      RunSql(connection_.get(), "ROLLBACK");
+    } catch (const Error&) {
+    }
+  }
+  read_only_transaction_open_ = false;
+}
+
+void DuckDBSession::CheckReadOnlyKind(duckdb_v2_sql_statement_handle statement) const {
+  const DUCKDB_V2_STATEMENT_TYPE kind = StatementType(statement);
+  if (!read_only_policy_->statement_kinds.contains(kind)) throw ReadOnlyRefusal(StatementKindName(kind));
+}
+
+DuckDBSession::Gated DuckDBSession::GateReadOnly(duckdb_v2_sql_statement_handle statement,
+                                                 const BoundValues& bound) {
+  CheckReadOnlyKind(statement);
+  switch (StatementType(statement)) {
+    case DUCKDB_V2_STATEMENT_TYPE_TRANSACTION:
+      RunReadOnlyTransactionStatement(statement);
+      return {.handled = true, .replacement = {}};
+    case DUCKDB_V2_STATEMENT_TYPE_SET:
+      return {.handled = false, .replacement = GateReadOnlySet(statement)};
+    case DUCKDB_V2_STATEMENT_TYPE_PRAGMA:
+      GateReadOnlyPragma(statement);
+      return {};
+    case DUCKDB_V2_STATEMENT_TYPE_EXPLAIN:
+      GateReadOnlyExplain(statement, bound);
+      return {};
+    default:
+      CheckReadOnlyPlan(statement, bound);
+      return {};
+  }
+}
+
+// The client's transaction statements never reach DuckDB in a read-only session: the
+// adapter starts every transaction itself, READ ONLY, so no statement can open one that
+// writes, and a COMMIT followed by a write finds the write in a READ ONLY transaction too.
+void DuckDBSession::RunReadOnlyTransactionStatement(duckdb_v2_sql_statement_handle statement) {
+  using chargewire::TransactionState;
+  const TransactionEffect effect = TransactionEffectOf(connection_.get(), statement);
+  if (effect == TransactionEffect::kBegin) {
+    for (const SqlToken& token : SqlTokens(connection_.get(), StatementText(statement))) {
+      if (token.Is("WRITE")) throw ReadOnlyRefusal("a read-write transaction");
+    }
+    if (transaction_ != TransactionState::kNone) {
+      throw Error(ErrorCode::kExecutionError,
+                  "TransactionContext Error: cannot start a transaction within a transaction");
+    }
+    EnsureReadOnlyTransaction();
+    transaction_ = TransactionState::kOpen;
+    return;
+  }
+  if (effect != TransactionEffect::kCommit && effect != TransactionEffect::kRollback) {
+    throw ReadOnlyRefusal("this transaction statement");
+  }
+  const bool commit = effect == TransactionEffect::kCommit;
+  if (transaction_ == TransactionState::kNone) {
+    throw Error(ErrorCode::kExecutionError, std::string("TransactionContext Error: cannot ") +
+                                                (commit ? "commit" : "rollback") + " - no transaction is active");
+  }
+  EndReadOnlyTransaction(commit);
+  transaction_ = autocommit_ ? TransactionState::kNone : TransactionState::kOpen;
+}
+
+// USE, SET VARIABLE, and SET / RESET of a setting the policy lists, which is applied at
+// session scope whatever the statement wrote. The words are DuckDB's tokens; a SET that is
+// not exactly one of these shapes is refused.
+std::string DuckDBSession::GateReadOnlySet(duckdb_v2_sql_statement_handle statement) {
+  const std::string text = StatementText(statement);
+  const std::vector<SqlToken> tokens = SqlTokens(connection_.get(), text);
+  const Error shape = ReadOnlyRefusal("this form of SET");
+  if (tokens.empty()) throw shape;
+  if (tokens[0].Is("USE")) return {};
+  const bool pragma = tokens[0].Is("PRAGMA");  // PRAGMA name = value is a SET
+  const bool reset = tokens[0].Is("RESET");
+  if (!pragma && !reset && !tokens[0].Is("SET")) throw shape;
+  std::size_t i = 1;
+  std::string scope;
+  if (!pragma && i < tokens.size()) {
+    for (const char* word : {"SESSION", "LOCAL", "GLOBAL", "VARIABLE"}) {
+      if (tokens[i].Is(word)) scope = word;
+    }
+    if (!scope.empty()) i++;
+  }
+  if (i >= tokens.size() || (tokens[i].type != DUCKDB_V2_TOKEN_TYPE_IDENTIFIER &&
+                             tokens[i].type != DUCKDB_V2_TOKEN_TYPE_KEYWORD)) {
+    throw shape;
+  }
+  const SqlToken& name = tokens[i++];
+  if (scope == "GLOBAL") throw ReadOnlyRefusal("SET GLOBAL");
+  // After the name: nothing (RESET), or = / TO and a value.
+  std::string value;
+  if (reset) {
+    if (i != tokens.size()) throw shape;
+  } else {
+    if (i >= tokens.size() || !(tokens[i].IsOperator("=") || tokens[i].Is("TO"))) throw shape;
+    if (++i >= tokens.size()) throw shape;
+    value = text.substr(tokens[i].start, tokens.back().end - tokens[i].start);
+  }
+  if (scope == "VARIABLE") {
+    // The session's own variable. Its value may be a query: that query is held to the plan
+    // check as any other.
+    if (!reset) {
+      auto query = Parse(connection_.get(), "SELECT " + value);
+      if (query.size() != 1 || StatementType(query[0].get()) != DUCKDB_V2_STATEMENT_TYPE_SELECT) throw shape;
+      CheckReadOnlyPlan(query[0].get(), BoundValues{});
+    }
+    return {};
+  }
+  if (!read_only_policy_->settings.contains(Lower(name.text))) {
+    throw ReadOnlyRefusal("SET " + name.text.substr(0, 64));
+  }
+  if (reset) return "RESET SESSION " + name.text;
+  // A setting's value is a constant or a word: nothing in it may call or query.
+  for (std::size_t v = i; v < tokens.size(); v++) {
+    if (HasParenthesis(tokens[v])) throw shape;
+  }
+  return "SET SESSION " + name.text + " = " + value;
+}
+
+void DuckDBSession::GateReadOnlyPragma(duckdb_v2_sql_statement_handle statement) {
+  // COPY FROM DATABASE and IMPORT DATABASE are of the PRAGMA kind too: only PRAGMA <name>.
+  const std::vector<SqlToken> tokens = SqlTokens(connection_.get(), StatementText(statement));
+  if (tokens.size() < 2 || !tokens[0].Is("PRAGMA") ||
+      (tokens[1].type != DUCKDB_V2_TOKEN_TYPE_IDENTIFIER && tokens[1].type != DUCKDB_V2_TOKEN_TYPE_KEYWORD)) {
+    throw ReadOnlyRefusal("this statement");
+  }
+  if (!read_only_policy_->pragmas.contains(Lower(tokens[1].text))) {
+    throw ReadOnlyRefusal("PRAGMA " + tokens[1].text.substr(0, 64));
+  }
+}
+
+// EXPLAIN x and EXPLAIN ANALYZE x run when x may run: EXPLAIN ANALYZE executes x, and
+// planning x is what the plan check does anyway.
+void DuckDBSession::GateReadOnlyExplain(duckdb_v2_sql_statement_handle statement, const BoundValues& bound) {
+  const std::string text = StatementText(statement);
+  const std::vector<SqlToken> tokens = SqlTokens(connection_.get(), text);
+  const Error shape = ReadOnlyRefusal("this form of EXPLAIN");
+  if (tokens.empty() || !tokens[0].Is("EXPLAIN")) throw shape;
+  std::size_t i = 1;
+  if (i < tokens.size() && tokens[i].Is("ANALYZE")) i++;
+  if (i < tokens.size() && tokens[i].type == DUCKDB_V2_TOKEN_TYPE_OPERATOR && tokens[i].text.starts_with("(")) {
+    // the option list: to its closing parenthesis
+    int depth = 0;
+    for (; i < tokens.size(); i++) {
+      if (tokens[i].type != DUCKDB_V2_TOKEN_TYPE_OPERATOR) continue;
+      for (const char c : tokens[i].text) depth += c == '(' ? 1 : c == ')' ? -1 : 0;
+      if (depth <= 0) break;
+    }
+    if (depth != 0) throw shape;
+    i++;
+  }
+  if (i >= tokens.size()) throw shape;
+  auto inner = Parse(connection_.get(), text.substr(tokens[i].start));
+  if (inner.size() != 1) throw shape;
+  const DUCKDB_V2_STATEMENT_TYPE kind = StatementType(inner[0].get());
+  if (kind != DUCKDB_V2_STATEMENT_TYPE_SELECT && kind != DUCKDB_V2_STATEMENT_TYPE_MULTI) {
+    throw ReadOnlyRefusal("EXPLAIN of " + std::string(StatementKindName(kind)));
+  }
+  CheckReadOnlyKind(inner[0].get());
+  CheckReadOnlyPlan(inner[0].get(), bound);
+}
+
+void DuckDBSession::CheckReadOnlyPlan(duckdb_v2_sql_statement_handle statement, const BoundValues& bound) {
+  const Error unreadable = ReadOnlyRefusal("a statement whose plan the server cannot read");
+  auto explain = Parse(connection_.get(), "EXPLAIN (FORMAT JSON) " + StatementText(statement));
+  if (explain.size() != 1) throw unreadable;
+  const auto handles = bound.Handles();
+  const auto names = bound.NameHandles();
+  ArrowResult result;
+  Call([&](auto* err) {
+    return duckdb_v2_statement_execute_arrow(connection_.get(), explain[0].get(),
+                                             names.empty() ? nullptr : names.data(),
+                                             handles.empty() ? nullptr : handles.data(), handles.size(), 0,
+                                             result.out(), err);
+  });
+  auto outcome = Outcome(result, nullptr);
+  if (!outcome.rows) throw unreadable;
+  auto table = outcome.rows->ToTable();
+  outcome.rows.reset();
+  if (!table.ok() || (*table)->num_columns() < 2) throw unreadable;
+  std::optional<std::string> plan;
+  for (int64_t row = 0; row < (*table)->num_rows(); row++) {
+    auto key = (*table)->column(0)->GetScalar(row);
+    auto value = (*table)->column(1)->GetScalar(row);
+    if (key.ok() && value.ok() && (*key)->is_valid && (*value)->is_valid && (*key)->ToString() == "physical_plan") {
+      plan = (*value)->ToString();
+    }
+  }
+  if (!plan) throw unreadable;
+  const std::vector<std::string> refused = PlanNamesNotAllowed(*plan, *read_only_policy_);
+  if (!refused.empty()) {
+    throw Error(ErrorCode::kReadOnly,
+                refused.front() + " is not on this server's list of what a read-only session may run: a read-only "
+                                  "session runs only the operations and table functions the server knows to read",
+                "25006");
+  }
 }
 
 }  // namespace chargewire_duckdb

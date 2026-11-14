@@ -306,7 +306,12 @@ class Session {
   int64_t idle_timeout_s() const;
   // The session document (§5.2): its current options.
   json::object Get();
-  // Sets options (§5.3); returns the server's report ({"options", "errors"}).
+  // Sets options (§5.3); returns the server's report ({"options", "errors"}). One option's
+  // failure is not left in the report: {"read_only", true} (§5.8) throws unless the answer
+  // shows the session read-only, with the server's code for it (unknown_option on a server
+  // without read-only sessions, invalid_option_value while a transaction with work in it is
+  // open) or client_read_only_not_confirmed, because the request answers 200 either way and
+  // the session would go on writing.
   json::object SetOptions(const json::object& options);
 
   // Runs a statement on the streamed path (§6.1): rows stream as they are produced.
@@ -423,7 +428,12 @@ class Client {
 
   // A new session (§5.1) with these options (catalog, schema, autocommit, ...). With lazy
   // connect to a stopped server (ConnectOptions::connect_lazily_when_stopped), created at its
-  // first request that does work.
+  // first request that does work. {"read_only", true} (§5.8) makes a session that changes
+  // nothing: the server must have read-only sessions (Discovery::capabilities lists
+  // read_only_sessions), and a session whose answer does not show read_only true is closed
+  // and reported as an error (the server's unknown_option, or client_read_only_not_confirmed),
+  // at creation or, with lazy connect, at that first request. A session that replaces a lost
+  // read-only one is created the same way.
   std::unique_ptr<Session> CreateSession(const json::object& options = {});
 
   // How many connections this client has opened. A session's connection, and a partition

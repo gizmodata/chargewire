@@ -1,6 +1,6 @@
 # Chargewire Protocol, version 1
 
-**Status:** 2.4.2 (2026-11-13), the specification's version, which is Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
+**Status:** 2.5.0 (2026-11-14), the specification's version, which is Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
 addition (§12).
 
 Chargewire is an open protocol for running SQL against a database server over plain
@@ -156,7 +156,8 @@ These endpoints need no authentication.
   "server": {"name": "Example SQL Server", "version": "3.2.1"},
   "capabilities": ["prepared_statements", "transactions", "ingest", "long_poll",
                    "ipc_compression_zstd", "ipc_compression_lz4_frame", "result_partitions",
-                   "partitioned_ingest", "mtls_identity", "oauth_browser", "openapi"],
+                   "partitioned_ingest", "read_only_sessions", "mtls_identity", "oauth_browser",
+                   "openapi"],
   "auth": {"grant_types": ["password", "token_exchange", "client_certificate"],
            "oauth_browser": {"provider": "Okta"}},
   "links": {"openapi": "/chargewire/v1/openapi.json"}
@@ -173,6 +174,7 @@ the server's optional documents are (§3.3). The capabilities of version 1:
 |---|---|---|
 | `prepared_statements` | §7 | `POST …/prepared`, its `execute` and `DELETE` |
 | `transactions` | §5.5 | The `autocommit` option set to `false`, and `POST …/commit` and `…/rollback` |
+| `read_only_sessions` | §5.8 | The `read_only` session option: sessions that change nothing |
 | `ingest` | §8.1 | `POST …/ingest` (bulk ingest in one request) |
 | `partitioned_ingest` | §8.3 | `POST …/ingests` and the rest of partitioned ingest |
 | `long_poll` | §6.3 | `Prefer: wait` honoured on a statement's status |
@@ -645,9 +647,12 @@ Standard options:
 | `schema` | string | Current schema |
 | `autocommit` | boolean | `false` starts a transaction that §5.5 ends |
 | `session_tag` | object | JSON recorded with the session for observability |
+| `read_only` | boolean | `true` makes the session read-only, for good (§5.8; capability `read_only_sessions`) |
 
 A server MAY support more options, named as §2.7 says (`duckdb_arrow_lossless_conversion`);
-names it does not support get `unknown_option`.
+names it does not support get `unknown_option`. That holds for `read_only` too: a server
+without read-only sessions answers `unknown_option` for it, and no server may accept
+`read_only` without acting on it (§5.8).
 
 ### 5.4 `DELETE /chargewire/v1/sessions/{session_id}`
 
@@ -674,7 +679,9 @@ code `session_elsewhere`, so a router can retry the right instance.
 **A server MUST NOT create a session implicitly for an unknown id.** The client's
 state (settings, temporary tables, an open transaction) is gone, and only the
 client can decide whether to start over. Drivers SHOULD create a new session, replay
-the options they set, and report the loss of temporary state.
+the options they set, and report the loss of temporary state. A session that replaces a
+read-only one MUST be created read-only (§5.8): the server has nothing of the lost session
+to take that from.
 
 A session the server ended for a reason the client must know about gets `401` with
 code `session_ended` and a `reason` field in the problem document (§11), one of:
@@ -735,6 +742,134 @@ session's next request gets `session_ended` with reason `idle_in_transaction` (�
 session document's `idle_in_transaction_timeout_s` is that limit for the session, `0` when
 the server has none. A retained result does not keep such a session: the transaction's
 locks are what the limit is for.
+
+### 5.8 Read-only sessions
+
+Capability: `read_only_sessions`.
+
+A session whose `read_only` option is `true` changes nothing. Whatever is sent through it,
+the server refuses with `403` `read_only` (§11) every request that would change data or
+definitions, write anywhere with the server's rights, or change what the server or another
+session does. It is the way to hand a connection to something that should only read (an
+agent, a dashboard, a notebook) without first creating a user for it, and it holds
+whatever SQL arrives. It works with the server's authorization, never around it: read-only
+only refuses. It grants nothing, and every privilege check applies as in any session.
+
+**The option.** `read_only` is a boolean session option (§5.3). In the creation request
+(§5.1) `true` opens the session read-only: no statement runs in it before it is. In the
+options request (§5.3) `true` makes a read-write session read-only, and the server applies
+it before the request's other options. `false` means what leaving the option out means. A
+server with the capability shows `read_only` in every session's `options`, `true` or
+`false`, wherever it sends a session's options. A server MAY open sessions read-only of its
+own accord (for a principal or a token it holds to reading) and shows `true` for them like
+for any other.
+
+**One-way.** Nothing sent through a read-only session makes it read-write again: not the
+options request (`read_only: false` on a read-only session is refused, with code
+`read_only` in that option's entry of `errors`; `true` again is not an error), not a
+statement that sets or resets a setting, not a transaction statement or the calls of §5.5
+(ending a transaction never begins one that can write, and a statement that asks for a
+read-write transaction is refused), not the current catalog or schema, not a prepared
+statement made earlier, and not a statement that was running when the option arrived (the
+options request takes effect after it, and its answer comes after it). Nobody is exempt,
+an administrator included: a principal that needs to write opens another session.
+
+**Becoming read-only with a transaction open.** A server never ends a transaction for its
+client. An options request that sets `read_only` while the session has a transaction open
+in which a statement has run is refused, with `invalid_option_value` in `errors` and a
+detail that says to commit or roll back first; the session and its transaction stay as
+they were. A transaction in which nothing has run yet (with `autocommit` false: from the
+start, and after each commit or rollback) is no obstacle, so `autocommit: false` and
+`read_only: true` can be set together or one after the other.
+
+**What is refused.** In a read-only session a server MUST refuse:
+
+- a statement that changes data or definitions in any catalog the server reaches, the
+  attached catalogs of other systems included: rows, tables, views, schemas, indexes,
+  sequences (advancing one too), functions, types, comments, statistics. Where in the
+  statement the change sits does not matter: in a data-modifying common table expression,
+  in a function a query calls, in the value a session variable is set to, in a statement
+  that `EXPLAIN ANALYZE` runs;
+- temporary objects and their rows: a read-only session leaves nothing behind. (A server
+  whose engine makes temporary objects of its own while it runs a query, and removes them
+  with the session, may run that query.)
+- a statement or function that writes outside the catalogs with the server's rights: files
+  and objects in storage (an export, a copy to a file), and SQL text handed on to another
+  system to run;
+- anything that changes what other sessions or later sessions see, or what the server
+  does: server-wide settings, attaching and detaching catalogs, installing or loading code,
+  secrets, users, grants and tokens (a read-only session never mints a credential),
+  checkpoints and other maintenance;
+- bulk ingest (§8), every mode and `temporary` included, before it reads the body; a
+  partitioned ingest when it is opened;
+- the execution of a prepared statement (§7) that is any of these, whenever it was
+  prepared, also before the session became read-only. A server SHOULD already refuse to
+  prepare a statement it can tell it will refuse to execute.
+
+A server decides by what a statement does, as its engine's parser and planner report it,
+not by how the statement is spelled: the same write is refused directly, inside another
+statement, behind a view or a function defined earlier, and as text given to a function
+that runs SQL. **A server MUST refuse what it cannot classify**: a kind of statement, an
+operation or a function that it does not know to only read is refused like a write, so
+that what a later version of the engine or an extension adds is refused until someone has
+decided otherwise. An engine's own read-only transaction or mode is one means and is
+rarely enough: it typically guards the engine's catalogs, not files, settings, or what a
+function passes to another system.
+
+**What a reader keeps.** Queries, with bind parameters and through prepared statements;
+`EXPLAIN` of a query, and `EXPLAIN ANALYZE` of one (a server MAY refuse to explain a
+statement it would refuse to run, and MUST refuse to run it for `EXPLAIN ANALYZE`); the
+metadata endpoints (§10); the session's own state: its current catalog and schema (the
+options, or SQL), session variables, and the settings that only change how its own
+statements run and how their results look (a time zone, a search path, an ordering
+default). A statement that would set such a setting for every session is applied to this
+session only, or refused; a setting that reaches a file, the server or another session is
+refused. Transactions work in both autocommit modes and are reported as ever (§5.2): they
+are read-only transactions, good for reading several statements from one snapshot.
+Retained results, cancellation and closing the session are unchanged.
+
+**The refusal.** `403`, code `read_only`, `sqlstate` `25006` where the server sends one.
+`detail` says what kind of statement or operation was refused; it MUST NOT quote the
+statement, whose text may hold a credential. The refusal is final: the same request fails
+the same way again, in this session and in any other read-only one, so a client MUST NOT
+retry it. The session stays usable. A refusal that the engine arrives at while it plans or
+runs the statement may abort an open transaction, as any failed statement can (§5.2). A
+server that is read-only as a whole answers with the same code; `options.read_only` and
+server-info's `server_read_only` (§10) say which it is. Where a statement is both a change
+and something the principal may not do, the server answers `read_only` if it can tell from
+the statement alone and otherwise whichever its engine finds first; neither answer reveals
+an object the principal may not see (§9.8).
+
+**What read-only does not promise.** It is not access control and not a sandbox. It says
+nothing about what a session may read or which hosts a query may contact; that is the
+server's authorization. It covers what the server can classify: SQL, and the functions the
+engine knows. Code that an administrator installed into the engine and that has effects of
+its own, which the engine does not know of (a scalar function of an extension that sends a
+request, say), is that code's doing; a server refuses what it knows of and documents the
+rest. What the server does on its own account while it serves a reader (its logs and query
+history, its caches, code it loads on demand as it is configured to) is not a change the
+session made.
+
+**Clients.** A client can only be as sure as the server's answer, and servers older than
+this option exist, so:
+
+- A client that is asked for a read-only connection MUST send `read_only: true` in the
+  **creation request** (§5.1) whenever it knows by then, not in an options request
+  afterwards. A server without the option fails that request (`unknown_option`), and no
+  session exists.
+- A client MUST treat a session as read-only only when the server's answer shows
+  `"read_only": true` among the session's options. After an options request it MUST read
+  `errors` and that value: the request answers `200` also when the server refused the
+  option or does not have it, and the session then still writes.
+- When the answer does not show it, the client MUST report an error to its caller, MUST
+  NOT go on with a read-write session in its place (it closes one it created for the
+  purpose), and MUST NOT make up for it by examining statements itself.
+- A client MAY look for `read_only_sessions` in discovery (§3.1) first and fail without a
+  request; with lazy connect (§11.2), from the stand-in's discovery document.
+- A session a client opens in place of a read-only one that was lost (§5.6) MUST be created
+  with `read_only: true` in its creation request, together with the other options the
+  client replays. A client that made a session read-only with an options request remembers
+  that for its replacement. If the server refuses, there is no replacement.
 
 ## 6. Statements
 
@@ -1080,7 +1215,9 @@ Body `{"sql": "INSERT INTO t VALUES (?, ?)"}`. `201` with:
 `result_kind` says what executing returns: `"rows"` (with `result_schema`, the rows'
 schema, when the server can tell it before running), `"update"` (a count, no rows;
 `result_schema` is null), or `null` when the server can only tell at execution.
-Preparing MUST NOT run the statement.
+Preparing MUST NOT run the statement. In a read-only session (§5.8) a statement that
+would change something is refused when it is prepared or, at the latest, at each
+execution.
 
 ### 7.2 `POST …/prepared/{prepared_id}/execute`
 
@@ -1136,6 +1273,9 @@ would then land crosswise without an error. A table the ingest creates (`create`
 the upload's order.
 
 `Idempotency-Key` (§6.7) makes a retried upload safe.
+
+A read-only session (§5.8) ingests nothing: the server answers `403` `read_only` without
+reading the body, here and when a partitioned ingest (§8.3) is opened.
 
 *Deployment note:* reverse proxies commonly cap request bodies (often at 1 MB) and
 buffer them. A deployment that offers ingest must lift the body-size limit for this
@@ -1465,7 +1605,7 @@ server fault, and proxies and monitoring that count `5xx` as outages count only 
 | `certificate_mismatch` | 401 | A certificate-bound token on a connection without that certificate (§4.4) |
 | `certificate_identity_mismatch` | 401 | A sign-in for another identity than the connection's certificate (§4.4) |
 | `permission_denied` | 403 | The principal lacks a privilege |
-| `read_only` | 403 | The server or session is read-only |
+| `read_only` | 403 | The server or the session (§5.8) is read-only, and the request would change something; never worth retrying |
 | `session_not_found`, `statement_not_found`, `prepared_not_found`, `ingest_not_found` | 404 | No such handle, or not the caller's (§9.2); `statement_not_found` also for a statement the server has forgotten (§6.5) |
 | `flow_not_found` | 404 | No such browser sign-in flow, a wrong poll secret, or one already collected or expired (§4.3.2) |
 | `partition_not_found` | 404 | The result has no partition with that index (§6.4) |
@@ -1549,7 +1689,9 @@ while the server is stopped, and a client that sees it when it connects SHOULD c
 - Setting session options before that first request (`catalog`, `schema`, `autocommit`, a
   product's session settings or tags) is not work. The client keeps them and sends them with
   the session's creation (§5.1 `options`), or sets them right after it and before that first
-  request runs; an option the server refuses then fails that first request. A commit or a
+  request runs; an option the server refuses then fails that first request. `read_only`
+  (§5.8) always goes with the creation, never after it, so that no session exists that is not
+  yet read-only. A commit or a
   rollback before that first request has nothing to end, and sends nothing.
 - Before that first request, checking the connection (a pool's validation, a ping, a
   driver's "is it alive" call) answers that it is alive and sends nothing; so do closing it

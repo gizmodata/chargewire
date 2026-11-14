@@ -36,6 +36,7 @@
   "5.5": "55-transactions",
   "5.6": "56-sessions-that-no-longer-exist",
   "5.7": "57-idle-sessions",
+  "5.8": "58-read-only-sessions",
   "6.1": "61-submit-post-chargewirev1sessionssession_idstatements",
   "6.2": "62-the-statement-document",
   "6.3": "63-status-get-chargewirev1sessionssession_idstatementsstatement_id",
