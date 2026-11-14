@@ -123,8 +123,12 @@ jobs:
           # gizmodata's repositories are internal until GA: an anonymous check gets 404, so
           # their links are left out until the repository variable is flipped; the `ga` input
           # of a dry run doesn't change that.
+          # A link to a file of this repository on main is checked against this checkout: on
+          # a pull request that adds the file (a new conformance test, which the generated
+          # conformance page links) main does not have it yet, and after the merge the
+          # checkout is main. A path that is not in the tree still fails.
           workingDirectory: site
-          args: --config lychee.toml ${{ vars.DOCS_GA != 'true' && '--exclude ^https://github.com/gizmodata/' || '' }} --root-dir ${{ github.workspace }}/site/dist --no-progress "dist/**/*.html"
+          args: --config lychee.toml ${{ vars.DOCS_GA != 'true' && '--exclude ^https://github.com/gizmodata/' || '' }} --remap "^https://github\.com/${{ github.repository }}/(blob|tree)/main/([^#?]*) file://${{ github.workspace }}/\$2" --root-dir ${{ github.workspace }}/site/dist --no-progress "dist/**/*.html"
           fail: true
 
   pages:

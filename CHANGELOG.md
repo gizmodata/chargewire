@@ -75,6 +75,9 @@ spec's version is the repository's version.
   (`--read-only`) or because the client's own transaction is `READ ONLY` now answers `403
   read_only`, as spec §11 has always said; it answered `400 sql_error` and `422
   execution_error`.
+- CI: the site's check of external links holds a link to a file of this repository on `main`
+  to the checkout it builds, so a pull request that adds a file the site links (a new
+  conformance test) can pass before it is merged; a path that is not in the tree still fails.
 
 ## [2.4.2] - 2026-11-13
 
