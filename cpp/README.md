@@ -10,13 +10,15 @@
   thread, TLS and mutual TLS. It needs Arrow, Boost and OpenSSL, not DuckDB. Hardcharger's
   command-line client is built on it.
 - **`chargewire-duckdb`** (`src/duckdb/`): the reference server, DuckDB 2.0 through its v2 C API
-  only. It is what the conformance suite and the drivers test against.
+  (one file, the guard of read-only sessions, uses DuckDB's internal headers). It is what the
+  conformance suite and the drivers test against.
 
 > [!WARNING]
 > **`chargewire-duckdb` is for testing and development, not production.** It has one password,
 > and whoever signs in is the administrator, with all of DuckDB's power: reading and
 > writing local files, attaching databases, loading extensions, reaching the network.
-> `--read-only` protects only the database file. It has no users, access control, file
+> `--read-only` protects only the database file (a session's `read_only` option, below, is what
+> makes one session change nothing). It has no users, access control, file
 > guards, audit log or metrics. It listens on `127.0.0.1` unless told otherwise; keep it
 > there. To serve data to people, run [Hardcharger](https://github.com/gizmodata/hardcharger),
 > which is built on this SDK and adds all of that.
@@ -107,6 +109,77 @@ cd ../conformance
 uv venv .venv && uv pip install --python .venv/bin/python -e .
 CHARGEWIRE_TEST_SERVER_BINARY=../cpp/build/chargewire-duckdb .venv/bin/python -m pytest -q
 ```
+
+### Read-only sessions
+
+The `read_only` session option (spec §5.8) makes a session that changes nothing and cannot be
+made read-write again. The SDK owns the option: it parses it, keeps the one-way rule, puts
+`read_only` into every session document itself and refuses bulk ingest. The engine gets one
+call, `EngineSession::SetReadOnly()`, and from then on refuses with `ErrorCode::kReadOnly`
+whatever would change something. A backend lists `BackendCapabilities::read_only_sessions` only
+if it enforces that; without it the SDK answers `unknown_option` for `read_only` and never
+passes the option on, so no server built on the SDK reports a session read-only that is not.
+
+`chargewire-duckdb`'s adapter (`src/duckdb/`, which a server can build on) is built on the
+spec's rule that what is checked is what runs (`src/duckdb/duckdb_read_only.hpp`). DuckDB plans
+a statement once and hands the plan it is about to execute to the session's guard, which
+refuses it or lets that same plan run; nothing is planned twice, and nothing of a statement
+runs before its plan has passed. A read-only session is held by three things:
+
+1. Every transaction of the session is a DuckDB `READ ONLY` transaction that the adapter
+   starts; the client's `BEGIN`, `COMMIT` and `ROLLBACK` are run by the adapter and never
+   reach DuckDB, so no statement opens a transaction that writes.
+2. Only listed kinds of statement are handed to DuckDB at all (its parser names the kind,
+   before anything is bound): queries, `EXPLAIN`, transaction statements, `SET`/`RESET`/`USE`
+   and `PRAGMA`. Everything else is refused: writes, temporary objects, `COPY`, `EXPORT`,
+   `ATTACH`, `INSTALL`, `LOAD`, `CALL`, `CHECKPOINT`, SQL `PREPARE` and `EXECUTE`, and a
+   `PIVOT` that takes its values from the data (DuckDB runs a query for the values before it
+   plans the pivot; `PIVOT … ON x IN (…)` with the values written out is a query).
+3. The guard: a plan runs only when DuckDB's planner says it modifies no catalog (the
+   temporary one included, so a sequence is never advanced) and every operator, table
+   function, setting and pragma in it is listed. The plan is the one DuckDB made of
+   everything the statement reaches: views, macros, functions that take SQL text. A setting
+   is applied to the session only, however the statement spells it; `SET GLOBAL` is refused.
+
+All of these are allow-lists (`ReadOnlyPolicy`): a kind of statement, an operator or a table
+function that is not listed is refused, also one that a later DuckDB or an extension adds. The
+error says which name was refused. A server that embeds the adapter adds the table functions it
+knows to read (`DuckDBSession::set_read_only_policy`, before the session becomes read-only).
+`chargewire-duckdb` itself has no setting to add names.
+
+Before DuckDB binds a statement, the adapter screens the parser's tree
+(`ScreenBeforeBinding`): binding itself evaluates the arguments of table functions, the value
+of a setting and the parameters of a pragma, before any plan exists to refuse, so in a
+read-only session those may hold values only (constants, parameters, columns, casts,
+operators, lists and structs), and `query()` and `query_table()`, which take SQL text or a
+table's name, are refused. The definitions of the views and macros a statement reaches are
+screened the same way, whoever defined them.
+
+A prepared statement (spec §7) is planned, checked and run anew at each execution in a
+read-only session, so it resolves names as the session stands then, and DuckDB keeps no plan
+for it. A read-only session's transactions are ended by a rollback, never a commit. The cost
+of all of this is the screen, the guard's walk over the plan and the transaction around each
+statement: about 0.05 ms a statement on a laptop, for trivial and for wide queries alike (the
+first statement after a view or macro changed anywhere reads the definitions again, about
+5 ms).
+
+The guard is the one file that uses DuckDB's internal headers (`src/duckdb/duckdb_read_only_guard.cc`):
+the v2 C API shows nothing of a bound statement and cannot run one that was inspected.
+`scripts/build-duckdb.sh` installs those headers; with DuckDB's own release libraries,
+`scripts/duckdb-headers.sh` fetches them for the pinned commit.
+
+> [!IMPORTANT]
+> **Read-only is not a sandbox.** It promises that a session changes nothing through SQL the
+> server can classify: statements, and the operators and table functions of their plans. It
+> does not see what a *scalar* function does, except that DuckDB's planner says which catalogs
+> a statement modifies (so `nextval` is refused). DuckDB's `write_log()`, and a scalar
+> function of an extension that an administrator installed and that writes or sends something
+> on its own, are not refused. DuckDB also runs the bind step of a table function before the
+> guard sees a plan: the table functions of DuckDB and of the extensions the tests cover change
+> nothing there, and an unlisted function is refused before it executes, not before it is
+> bound. Read-only says nothing about what a session may read or which hosts a query may
+> contact (that is access control), and an extension that DuckDB loads on demand for a query
+> is loaded for a read-only session too.
 
 ### Ingest message limits
 

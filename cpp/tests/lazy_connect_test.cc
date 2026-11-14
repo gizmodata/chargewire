@@ -77,6 +77,9 @@ struct Stand {
           if (request.method == "POST" && path == kSession + "/statements") {
             return {200, "application/vnd.apache.arrow.stream", rows, {{"Chargewire-Statement-Id", "st1"}}};
           }
+          // An options request is answered as by a server that knows no read_only option: the
+          // session's options without it, and no error.
+          if (request.method == "PATCH" && path == kSession) return {200, "application/json", R"({"options":{},"errors":{}})", {}};
           if (request.method == "DELETE") return {204, "application/json", "", {}};
           return {404, "application/problem+json", R"({"status":404,"code":"not_found","detail":"no"})", {}};
         }) {}
@@ -225,6 +228,74 @@ TEST(LazyConnect, AnOptionTheServerRefusesFailsTheFirstStatement) {
   EXPECT_EQ(stand.stub.Count("POST", kSession + "/statements"), 0);
 }
 
+// Spec §5.8: a server that ignores the read_only option (this stand-in knows no option but
+// "bogus") answers with a session that writes. The client closes it and reports an error, at
+// creation or, connected lazily, at the first request that does work; it never runs a
+// statement in it.
+TEST(LazyConnect, AReadOnlySessionTheServerDoesNotConfirmIsAnErrorAndIsClosed) {
+  for (const bool stopped : {false, true}) {
+    Stand stand(stopped);
+    auto client = stand.Connect();
+    try {
+      auto session = client->CreateSession({{"read_only", true}});
+      EXPECT_TRUE(stopped) << "a session the server did not confirm was handed out";
+      session->Execute("SELECT 42");
+      FAIL() << "ran in a session that is not read-only";
+    } catch (const wc::Error& e) {
+      EXPECT_EQ(e.code(), "client_read_only_not_confirmed") << e.detail();
+    }
+    EXPECT_EQ(stand.stub.Count("POST", kSession + "/statements"), 0);
+    EXPECT_EQ(stand.stub.Count("DELETE", kSession), 1);
+  }
+}
+
+// The same for the options request (it answers 200 also when the option was not applied): a
+// session made read-only that way is one only when the answer shows it. Otherwise the caller
+// gets an error, never a report to overlook, and the session it holds is not called read-only.
+TEST(LazyConnect, AnOptionsAnswerThatDoesNotConfirmReadOnlyIsAnErrorAndClosesTheSession) {
+  Stand stand(/*stopped=*/false);
+  auto client = stand.Connect();
+  auto session = client->CreateSession();
+  try {
+    session->SetOptions({{"read_only", true}});
+    FAIL() << "a switch the server did not confirm was reported as made";
+  } catch (const wc::Error& e) {
+    EXPECT_EQ(e.code(), "client_read_only_not_confirmed") << e.detail();
+  }
+  EXPECT_EQ(stand.stub.Count("PATCH", kSession), 1);
+  EXPECT_EQ(stand.stub.Count("DELETE", kSession), 1);
+  EXPECT_THROW(session->SetOptions({{"schema", "analytics"}}), wc::Error);
+  EXPECT_THROW(session->Execute("SELECT 42"), wc::Error);
+  EXPECT_EQ(stand.stub.Count("POST", kSession + "/statements"), 0);
+}
+
+// Spec §5.8, one-way, also before any server has been asked: a lazily connected session that
+// was asked to be read-only is not set back by the client, and what it then sends is still
+// the read-only creation.
+TEST(LazyConnect, ReadOnlyOnAPendingSessionIsNotSetBack) {
+  for (const bool at_creation : {true, false}) {
+    Stand stand(/*stopped=*/true);
+    auto client = stand.Connect();
+    auto session = at_creation ? client->CreateSession({{"read_only", true}}) : client->CreateSession();
+    if (!at_creation) session->SetOptions({{"read_only", true}});
+    const auto report = session->SetOptions({{"read_only", false}, {"schema", "analytics"}});
+    EXPECT_EQ(report.at("errors").as_object().at("read_only").as_object().at("code").as_string(), "read_only");
+    EXPECT_EQ(report.at("options").as_object().at("read_only"), boost::json::value(true));
+    EXPECT_EQ(report.at("options").as_object().at("schema").as_string(), "analytics");  // the others are kept
+    EXPECT_EQ(stand.Sent(), std::vector<std::string>{"GET " + kRoot});
+    EXPECT_THROW(session->Execute("SELECT 42"), wc::Error);  // this stand-in does not confirm read_only
+    bool created_read_only = false;
+    for (const auto& s : stand.stub.Requests()) {
+      if (s.method == "POST" && s.target == kNewSession) {
+        created_read_only = boost::json::parse(s.body).as_object().at("options").as_object().at("read_only") ==
+                            boost::json::value(true);
+      }
+    }
+    EXPECT_TRUE(created_read_only) << "the creation request did not ask for a read-only session";
+    EXPECT_EQ(stand.stub.Count("POST", kSession + "/statements"), 0);
+  }
+}
+
 // Laziness is decided per connection, from the discovery that connection reads.
 TEST(LazyConnect, EachConnectionReadsDiscoveryAsItConnects) {
   Stand stand(/*stopped=*/true);
@@ -241,6 +312,54 @@ TEST(LazyConnect, EachConnectionReadsDiscoveryAsItConnects) {
   auto third_session = third->CreateSession();
   EXPECT_EQ(stand.Sent().size(), 5u);
   EXPECT_EQ(third_session->id(), "");
+}
+
+TEST(LazyConnect, AServerImposedReadOnlyRestrictionIsRememberedAndCannotBeDisabled) {
+  StubServer stub([](const Seen& r, int) -> Answer {
+    if (r.method == "GET" && r.target == kRoot) return DiscoveryDocument(false);
+    if (r.method == "POST" && r.target == kSignIn) return Token();
+    if (r.method == "POST" && r.target == kNewSession)
+      return {201, "application/json", R"({"session_id":"s1","options":{"read_only":true,"schema":"main"}})", {}};
+    if (r.method == "PATCH")
+      return {200, "application/json", R"({"options":{"read_only":true,"schema":"analytics"},"errors":{}})", {}};
+    if (r.method == "DELETE") return {204, "application/json", "", {}};
+    return {404, "application/json", "{}", {}};
+  });
+  wc::Client client(stub.Options());
+  client.SignInWithPassword("joe", "pw");
+  auto session = client.CreateSession();
+  EXPECT_TRUE(session->read_only());
+  auto report = session->SetOptions({{"read_only", false}});
+  EXPECT_EQ(report.at("errors").as_object().at("read_only").as_object().at("code"), "read_only");
+  EXPECT_EQ(stub.Count("PATCH", kSession), 0);
+  report = session->SetOptions({{"read_only", false}, {"schema", "analytics"}});
+  EXPECT_EQ(report.at("errors").as_object().at("read_only").as_object().at("code"), "read_only");
+  EXPECT_EQ(report.at("options").as_object().at("schema"), "analytics");
+  EXPECT_TRUE(session->read_only());
+  for (const auto& r : stub.Requests()) if (r.method == "PATCH")
+    EXPECT_FALSE(boost::json::parse(r.body).as_object().at("options").as_object().contains("read_only"));
+}
+
+TEST(LazyConnect, AnExplicitReadOnlyRefusalLeavesTheSessionUsable) {
+  StubServer stub([](const Seen& r, int) -> Answer {
+    if (r.method == "GET" && r.target == kRoot) return DiscoveryDocument(false);
+    if (r.method == "POST" && r.target == kSignIn) return Token();
+    if (r.method == "POST" && r.target == kNewSession) return Created();
+    if (r.method == "PATCH")
+      return {200, "application/json", R"({"options":{"read_only":false},"errors":{"read_only":{"code":"unknown_option","detail":"unsupported"}}})", {}};
+    if (r.method == "DELETE") return {204, "application/json", "", {}};
+    if (r.method == "GET" && r.target == kSession)
+      return {200, "application/json", R"({"session_id":"s1","options":{"read_only":false}})", {}};
+    return {404, "application/json", "{}", {}};
+  });
+  wc::Client client(stub.Options());
+  client.SignInWithPassword("joe", "pw");
+  auto session = client.CreateSession();
+  try { session->SetOptions({{"read_only", true}}); FAIL(); }
+  catch (const wc::Error& e) { EXPECT_EQ(e.code(), "unknown_option"); }
+  EXPECT_FALSE(session->read_only());
+  EXPECT_NO_THROW(session->Get());
+  EXPECT_EQ(stub.Count("DELETE", kSession), 0);
 }
 
 }  // namespace

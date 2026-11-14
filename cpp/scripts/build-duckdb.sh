@@ -45,8 +45,16 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
   "${EXTENSION_ARGS[@]}"
 cmake --build "$BUILD"
 cmake --install "$BUILD"
-# The v2 C API header isn't installed by DuckDB's install rules (2.0.0). Copy
-# just that header, so nothing here can include DuckDB's internal headers.
+# The v2 C API header isn't installed by DuckDB's install rules (2.0.0).
 cp "$SRC/src/include/duckdb_v2.h" "$PREFIX/include/"
+# DuckDB's internal headers, for the one file that needs them (src/duckdb/duckdb_read_only_guard.cc,
+# the guard of read-only sessions): duckdb.hpp and duckdb/, and the three vendored libraries
+# their headers include, which DuckDB's install leaves out. Everything else here uses
+# duckdb_v2.h only.
+rm -rf "$PREFIX/include/duckdb" "$PREFIX/include/duckdb_third_party"
+cp -R "$SRC/src/include/duckdb" "$SRC/src/include/duckdb.hpp" "$PREFIX/include/"
+mkdir -p "$PREFIX/include/duckdb_third_party"
+cp -R "$SRC/third_party/fmt/include/fmt" "$SRC/third_party/re2/re2" \
+  "$SRC/third_party/fast_float/fast_float" "$PREFIX/include/duckdb_third_party/"
 
 echo "libduckdb installed in $PREFIX"

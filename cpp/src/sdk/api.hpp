@@ -140,6 +140,7 @@ class Api {
   std::shared_ptr<Session> OwnSession(const Request& request, const std::string& session_id);
   static Session::Client ClientOf(const Request& request);
   void RejectIfDraining() const;
+  void RefuseInReadOnlySession(const Session& session, std::string_view what) const;
   // Throws not_implemented unless the backend has `feature` (spec §3.1).
   void RequireCapability(bool BackendCapabilities::*feature, std::string_view name) const;
   json::object SessionDocument(Session& session) const;

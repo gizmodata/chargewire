@@ -7,6 +7,96 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Added
+
+- **Read-only sessions** (spec §5.8, capability `read_only_sessions`;
+  [#15](https://github.com/gizmodata/chargewire/issues/15)). A session option `read_only`
+  (boolean): a session created with it, or switched to it with the options request, changes
+  nothing, whatever is sent through it, and nothing sent through it makes it read-write
+  again. The server refuses with the existing `403 read_only` (now with `sqlstate` `25006`)
+  every request that would change data or definitions (temporary objects too), write files or
+  objects with the server's rights, pass SQL text on to another system, change server-wide
+  settings, attached catalogs, loaded code or secrets, or ingest; a prepared statement is
+  checked at every execution. A server decides by what a statement does (its engine's parser
+  and planner), not by its spelling, and MUST refuse what it cannot classify. What is checked
+  is what runs: the server inspects the engine's bound, planned statement and executes that
+  same one or refuses it, lets no part of a statement execute before that, and never checks one
+  planning and runs another; an engine that gives its server no way to do this cannot offer
+  read-only sessions. Queries,
+  `EXPLAIN`, metadata, the session's own catalog, schema, variables and session settings,
+  read-only transactions in both autocommit modes, retained results and cancellation keep
+  working. The session document lists `read_only` for every session of a server that has the
+  capability. Setting it while a transaction with work in it is open is refused
+  (`invalid_option_value`): the client commits or rolls back first. The spec also says what
+  read-only is not: access control, or a sandbox for code an administrator installed into the
+  engine.
+- **Client rules for read-only** (spec §5.8, MUSTs). Servers before this option answer
+  `unknown_option` when a session is created with it, but answer `200` to the options request
+  (with the refusal in `errors`) and go on writing. So a client sends `read_only: true` in the
+  creation request, treats a session as read-only only when the server's answer shows
+  `"read_only": true`, never falls back to a read-write session, and creates the session that
+  replaces a lost read-only one read-only in its creation request (§5.6; with lazy connect,
+  §11.2, the option always goes with the creation). §5.3 says outright that no server may
+  accept `read_only` without acting on it.
+- C++ SDK: `BackendCapabilities::read_only_sessions` and `EngineSession::SetReadOnly()`. The
+  SDK owns the option (parsing, the one-way rule, `read_only` in the session document, the
+  refusal of bulk ingest before the body is read, the capability in discovery); the engine
+  decides what a statement does and refuses with `ErrorCode::kReadOnly`. A backend without the
+  capability never sees the option: the SDK answers `unknown_option`, so an adapter cannot
+  accept it and ignore it. `Backend::OpenSession` keeps its signature.
+- `chargewire-duckdb` and its adapter (`cpp/src/duckdb`): read-only sessions on DuckDB 2.0, built
+  on the spec's rule that what is checked is what runs (`duckdb_read_only.hpp`). DuckDB hands
+  the plan it is about to execute to the session's guard, which refuses it or lets that same
+  plan run: nothing is planned a second time, and nothing of a statement runs before its plan
+  has passed. A plan runs only when DuckDB's planner says it modifies no catalog (the temporary
+  one included) and every operator, table function, setting and pragma in it is on an
+  allow-list (`ReadOnlyPolicy`), whatever the statement reaches it through (a view, a macro, a
+  function that takes SQL text). Around that: every transaction of the session is a `READ
+  ONLY` one that the adapter starts, the client's transaction statements are run by the
+  adapter, and only listed kinds of statement are handed to DuckDB at all. A `PIVOT` that
+  takes its values from the data is refused (DuckDB runs a query for the values before it
+  plans the pivot); `PIVOT … ON x IN (…)` is a query. A listed setting works in every spelling
+  DuckDB has and is applied to the session only. A prepared statement is planned, checked and
+  run anew at each execution in a read-only session. What DuckDB evaluates while it binds,
+  before any plan exists (the arguments of table functions, the value of a setting, the
+  parameters of a pragma), may hold values only, and `query()` and `query_table()`, which take
+  SQL text or a table's name, are refused, also in the definitions of the views and macros a
+  statement reaches. A read-only session's transactions are ended by a rollback. The cost is
+  the screen, the guard's walk and the transaction around each statement: about 0.05 ms a
+  statement on a laptop (0.30 → 0.35 ms for
+  `SELECT 1`, 4.33 → 4.36 ms for a query of 200 aggregates). A server that embeds the adapter
+  extends the lists (`DuckDBSession::set_read_only_policy`). The guard is the one file that
+  uses DuckDB's internal headers, because the v2 C API shows nothing of a bound statement:
+  `scripts/build-duckdb.sh` installs them, and `scripts/duckdb-headers.sh` fetches them for
+  the pinned commit where DuckDB's own release libraries are used (CI).
+- C++ client: `{"read_only", true}` in `Client::CreateSession` and `Session::SetOptions`. A
+  session the server does not confirm as read-only is closed and reported as an error
+  (`client_read_only_not_confirmed`, or the server's own code), at creation or, with lazy
+  connect, at the first request that does work; `SetOptions` throws for this option instead of
+  leaving the refusal in its report. On a lazily connected session that has not been created
+  yet, `read_only` once asked for is not set back either (the report carries the `read_only`
+  error), so one-way holds before any server is there to refuse.
+- Conformance: `test_read_only.py` (the option, a server without it, one refusal per write path
+  with its twin in a read-write session, every door back to read-write, switching with a
+  transaction open, replacement sessions, what a reader keeps) and `test_read_only_duckdb.py`
+  (DuckDB's own ways to change something, each refused; what a reader uses, each still
+  working: query shapes, the catalog functions, CSV/Parquet/JSON files, and with extensions
+  SQLite, DuckLake with time travel, files over HTTP, spatial files, PostgreSQL).
+  `CHARGEWIRE_TEST_REQUIRE_READ_ONLY=1` fails a run against a server without the capability
+  instead of skipping.
+
+### Changed
+
+- `chargewire-duckdb`: a write that DuckDB refuses because the database is attached read-only
+  (`--read-only`) or because the client's own transaction is `READ ONLY` now answers `403
+  read_only`, as spec §11 has always said; it answered `400 sql_error` and `422
+  execution_error`.
+- CI: the C++ job fetches DuckDB's internal headers of the pinned commit
+  (`cpp/scripts/duckdb-headers.sh`) next to DuckDB's release libraries.
+- CI: the site's check of external links holds a link to a file of this repository on `main`
+  to the checkout it builds, so a pull request that adds a file the site links (a new
+  conformance test) can pass before it is merged; a path that is not in the tree still fails.
+
 ## [2.4.2] - 2026-11-13
 
 ### Changed (clarified)

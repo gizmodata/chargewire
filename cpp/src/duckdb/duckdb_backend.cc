@@ -142,7 +142,7 @@ void DuckDBBackend::CheckHealth() {
 }
 
 chargewire::BackendCapabilities DuckDBBackend::Capabilities() {
-  return {.prepared_statements = true, .transactions = true, .ingest = true};
+  return {.prepared_statements = true, .transactions = true, .ingest = true, .read_only_sessions = true};
 }
 
 json::object DuckDBBackend::ServerInfo() {

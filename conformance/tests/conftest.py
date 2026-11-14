@@ -15,11 +15,16 @@ The suite fails, never skips, when it has no reachable server. A server it start
 also survive every test and stop cleanly (exit code 0) at the end: a crash, including
 one a sanitizer reports at shutdown, fails the run with the end of the server's log
 (kept in CHARGEWIRE_TEST_SERVER_LOG, or a temporary file).
+
+A server the suite starts gets a home directory of its own, new for each start and removed
+when it stops: what a DuckDB server keeps under `~/.duckdb` (installed extensions,
+persistent secrets) never comes from, and never lands in, the home of whoever runs the suite.
 """
 
 import dataclasses
 import os
 import secrets
+import shutil
 import signal
 import socket
 import subprocess
@@ -43,6 +48,7 @@ class ServerUnderTest:
     password: str
     process: subprocess.Popen | None = None
     log: Path | None = None
+    home: Path | None = None  # the scratch home directory of a server the suite started
 
     def log_tail(self, lines: int = 60) -> str:
         if self.log is None or not self.log.exists():
@@ -99,13 +105,21 @@ def start_server(binary: str, extra_args: list[str] | None = None,
     username = os.environ.get("CHARGEWIRE_TEST_SERVER_USERNAME", "chargewire")
     log = Path(os.environ.get("CHARGEWIRE_TEST_SERVER_LOG")
                or tempfile.mkstemp(prefix="chargewire-server-", suffix=".log")[1])
+    # A home directory of this start's own (HOME, and USERPROFILE where Windows has it): DuckDB
+    # derives its extension and secret directories from it. A test that once got a write
+    # through must not leave a persistent secret or an installed extension where every later
+    # run, of every build, finds it. The server runs in that directory too: DuckDB's temporary
+    # directory of an in-memory database (".tmp") is relative to the working directory.
+    home = Path(tempfile.mkdtemp(prefix="chargewire-home-"))
+    if os.path.dirname(binary):
+        binary = os.path.abspath(binary)  # a path, perhaps relative to the suite's directory; a bare name is looked up on PATH
     with log.open(mode="ab") as out:
         process = subprocess.Popen(
-            args=[binary, "--host", "127.0.0.1", "--port", str(port), *(extra_args or [])],
-            env={**os.environ, **(env or {}), password_env: password}, stdout=out, stderr=subprocess.STDOUT,
-            **POPEN_FLAGS)
+            args=[binary, "--host", "127.0.0.1", "--port", str(port), *(extra_args or [])], cwd=home,
+            env={**os.environ, "HOME": str(home), "USERPROFILE": str(home), **(env or {}), password_env: password},
+            stdout=out, stderr=subprocess.STDOUT, **POPEN_FLAGS)
     server = ServerUnderTest(base_url=f"{scheme}://127.0.0.1:{port}", username=username,
-                             password=password, process=process, log=log)
+                             password=password, process=process, log=log, home=home)
     try:
         wait_until_up(base_url=server.base_url, verify=verify)
     except BaseException:
@@ -115,18 +129,24 @@ def start_server(binary: str, extra_args: list[str] | None = None,
 
 
 def stop_server(server: ServerUnderTest) -> int | None:
-    """Stops the server; returns its exit code (None if it had to be killed)."""
+    """Stops the server and removes its scratch home directory; returns its exit code (None
+    if it had to be killed)."""
     if server.process is None:
         return 0
-    if server.process.poll() is not None:
-        return server.process.returncode
-    server.process.send_signal(STOP_SIGNAL)
-    server.process.send_signal(STOP_SIGNAL)  # the second signal stops without draining
     try:
-        return server.process.wait(timeout=20)
-    except subprocess.TimeoutExpired:
-        server.process.kill()
-        return None
+        if server.process.poll() is not None:
+            return server.process.returncode
+        server.process.send_signal(STOP_SIGNAL)
+        server.process.send_signal(STOP_SIGNAL)  # the second signal stops without draining
+        try:
+            return server.process.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            server.process.kill()
+            server.process.wait(timeout=20)
+            return None
+    finally:
+        if server.home is not None:
+            shutil.rmtree(path=server.home, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")

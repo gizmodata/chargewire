@@ -45,7 +45,7 @@ author cannot forget the ownership check, because there is nothing to forget.
   `CheckHealth()` and `ServerInfo()`.
 - **`EngineSession`**, one per session, called on that session's engine strand:
   `Execute()`, `Prepare()` and `ExecutePrepared()` return a `StatementOutcome` (rows as
-  an `arrow::RecordBatchReader`, or a count); `Ingest()`, `Metadata()`, `SetOptions()` and
+  an `arrow::RecordBatchReader`, or a count); `Ingest()`, `Metadata()`, `SetOptions()`, `SetReadOnly()` (read-only sessions, spec §5.8: the SDK owns the `read_only` option and its one-way rule, the engine refuses what would change something) and
   `Options()`, `Commit()`, `Rollback()` and `Transaction()`; `Interrupt()` / `Cancel()`,
   `Progress()` and `CheckEnded()`, which may be called from any thread; `SetQueryTag()`
   around each statement and ingest, and `SetStatementId()` around each statement,

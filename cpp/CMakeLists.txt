@@ -179,11 +179,21 @@ chargewire_windows_settings(chargewire_client)
 add_library(chargewire_duckdb
   src/duckdb/duckdb_backend.cc
   src/duckdb/duckdb_describe.cc
+  src/duckdb/duckdb_read_only.cc
+  src/duckdb/duckdb_read_only_guard.cc
   src/duckdb/duckdb_session.cc
   src/duckdb/duckdb_sql.cc
   src/duckdb/duckdb_upload.cc
   src/duckdb/duckdb_values.cc)
 target_include_directories(chargewire_duckdb PUBLIC src/duckdb "${CHARGEWIRE_DUCKDB_PREFIX}/include")
+# duckdb_read_only_guard.cc is the one file that uses DuckDB's internal headers (duckdb.hpp and
+# duckdb/ under the prefix's include, with the three vendored libraries they include under
+# duckdb_third_party: scripts/build-duckdb.sh and scripts/duckdb-headers.sh put them there).
+if(NOT EXISTS "${CHARGEWIRE_DUCKDB_PREFIX}/include/duckdb/main/client_context_state.hpp")
+  message(FATAL_ERROR "DuckDB's internal headers are not in ${CHARGEWIRE_DUCKDB_PREFIX}/include: run scripts/duckdb-headers.sh")
+endif()
+target_include_directories(chargewire_duckdb SYSTEM PRIVATE "${CHARGEWIRE_DUCKDB_PREFIX}/include/duckdb_third_party")
+set_source_files_properties(src/duckdb/duckdb_read_only_guard.cc PROPERTIES COMPILE_OPTIONS "-w")
 # DuckDB 2.0.0 ships its whole v2 C API as "unstable" (duckdb_v2.h compiles none of it
 # unless asked to), so every user of the header opts in. The API can change in a DuckDB
 # release; the DuckDB pin (scripts/build-duckdb.sh) decides which one this builds against.
@@ -231,12 +241,13 @@ if(CHARGEWIRE_BUILD_TESTS)
                  tests/statements_test.cc tests/plain_handler_test.cc tests/browser_sign_in_test.cc
                  tests/statement_ids_test.cc tests/openapi_test.cc
                  tests/forwarded_test.cc tests/session_authority_test.cc tests/upload_limits_test.cc
-                 tests/legacy_dialect_test.cc tests/app_endpoint_test.cc tests/update_outcome_test.cc)
+                 tests/legacy_dialect_test.cc tests/app_endpoint_test.cc tests/update_outcome_test.cc
+                 tests/read_only_test.cc)
   target_include_directories(chargewire-sdk-tests PRIVATE src/sdk)
   target_link_libraries(chargewire-sdk-tests PRIVATE chargewire chargewire_client GTest::gtest_main)
   # The DuckDB backend's tests, against a server started in the test process on an in-memory
   # database: what update_outcome_test.cc plays, with real statements.
-  add_executable(chargewire-duckdb-tests tests/duckdb_update_outcome_test.cc)
+  add_executable(chargewire-duckdb-tests tests/duckdb_update_outcome_test.cc tests/duckdb_read_only_test.cc)
   target_link_libraries(chargewire-duckdb-tests PRIVATE chargewire_duckdb GTest::gtest_main)
   set_target_properties(chargewire-duckdb-tests PROPERTIES BUILD_RPATH "${CHARGEWIRE_DUCKDB_PREFIX}/lib")
 endif()

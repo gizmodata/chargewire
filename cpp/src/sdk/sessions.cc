@@ -36,6 +36,10 @@ std::optional<std::chrono::milliseconds> EngineSession::DefaultStatementTimeout(
   return std::nullopt;
 }
 
+void EngineSession::SetReadOnly() {
+  throw Error(ErrorCode::kNotImplemented, "this engine has no read-only sessions");
+}
+
 OptionErrors EngineSession::SetOptions(const boost::json::object& options) {
   OptionErrors errors;
   for (const auto& option : options) {
@@ -152,7 +156,30 @@ void Session::CheckEnded() {
 
 json::object Session::options() const {
   std::lock_guard lock(mutex_);
-  return options_;
+  json::object options = options_;
+  // The SDK's own option (spec §5.8): what the session document says never depends on the
+  // engine remembering to report it.
+  if (read_only_offered_) {
+    options["read_only"] = read_only_;
+  } else {
+    options.erase("read_only");
+  }
+  return options;
+}
+
+void Session::OfferReadOnly() {
+  std::lock_guard lock(mutex_);
+  read_only_offered_ = true;
+}
+
+void Session::MarkReadOnly() {
+  std::lock_guard lock(mutex_);
+  read_only_ = true;
+}
+
+bool Session::read_only() const {
+  std::lock_guard lock(mutex_);
+  return read_only_;
 }
 
 void Session::set_options(json::object options) {
