@@ -7,6 +7,20 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [2.5.3] - 2026-11-14
+
+### Fixed
+
+- Transaction-state refresh no longer holds the SDK's engine lifetime lock while
+  calling the backend. This prevents a lock-order inversion with database callbacks
+  that inspect active sessions, and lets monitoring and cancellation proceed while
+  the backend finishes an implicit transaction.
+- Extension conformance setup waits for accepted `INSTALL` and `LOAD` statements
+  to finish instead of treating a still-running statement as an installation failure.
+  Terminal errors and the bounded completion deadline still fail the tests.
+
+The wire protocol is unchanged.
+
 ## [2.5.2] - 2026-11-14
 
 ### Fixed

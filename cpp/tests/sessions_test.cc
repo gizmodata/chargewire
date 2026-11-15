@@ -7,9 +7,11 @@
 #include <gtest/gtest.h>
 
 #include <boost/asio/strand.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/thread_pool.hpp>
 #include <chrono>
 #include <format>
+#include <future>
 #include <memory>
 #include <optional>
 #include <string>
@@ -138,6 +140,68 @@ class FakeEngine : public chargewire::EngineSession {
     if (ending) *ending = std::string(reason);
   }
 };
+
+// Transaction() can enter the database to finish an implicit transaction. A query
+// holding a database lock can simultaneously inspect sessions (e.g. a sessions
+// table function). The SDK must not hold its engine lifetime lock across that call.
+TEST_F(SessionLifetime, TransactionRefreshAllowsMonitoringAndCancellation) {
+  struct Engine : FakeEngine {
+    std::promise<void> entered;
+    std::promise<void> observed;
+    bool monitoring_completed = false;
+    bool cancelled = false;
+    chargewire::TransactionState Transaction() override {
+      auto done = observed.get_future();
+      entered.set_value();
+      // Bound the wait so the regression fails instead of deadlocking the test.
+      monitoring_completed = done.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+      return chargewire::TransactionState::kOpen;
+    }
+    void Interrupt() override { cancelled = true; }
+  };
+  auto session = NewSession();
+  auto statement = NewStatement("q_refresh");
+  auto engine = std::make_unique<Engine>();
+  auto* held = engine.get();
+  auto entered = held->entered.get_future();
+  session->SetEngine(std::move(engine));
+  session->SetRunning(statement.get());
+  boost::asio::post(session->strand(), [session] { session->RefreshTransaction(); });
+  entered.wait();
+  // This is an observer on a different thread from the engine strand. On the
+  // broken implementation IsRunning cannot finish until Transaction times out.
+  EXPECT_TRUE(session->IsRunning(statement.get()));
+  session->InterruptIfRunning(statement.get(), CancelReason::kSessionClosed);
+  held->observed.set_value();
+  pool_.join();
+  EXPECT_TRUE(held->monitoring_completed);
+  EXPECT_TRUE(held->cancelled);
+  EXPECT_EQ(session->transaction(), chargewire::TransactionState::kOpen);
+}
+
+TEST_F(SessionLifetime, TransactionRefreshKeepsLastStateWhenEngineCannotAnswer) {
+  struct Engine : FakeEngine {
+    bool fail = false;
+    chargewire::TransactionState Transaction() override {
+      if (fail) throw Error(ErrorCode::kExecutionError, "transaction unavailable");
+      return chargewire::TransactionState::kOpen;
+    }
+  };
+  auto session = NewSession();
+  EXPECT_NO_THROW(session->RefreshTransaction());  // not installed yet
+  EXPECT_EQ(session->transaction(), chargewire::TransactionState::kNone);
+  auto engine = std::make_unique<Engine>();
+  auto* held = engine.get();
+  session->SetEngine(std::move(engine));
+  session->RefreshTransaction();
+  held->fail = true;
+  EXPECT_NO_THROW(session->RefreshTransaction());
+  EXPECT_EQ(session->transaction(), chargewire::TransactionState::kOpen);
+  session->Close(CancelReason::kSessionClosed);
+  session->DestroyEngine();
+  EXPECT_NO_THROW(session->RefreshTransaction());
+  EXPECT_EQ(session->transaction(), chargewire::TransactionState::kOpen);
+}
 
 // A session that holds a transaction open with nothing running and no request since the
 // cutoff is ended with the error given (§5.7): its next request gets it, and the engine

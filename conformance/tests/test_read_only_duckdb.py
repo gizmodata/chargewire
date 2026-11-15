@@ -1797,11 +1797,21 @@ def load(chargewire, server, duck):
     def load_extension(extension: str) -> None:
         for sql in ([f"INSTALL {extension}"] if server.process is not None else []) + [f"LOAD {extension}"]:
             response = chargewire.submit(session_id=duck, sql=sql)
-            if response.status_code not in (200, 201) or response.json().get("state") != "succeeded":
+            details = response.text
+            completed = False
+            if response.status_code in (200, 201):
+                doc = response.json()
+                # INSTALL can outlast the submit response's wait window, especially
+                # under sanitizers. An accepted, running statement is not a failure.
+                if doc["state"] not in ("succeeded", "failed", "cancelled"):
+                    doc = chargewire.wait_done(session_id=duck, statement_id=doc["statement_id"])
+                completed = doc["state"] == "succeeded"
+                details = json.dumps(doc)
+            if not completed:
                 pytest.fail(reason=f"`{sql}` failed, so the tests of the {extension} extension cannot run. The extension is "
                                    f"installed from DuckDB's extension repository into the server's scratch home directory "
                                    f"(is the network reachable?), or deselect these tests with -m \"not duckdb_extensions\": "
-                                   f"{response.text}", pytrace=False)
+                                   f"{details}", pytrace=False)
     return load_extension
 
 
