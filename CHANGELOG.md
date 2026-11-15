@@ -7,6 +7,8 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [2.5.4] - 2026-11-15
+
 ### Fixed
 
 - **A read-only session could advance or set a sequence through a statement that held the
