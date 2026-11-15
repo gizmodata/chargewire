@@ -194,14 +194,14 @@ TransactionState Session::transaction() const {
 
 void Session::RefreshTransaction() {
   TransactionState now;
-  {
-    std::lock_guard lock(engine_mutex_);
-    if (!engine_) return;
-    try {
-      now = engine_->Transaction();
-    } catch (const std::exception&) {
-      return;  // the engine is going away, or can't tell: keep what it said last
-    }
+  try {
+    // Like Execute(), this runs on strand(), which also serializes engine teardown.
+    // Do not hold engine_mutex_ while entering the engine: Transaction() may finish
+    // an implicit transaction and acquire database locks, while a database callback
+    // enumerating sessions takes engine_mutex_ through IsRunning().
+    now = engine().Transaction();
+  } catch (const std::exception&) {
+    return;  // no engine, or it can't tell: keep what it said last
   }
   std::lock_guard lock(mutex_);
   transaction_ = now;

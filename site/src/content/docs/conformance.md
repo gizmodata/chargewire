@@ -76,7 +76,7 @@ reaches the user's `~/.duckdb`, and nothing is left over from an earlier run.
 
 ## What each file covers
 
-342 test functions (some run several cases), in the suite's [`tests/`](https://github.com/gizmodata/chargewire/tree/main/conformance/tests):
+344 test functions (some run several cases), in the suite's [`tests/`](https://github.com/gizmodata/chargewire/tree/main/conformance/tests):
 
 | File | Tests | Covers |
 |---|---|---|
@@ -84,6 +84,7 @@ reaches the user's `~/.duckdb`, and nothing is left over from an earlier run.
 | [`test_control.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_control.py) | 8 | [§6.7](/specification/#67-idempotent-submission)–[§6.9](/specification/#69-timeouts): idempotent submission, cancellation, timeouts. |
 | [`test_discovery_auth.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_discovery_auth.py) | 7 | [§3](/specification/#3-discovery-and-health) (discovery, health) and [§4](/specification/#4-authentication) (authentication). |
 | [`test_extensibility.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_extensibility.py) | 4 | [§2.3](/specification/#23-identifiers), [§2.4](/specification/#24-json), [§2.5](/specification/#25-request-headers-defined-by-this-protocol) and [§12](/specification/#12-versioning): what keeps version 1 open to additions. Servers ignore request fields they don't know, ids are long random strings, and Chargewire-Query-Tag labels a statement without changing it. |
+| [`test_extension_setup.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_extension_setup.py) | 2 | Extension setup must follow asynchronous statement completion, including errors. |
 | [`test_http.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_http.py) | 11 | [§2](/specification/#2-conventions) and [§9.5](/specification/#95-browsers): HTTP conventions, limits, browser rules. |
 | [`test_ingest.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_ingest.py) | 23 | [§8](/specification/#8-bulk-ingest): bulk ingest. |
 | [`test_lifecycle.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_lifecycle.py) | 4 | [§11.1](/specification/#111-graceful-shutdown) (graceful shutdown), [§3.2](/specification/#32-get-chargewirev1health) (health that answers when its query hangs) and [§6.5](/specification/#65-retention-and-resumption) (a read under way when its result expires). |
