@@ -7,6 +7,77 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A read-only session could advance or set a sequence through a statement that held the
+  call itself** (DuckDB reference server and SDK adapter). DuckDB evaluates the arguments of
+  table functions while it binds a statement, before a plan exists for the read-only guard to
+  refuse, and the adapter's screen of the parser's tree decided by the outer statement in
+  several places while DuckDB bound something inside it. Each of these was answered
+  `403 read_only` after the sequence had moved (to a value of the reader's choice with
+  `setval`), also when the statement was only prepared: `EXPLAIN` of anything but a query
+  (`EXPLAIN CALL range(nextval('s'))`, `EXPLAIN INSERT … SELECT`, `UPDATE`, `DELETE`, `MERGE`,
+  `COPY`, `PREPARE`, `EXECUTE`); the file name and the options of a `COPY`, under an `EXPLAIN`
+  or as a CTE's body; what a `PIVOT` is pivoted on; `json_execute_serialized_sql()` with a
+  literal or a bind parameter, and its pragma form; and `json_serialize_plan()`.
+  The screen now walks every kind of statement, query, table reference and expression itself
+  and refuses a kind it has no rule for; binds a table function or a pragma only when it is
+  listed, or is a table macro of a user's that the adapter has read the definition of; and
+  refuses under an `EXPLAIN` every kind that is refused without one, except `COPY … TO` and
+  `CALL`. `ReadOnlyPolicy` has a second list, `explained_table_functions`, for the functions
+  that may be bound (so that `EXPLAIN SELECT * FROM checkpoint()` still shows a plan) and never
+  run. The adapter's own queries call DuckDB's functions by their full names
+  (`system.main.duckdb_views()`).
+  What a user sees change in a read-only session: a table function or pragma that does not
+  exist is answered `403 read_only`, not `400 sql_error`; `EXPLAIN` of `LOAD`, `VACUUM`, `BEGIN`,
+  `COMMIT`, `DEALLOCATE` and `PREPARE` answered a plan and is refused; `EXPLAIN` of `INSERT`,
+  `UPDATE`, `DELETE` and `MERGE` was refused and is refused with other words; and a refused
+  write in a CTE no longer aborts the reader's transaction.
+- **Switching a session to read-only could silently roll back uncommitted work.** An options
+  request that changed nothing (`{"autocommit": false}` to a session in manual commit, as a
+  connection pool sends; `{"autocommit": true}` after a SQL `BEGIN`) made the adapter forget the
+  work in the open transaction, so the switch was accepted, the work rolled back, and the
+  commit that followed answered `204`. An option that has the value it is given now changes
+  nothing; a prepared statement's execution counts as work when it fails too; and the switch
+  is decided by what DuckDB itself holds as well (a transaction that has changed anything
+  refuses it, whatever the adapter noted). A read-only session never rolls back a transaction
+  that holds changes.
+- A cancel or a session's end that lands while a read-only session's screen reads the views'
+  and macros' definitions ends the statement as what it is (`cancelled`, SQLSTATE `57014`),
+  not as a `read_only` refusal; a definitions read that fails for another reason (an attached
+  catalog that cannot be listed) fails the statement with that error.
+
+### Known, not fixed here
+
+Views and macros are followed as before (the definitions of those a statement names, and of
+those these name, as the session's own listing shows them). A read-only session can still
+advance or set a sequence through a definition the statement does not lead the adapter to:
+
+- a view or macro the listing does not show the session (hidden by a server's access control,
+  granted after the adapter last read the definitions, or created later in a catalog without
+  a version, such as a DuckLake);
+- a view created `WITH (DEFER_BINDING)`, which `duckdb_columns()` binds when it runs
+  (`information_schema.columns`, `SHOW ALL TABLES`, `DESCRIBE`);
+- a view with a dot in its name, quoted inside a string argument (`pragma_table_info('"x.bad"')`);
+- the argument of a macro whose definition passes it to a table function, and a view named as
+  a column (`histogram(view, column)`);
+- a macro of a user's named like one of DuckDB's functions, which DuckDB's own text (`SHOW`,
+  a pragma's replacement, `information_schema`) binds in its place.
+
+Each needs a view or macro that someone with the right to create one has made. Also as
+before: with two attached databases, a statement that is only prepared and moves a sequence
+in one of them leaves a transaction whose `COMMIT` answers `422` after it has stored the other
+database's part, or discarded it, depending on which database the transaction touched first.
+
+### Added
+
+- Conformance tests: every statement form above in which DuckDB evaluates something while it
+  binds, executed and only prepared, with the sequence's value compared before and after and a
+  twin that still works; each kind of pending work with each request a client can send between
+  the work and the switch to read-only.
+
+The wire protocol is unchanged.
+
 ## [2.5.3] - 2026-11-14
 
 ### Fixed

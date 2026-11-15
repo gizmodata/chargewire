@@ -400,6 +400,193 @@ def test_what_duckdb_evaluates_while_it_binds_holds_plain_values_only(chargewire
     assert one(chargewire, duck, f"SELECT nextval('{seq}')") == 51
 
 
+# What DuckDB binds under another statement, and the SQL it binds that a statement does not
+# hold. An earlier server screened a query and what an EXPLAIN held when that was a query; it
+# decided for everything else by the outer statement, and answered `403 read_only` to each of
+# these after the sequence had moved (to a value of the reader's choice, with setval):
+#   - what an EXPLAIN holds when it is not a query (CALL, INSERT, UPDATE, DELETE, MERGE, COPY,
+#     PREPARE, EXECUTE): DuckDB binds it all the same;
+#   - the file name and the options of a COPY, as an EXPLAIN's statement or a CTE's body;
+#   - what a PIVOT is pivoted on;
+#   - a serialized statement (json_execute_serialized_sql, as a table function and as a
+#     pragma) and SQL text given to a scalar function that plans it (json_serialize_plan).
+# The server now walks every kind of statement itself and refuses a kind it has no rule for,
+# binds a table function or a pragma only when it is listed, and every one of these is refused
+# before DuckDB binds anything of it.
+# (Not here, and not closed by this: what DuckDB binds through a view or macro that the
+# statement does not lead the server to. See duckdb_read_only.hpp.)
+
+
+def bound_under_another_statement(seq: str, t: str, pv: str, tmp: str, n: str) -> list[str]:
+    f, g = f"range(nextval('{seq}'))", f"range(setval('{seq}', 4242))"
+    return [
+        # what an EXPLAIN holds
+        f"EXPLAIN CALL {f}", f"EXPLAIN CALL {g}", f"EXPLAIN (FORMAT JSON) CALL {f}", f"EXPLAIN ANALYZE CALL {f}",
+        f"EXPLAIN INSERT INTO {t} SELECT range, 'x' FROM {f}", f"EXPLAIN INSERT INTO {t} VALUES ((SELECT count(*) FROM {g}), 'x')",
+        f"EXPLAIN UPDATE {t} SET v = 'q' FROM {f} r WHERE {t}.id = r.range", f"EXPLAIN DELETE FROM {t} USING {f} r WHERE {t}.id = r.range",
+        f"EXPLAIN MERGE INTO {t} USING {f} s ON {t}.id = s.range WHEN MATCHED THEN DELETE",
+        f"EXPLAIN MERGE INTO {t} USING (SELECT 1 AS id) s ON {t}.id = s.id WHEN MATCHED THEN UPDATE SET v = (SELECT count(*)::VARCHAR FROM {f})",
+        f"EXPLAIN COPY (SELECT * FROM {f}) TO '{tmp}/never.csv'", f"EXPLAIN COPY {t} TO '{tmp}/never.csv' (DELIMITER (nextval('{seq}')::VARCHAR))",
+        f"EXPLAIN COPY {t} TO ('{tmp}/never' || nextval('{seq}') || '.csv')", f"EXPLAIN COPY {t} FROM ('{tmp}/never' || setval('{seq}', 7) || '.csv')",
+        f"EXPLAIN COPY {n}_bad_view TO '{tmp}/never.csv'",
+        f"EXPLAIN PREPARE ro_never AS SELECT * FROM {f}", f"EXPLAIN EXECUTE ro_prepared_before(nextval('{seq}'))",
+        f"EXPLAIN CREATE TABLE ro_never AS SELECT * FROM {f}", f"EXPLAIN CREATE VIEW ro_never AS SELECT * FROM {f}",
+        f"EXPLAIN SET VARIABLE ro_x = (SELECT count(*) FROM {f})", f"EXPLAIN SET progress_bar_time = nextval('{seq}')",
+        # a CTE that is not a query
+        f"WITH c AS (COPY (SELECT 1 AS i) TO '{tmp}/never.csv' (DELIMITER (nextval('{seq}')::VARCHAR))) SELECT 1",
+        f"WITH c AS (COPY (SELECT 1 AS i) TO ('{tmp}/never' || nextval('{seq}') || '.csv')) SELECT 1",
+        f"WITH c AS (COPY (SELECT * FROM {f}) TO '{tmp}/never.csv') SELECT 1", f"WITH c AS (COPY {n}_bad_view TO '{tmp}/never.csv') SELECT 1",
+        f"WITH c AS (INSERT INTO {t} SELECT range, 'x' FROM {f} RETURNING *) SELECT * FROM c",
+        f"WITH c AS (UPDATE {t} SET v = 'q' FROM {f} r WHERE {t}.id = r.range RETURNING *) SELECT * FROM c",
+        f"WITH c AS (DELETE FROM {t} USING {f} r WHERE {t}.id = r.range RETURNING *) SELECT * FROM c",
+        # what a PIVOT is pivoted on
+        f"SELECT * FROM {pv} PIVOT (sum(b) FOR (SELECT a || count(*) FROM {f}) IN ('x1', 'y1'))",
+        # SQL that is not in the statement
+        f"SELECT json_serialize_plan('SELECT * FROM range(nextval(''{seq}''))')", f"SELECT json_serialize_plan(v) FROM {t}",
+        f"SELECT (SELECT json_serialize_plan('SELECT * FROM range(setval(''{seq}'', 9))'))",
+        # functions and pragmas that are on no list are not bound at all: their bind step is theirs to write
+        "PRAGMA tpch(1)", f"PRAGMA import_database('{tmp}')", "PRAGMA copy_database('memory', 'memory')", "PRAGMA ro_no_such_pragma",
+        "SELECT * FROM ro_no_such_function()", "SELECT * FROM arrow_scan(0, 0, 0)", "SELECT * FROM tpch_queries()",
+        "SELECT * FROM postgres_query('ro_no_such_database', 'SELECT 1')", "EXPLAIN SELECT * FROM sqlite_query('x', 'SELECT 1')",
+        "EXPLAIN PRAGMA table_info('x')", "EXPLAIN LOAD tpch", "EXPLAIN VACUUM", "EXPLAIN BEGIN", f"EXPLAIN DROP TABLE {t}",
+        f"EXPLAIN ALTER TABLE {t} ALTER COLUMN id SET DEFAULT nextval('{seq}')",
+    ]
+
+
+@pytest.fixture
+def bound_under(chargewire, duck, table, made, tmp_path):
+    """The sequence, the views and the macros those statements name; `made` drops them."""
+    n, seq, pv = name("ro_under"), name("ro_seq"), name("ro_pv")
+    succeeded(chargewire, duck, f"CREATE SEQUENCE {seq}")
+    succeeded(chargewire, duck, f"CREATE TABLE {pv} AS SELECT * FROM (VALUES ('x', 1), ('y', 2)) v(a, b)")
+    made("MACRO", f"{n}_plain", f"CREATE MACRO {n}_plain(a) AS a + 1")
+    made("MACRO TABLE", f"{n}_rows", f"CREATE MACRO {n}_rows(k) AS TABLE SELECT * FROM range(k)")
+    yield n, seq, pv
+    succeeded(chargewire, duck, f"DROP TABLE {pv}")
+
+
+def sequence_state(chargewire, session_id: str, seq: str):
+    return one(chargewire, session_id, f"SELECT last_value FROM system.main.duckdb_sequences() WHERE sequence_name = '{seq}'")
+
+
+def test_what_duckdb_binds_under_another_statement_is_refused_before_it_is_bound(chargewire, duck, ro, table, bound_under, made,
+                                                                                tmp_path, unchanged):
+    n, seq, pv = bound_under
+    made("VIEW", f"{n}_bad_view", f"CREATE VIEW {n}_bad_view AS SELECT * FROM range(nextval('{seq}'))")  # (creating it binds it once)
+    before = sequence_state(chargewire, duck, seq)
+    with unchanged(subject=ro, tables=[table]):  # the snapshot has every sequence's last value, the files and the loaded extensions
+        for sql in bound_under_another_statement(seq, table, pv, str(tmp_path), n):
+            refused(chargewire, ro, sql)
+            assert sequence_state(chargewire, duck, seq) == before, sql
+            # Preparing a statement describes it, and describing binds it: never executed, same refusal.
+            assert_problem(response=prepare(chargewire, ro, sql), status=403, code="read_only")
+            assert sequence_state(chargewire, duck, seq) == before, "prepare " + sql
+    assert sorted(os.listdir(tmp_path)) == []
+    assert one(chargewire, duck, f"SELECT nextval('{seq}')") == (before or 0) + 1  # what a writer gets next: nothing moved it
+
+
+def test_the_statements_next_to_those_still_work(chargewire, duck, ro, table, bound_under, tmp_path, unchanged, logging_stays_off):
+    # The twins. In the read-only session: what binds nothing of that kind is answered as before.
+    n, seq, pv = bound_under
+    with unchanged(subject=ro, tables=[table]):
+        for sql in ("EXPLAIN CALL range(3)", "EXPLAIN (FORMAT JSON) CALL range(3)", "EXPLAIN CALL checkpoint()", "EXPLAIN CHECKPOINT",
+                    f"EXPLAIN SELECT * FROM {table}", f"EXPLAIN ANALYZE SELECT count(*) FROM {table}", "EXPLAIN SELECT * FROM checkpoint()",
+                    f"EXPLAIN COPY {table} TO '{tmp_path}/explained.csv'", f"EXPLAIN COPY {table} TO '{tmp_path}/explained.csv' (DELIMITER '|', HEADER)",
+                    f"EXPLAIN COPY (SELECT * FROM {table} WHERE id > 1) TO '{tmp_path}/explained.parquet' (FORMAT parquet, COMPRESSION zstd)",
+                    f"EXPLAIN COPY {table} TO '{tmp_path}/explained' (FORMAT parquet, PARTITION_BY (v))",
+                    f"EXPLAIN WITH c AS (COPY (SELECT 1 AS i) TO '{tmp_path}/explained.csv') SELECT * FROM c",
+                    "EXPLAIN SET progress_bar_time = 100", "EXPLAIN RESET progress_bar_time", "EXPLAIN SET VARIABLE ro_x = 1",
+                    f"SELECT * FROM {pv} PIVOT (sum(b) FOR a IN ('x', 'y'))", f"SELECT * FROM {pv} PIVOT (sum(b) FOR (a || '1') IN ('x1', 'y1'))",
+                    f"SELECT json_serialize_sql('SELECT * FROM range(nextval(''{seq}''))')",
+                    f"SELECT * FROM histogram({table}, id)", "SELECT count(*) FROM duckdb_logs_parsed('QueryLog')",
+                    "PRAGMA version", f"PRAGMA table_info('{table}')", "PRAGMA database_list",
+                    f"SELECT {n}_plain(length(v)) FROM {table}", f"SELECT {n}_plain(nullif(id, 0)) FROM {table}"):
+            assert answer_of(chargewire, ro, sql)[0] == 200, sql
+        # A table macro of a user's is on no list and is called all the same: its definition is followed.
+        assert rows(chargewire, ro, f"SELECT count(*) AS n FROM {n}_rows(3)") == [{"n": 3}]
+        assert answer_of(chargewire, ro, f"EXPLAIN SELECT * FROM {n}_rows(3)")[0] == 200
+        # What changes a catalog is refused under an EXPLAIN as it is without one, plain values or not.
+        for sql in (f"EXPLAIN INSERT INTO {table} VALUES (4, 'c')", f"EXPLAIN UPDATE {table} SET v = 'z'", f"EXPLAIN DELETE FROM {table}",
+                    f"EXPLAIN COPY {table} FROM '{tmp_path}/in.csv'"):
+            refused(chargewire, ro, sql)
+    assert sorted(os.listdir(tmp_path)) == []
+    assert sequence_state(chargewire, duck, seq) is None
+    # In a read-write session each of the refused statements is one DuckDB answers, and binding
+    # them does what the refusals above are for: the sequence moves, though none of them is executed.
+    for sql in (f"EXPLAIN INSERT INTO {table} VALUES (4, 'c')", f"EXPLAIN UPDATE {table} SET v = 'z'", f"EXPLAIN DELETE FROM {table}",
+                f"EXPLAIN MERGE INTO {table} USING (SELECT 1 AS id) s ON {table}.id = s.id WHEN MATCHED THEN DELETE",
+                "EXPLAIN PREPARE ro_never AS SELECT 1", f"SELECT * FROM {table} JOIN (SELECT 1) ON true"):
+        assert answer_of(chargewire, duck, sql)[0] == 200, sql
+    moved = 0
+    for sql in (f"EXPLAIN COPY {table} TO '{tmp_path}/never.csv' (DELIMITER (nextval('{seq}')::VARCHAR))",  # (first: a delimiter of one character)
+                f"EXPLAIN CALL range(nextval('{seq}'))", f"EXPLAIN INSERT INTO {table} SELECT range, 'x' FROM range(nextval('{seq}'))",
+                f"EXPLAIN COPY (SELECT * FROM range(nextval('{seq}'))) TO '{tmp_path}/never.csv'",
+                f"SELECT length(json_serialize_plan('SELECT * FROM range(nextval(''{seq}''))')) > 0",
+                f"SELECT * FROM {pv} PIVOT (sum(b) FOR (SELECT a || 1 + 0 * count(*) FROM range(nextval('{seq}'))) IN ('x1', 'y1'))"):
+        # (whatever DuckDB then answers: some of them it fails itself, after it has bound them)
+        assert chargewire.submit(session_id=duck, sql=sql).status_code != 403, sql
+        now = sequence_state(chargewire, duck, seq)
+        assert now is not None and now > moved, sql
+        moved = now
+    assert one(chargewire, duck, f"SELECT count(*) FROM {table}") == 3 and sorted(os.listdir(tmp_path)) == []
+
+
+def serialized_statement(chargewire, session_id: str, sql: str) -> str:
+    return one(chargewire, session_id, "SELECT json_serialize_sql(?)", [sql])
+
+
+@pytest.mark.parametrize("function", ["nextval('{seq}')", "setval('{seq}', 4242)"])
+def test_a_serialized_statement_is_not_bound(chargewire, duck, ro, table, unchanged, function):
+    # json_execute_serialized_sql binds the statement it is given on a connection of its own,
+    # which no read-only session's guard sees: as a table function with the JSON as a literal
+    # or as a bind parameter, and as a pragma, which DuckDB replaces by the statement's text.
+    seq = name("ro_seq")
+    succeeded(chargewire, duck, f"CREATE SEQUENCE {seq}")
+    serialized = serialized_statement(chargewire, duck, f"SELECT * FROM range({function.format(seq=seq)})")
+    literal = "'" + serialized.replace("'", "''") + "'"
+    with unchanged(subject=ro, tables=[table]):
+        for sql, parameters in ((f"SELECT * FROM json_execute_serialized_sql({literal})", None), ("SELECT * FROM json_execute_serialized_sql(?)", [serialized]),
+                                (f"SELECT * FROM system.main.json_execute_serialized_sql({literal})", None),
+                                (f"EXPLAIN SELECT * FROM json_execute_serialized_sql({literal})", None),
+                                (f"SELECT (SELECT count(*) FROM json_execute_serialized_sql({literal}))", None),
+                                (f"PRAGMA json_execute_serialized_sql({literal})", None), (f"CALL json_execute_serialized_sql({literal})", None),
+                                (f"EXPLAIN CALL json_execute_serialized_sql({literal})", None)):
+            refused(chargewire, ro, sql, parameters)
+            assert sequence_state(chargewire, duck, seq) is None, sql
+            assert_problem(response=prepare(chargewire, ro, sql), status=403, code="read_only")
+            assert sequence_state(chargewire, duck, seq) is None, "prepare " + sql
+        # The twin: the text of a statement is a value like any other.
+        assert one(chargewire, ro, f"SELECT length({literal}) > 0") is True
+        assert one(chargewire, ro, f"SELECT json_deserialize_sql({literal}::JSON) LIKE 'SELECT%'") is True
+    # In a read-write session the function runs a statement it is given, and binding this one
+    # moves the sequence there (DuckDB then fails the function's own transaction: the answer is
+    # its error, not a refusal): the proof that it is this the refusals keep out.
+    plain = "'" + serialized_statement(chargewire, duck, "SELECT 42 AS answer").replace("'", "''") + "'"
+    assert answer_of(chargewire, duck, f"SELECT * FROM json_execute_serialized_sql({plain})") == (200, [{"answer": 42}])
+    assert answer_of(chargewire, duck, f"SELECT * FROM json_execute_serialized_sql({literal})")[1] != "read_only"
+    assert sequence_state(chargewire, duck, seq) is not None
+
+
+def test_a_statement_prepared_in_sql_before_the_switch_is_not_reached_through_explain(chargewire, duck, unchanged):
+    # EXECUTE evaluates its arguments while it binds, and binds a statement the server has
+    # not screened: refused under an EXPLAIN as it is without one.
+    seq = name("ro_seq")
+    sid = chargewire.new_session()
+    try:
+        succeeded(chargewire, sid, f"CREATE SEQUENCE {seq}")
+        succeeded(chargewire, sid, "PREPARE ro_prepared_before AS SELECT $1 AS x")
+        assert answer_of(chargewire, sid, "EXPLAIN EXECUTE ro_prepared_before(1)")[0] == 200  # the twin, while it is read-write
+        assert patch(chargewire, sid, {"read_only": True})["errors"] == {}
+        with unchanged(subject=sid):
+            for sql in (f"EXPLAIN EXECUTE ro_prepared_before(nextval('{seq}'))", f"EXPLAIN EXECUTE ro_prepared_before(setval('{seq}', 9))",
+                        "EXPLAIN EXECUTE ro_prepared_before(1)", f"EXECUTE ro_prepared_before(nextval('{seq}'))", "EXPLAIN DEALLOCATE ro_prepared_before"):
+                refused(chargewire, sid, sql)
+                assert_problem(response=prepare(chargewire, sid, sql), status=403, code="read_only")
+        assert sequence_state(chargewire, sid, seq) is None
+    finally:
+        chargewire.http.delete(url=chargewire.session_url(sid), headers=chargewire.headers())
+
+
 def test_a_time_travel_clause_holds_plain_values_only(chargewire, duck, ro, table, unchanged):
     seq = name("ro_seq")
     succeeded(chargewire, duck, f"CREATE SEQUENCE {seq}")

@@ -650,6 +650,169 @@ def test_a_transaction_with_work_in_it_refuses_the_switch_and_is_left_alone(char
         refused(chargewire, rw, f"INSERT INTO {table} VALUES (3)")
 
 
+# What a client sends between the work and the switch. The switch is decided by the work in
+# the open transaction, and nothing sent in between may make the server lose sight of it: an
+# earlier server took an options request that changed nothing ({"autocommit": false} to a
+# session in manual commit, as a connection pool sends when it sets the same properties again)
+# for the start of a new transaction, accepted the switch, rolled the work back, and answered
+# 204 to the commit that followed. Each kind of pending work, with each request in between.
+
+SWITCH_MODES = ["manual commit", "BEGIN"]
+SWITCH_WORK = ["a statement", "a prepared statement", "a definition", "bulk ingest"]
+SWITCH_BETWEEN = ["each option again", "all options again", "an unknown option", "an invalid value", "the session document",
+                  "a metadata request", "a statement that is only prepared", "a statement that does not parse", "a query",
+                  "a statement that is cancelled"]
+# The requests among them that do no work themselves: with nothing pending, the switch succeeds after them.
+SWITCH_BETWEEN_IDLE = ["each option again", "all options again", "an unknown option", "an invalid value", "the session document"]
+
+
+def send_between(chargewire, session_id: str, what: str) -> None:
+    options = {key: value for key, value in document(chargewire, session_id)["options"].items() if key != "read_only"}
+    if what == "each option again":
+        for key, value in options.items():
+            answer = patch(chargewire, session_id, {key: value})
+            assert answer["errors"] == {} and answer["options"][key] == value, (key, answer)
+    elif what == "all options again":
+        assert patch(chargewire, session_id, options)["errors"] == {}
+    elif what == "an unknown option":
+        assert patch(chargewire, session_id, {"ro_no_such_option": 1})["errors"]["ro_no_such_option"]["code"] == "unknown_option"
+    elif what == "an invalid value":
+        assert patch(chargewire, session_id, {"autocommit": "perhaps"})["errors"]["autocommit"]["code"] == "invalid_option_value"
+    elif what == "the session document":
+        document(chargewire, session_id)
+    elif what == "a metadata request":
+        response = chargewire.http.get(url=f"{chargewire.session_url(session_id)}/metadata/table-types", headers=chargewire.headers())
+        assert response.status_code == 200, response.text
+    elif what == "a statement that is only prepared":
+        assert prepare(chargewire, session_id, "SELECT 1 AS one").status_code == 201
+    elif what == "a statement that does not parse":
+        assert chargewire.submit(session_id=session_id, sql="SELEC 1 FRM").status_code == 400
+    elif what == "a query":
+        assert rows(chargewire, session_id, "SELECT 1 AS one") == [{"one": 1}]
+    elif what == "a statement that is cancelled":
+        response = chargewire.submit(session_id=session_id, sql="SELECT sum(i) FROM range(100000000000) t(i)",
+                                     headers={"Prefer": "respond-async"})
+        assert response.status_code in (200, 201, 202), response.text
+        statement_id = response.json()["statement_id"]
+        chargewire.http.post(url=f"{chargewire.statement_url(session_id, statement_id)}/cancel", headers=chargewire.headers())
+        assert chargewire.wait_done(session_id=session_id, statement_id=statement_id, timeout=30)["state"] == "cancelled"
+    else:
+        raise AssertionError(what)
+
+
+def open_transaction(chargewire, session_id: str, mode: str) -> None:
+    if mode == "manual commit":
+        assert patch(chargewire, session_id, {"autocommit": False})["errors"] == {}
+    else:
+        succeeded(chargewire, session_id, "BEGIN")
+    assert document(chargewire, session_id)["transaction"] == "open"
+
+
+@pytest.mark.parametrize("between", SWITCH_BETWEEN)
+@pytest.mark.parametrize("work", SWITCH_WORK)
+@pytest.mark.parametrize("mode", SWITCH_MODES)
+def test_nothing_sent_between_the_work_and_the_switch_hides_the_work(chargewire, offered, observer, mode, work, between):
+    if "transactions" not in capabilities(chargewire):
+        pytest.skip(reason="the server has no transactions capability")
+    if work == "bulk ingest" and "ingest" not in capabilities(chargewire):
+        pytest.skip(reason="the server has no bulk ingest")
+    table, made = name(), name()
+    succeeded(chargewire, observer, f"CREATE TABLE {table} (i BIGINT)")
+    sid = chargewire.new_session()
+    try:
+        open_transaction(chargewire, sid, mode)
+        if work == "a statement":
+            succeeded(chargewire, sid, f"INSERT INTO {table} VALUES (1)")
+        elif work == "a prepared statement":
+            prepared = prepare(chargewire, sid, f"INSERT INTO {table} VALUES (?)")
+            assert prepared.status_code == 201, prepared.text
+            assert execute_prepared(chargewire, sid, prepared.json()["prepared_id"], [1]).status_code in (200, 201)
+        elif work == "a definition":
+            succeeded(chargewire, sid, f"CREATE TABLE {made} (i BIGINT)")
+            succeeded(chargewire, sid, f"INSERT INTO {table} VALUES (1)")
+        else:
+            body = ipc_bytes(table=pa.table({"i": pa.array([1], pa.int64())}))
+            assert ingest(chargewire, sid, body, table=table, mode="append").status_code == 200
+        send_between(chargewire, sid, between)
+        state = document(chargewire, sid)["transaction"]  # (a cancelled statement may have aborted it)
+        response = chargewire.http.patch(url=chargewire.session_url(sid), headers=chargewire.headers(),
+                                         json={"options": {"read_only": True}})
+        if state == "aborted" and response.status_code != 200:
+            # An engine that answers nothing in an aborted transaction may fail the options
+            # request as a whole, with its own error: the switch was not made either way.
+            assert response.status_code == 422 and response.json()["code"] == "execution_error", response.text
+        else:
+            assert response.status_code == 200, response.text
+            answer = response.json()
+            assert set(answer["errors"]) == {"read_only"}, answer
+            assert answer["errors"]["read_only"]["code"] == "invalid_option_value", answer
+            assert "transaction" in answer["errors"]["read_only"]["detail"], answer
+            assert answer["options"]["read_only"] is False
+        assert document(chargewire, sid)["options"]["read_only"] is False
+        assert document(chargewire, sid)["transaction"] == state
+        # The work is still the client's to commit, and it is stored when it does.
+        assert rows(chargewire, observer, f"SELECT count(*) AS n FROM {table}") == [{"n": 0}]
+        if state == "open":
+            ended = chargewire.http.post(url=f"{chargewire.session_url(sid)}/commit", headers=chargewire.headers())
+            assert ended.status_code == 204, ended.text
+            assert rows(chargewire, observer, f"SELECT count(*) AS n FROM {table}") == [{"n": 1}]
+            if work == "a definition":
+                assert rows(chargewire, observer, f"SELECT count(*) AS n FROM {made}") == [{"n": 0}]
+        else:
+            ended = chargewire.http.post(url=f"{chargewire.session_url(sid)}/rollback", headers=chargewire.headers())
+            assert ended.status_code == 204, ended.text
+        # With the transaction ended, the switch is accepted (in manual commit the next one holds nothing).
+        if mode == "manual commit" or document(chargewire, sid)["transaction"] == "none":
+            assert patch(chargewire, sid, {"read_only": True})["errors"] == {}
+            assert document(chargewire, sid)["options"]["read_only"] is True
+    finally:
+        chargewire.http.delete(url=chargewire.session_url(sid), headers=chargewire.headers())
+
+
+@pytest.mark.parametrize("between", SWITCH_BETWEEN_IDLE)
+@pytest.mark.parametrize("mode", SWITCH_MODES)
+def test_with_no_work_pending_the_switch_is_accepted_after_the_same_requests(chargewire, offered, observer, unchanged, mode, between):
+    # The twin: a transaction in which nothing ran holds nothing, also after requests that change nothing.
+    if "transactions" not in capabilities(chargewire):
+        pytest.skip(reason="the server has no transactions capability")
+    table = name()
+    succeeded(chargewire, observer, f"CREATE TABLE {table} (i BIGINT)")
+    sid = chargewire.new_session()
+    try:
+        open_transaction(chargewire, sid, mode)
+        send_between(chargewire, sid, between)
+        answer = patch(chargewire, sid, {"read_only": True})
+        assert answer["errors"] == {} and answer["options"]["read_only"] is True, answer
+        assert rows(chargewire, sid, f"SELECT count(*) AS n FROM {table}") == [{"n": 0}]
+        with unchanged(tables=[table]):
+            refused(chargewire, sid, f"INSERT INTO {table} VALUES (1)")
+    finally:
+        chargewire.http.delete(url=chargewire.session_url(sid), headers=chargewire.headers())
+
+
+def test_an_options_request_that_changes_nothing_leaves_the_transaction_as_it_is(chargewire, offered, observer):
+    # The other half of the same mistake: {"autocommit": true} to a session in autocommit that
+    # has a transaction open (BEGIN) made the server report no transaction, and lose it later.
+    if "transactions" not in capabilities(chargewire):
+        pytest.skip(reason="the server has no transactions capability")
+    table = name()
+    succeeded(chargewire, observer, f"CREATE TABLE {table} (i BIGINT)")
+    sid = chargewire.new_session()
+    try:
+        succeeded(chargewire, sid, "BEGIN")
+        succeeded(chargewire, sid, f"INSERT INTO {table} VALUES (1)")
+        answer = patch(chargewire, sid, {"autocommit": True})
+        assert answer["errors"] == {} and answer["options"]["autocommit"] is True, answer
+        assert document(chargewire, sid)["transaction"] == "open"
+        assert rows(chargewire, observer, f"SELECT count(*) AS n FROM {table}") == [{"n": 0}]  # not committed by it either
+        assert rows(chargewire, sid, f"SELECT count(*) AS n FROM {table}") == [{"n": 1}]
+        succeeded(chargewire, sid, "COMMIT")
+        assert document(chargewire, sid)["transaction"] == "none"
+        assert rows(chargewire, observer, f"SELECT count(*) AS n FROM {table}") == [{"n": 1}]
+    finally:
+        chargewire.http.delete(url=chargewire.session_url(sid), headers=chargewire.headers())
+
+
 def test_read_only_is_applied_before_the_other_options_of_its_request(chargewire, offered, rw, observer):
     # §5.8: read_only is applied before the request's other options. With work in an open
     # transaction and {"autocommit": true, "read_only": true} in one request, read_only finds

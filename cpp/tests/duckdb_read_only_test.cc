@@ -984,6 +984,8 @@ TEST_F(DuckDBReadOnly, NothingMakesItReadWriteAgain) {
     Refused(insert);
     Reads("COMMIT");
     Refused("WITH w AS (" + insert + " RETURNING id) SELECT count(*) FROM w");
+    EXPECT_EQ(Transaction(reader_), "open");  // refused before DuckDB bound anything of it: the transaction is as it was
+    Refused("SELECT * FROM checkpoint()");
     EXPECT_EQ(Transaction(reader_), "aborted");  // refused while DuckDB planned it: that aborts the transaction
     Reads("ROLLBACK");
   }
@@ -1709,7 +1711,15 @@ TEST(DuckDBReadOnlyPolicy, TheListsAreTheseAndNoOther) {
                    "DUCKLAKE_LIST_FILES", "DUCKLAKE_TABLE_INSERTIONS", "DUCKLAKE_TABLE_DELETIONS", "DUCKLAKE_TABLE_CHANGES",
                    "DUCKLAKE_CURRENT_SNAPSHOT", "DUCKLAKE_LAST_COMMITTED_SNAPSHOT", "DUCKLAKE_OPTIONS", "DUCKLAKE_SETTINGS", "ICEBERG_SCAN",
                    "ICEBERG_METADATA", "ICEBERG_SNAPSHOTS", "DELTA_SCAN", "ST_READ", "ST_READ_META", "ST_READOSM", "ST_READSHP", "SHAPEFILE_META",
-                   "ST_DRIVERS", "ST_GENERATEPOINTS"}));
+                   "ST_DRIVERS", "ST_GENERATEPOINTS",
+                   // the names a statement holds for functions above: a lake's own through its catalog, DuckDB's table macros
+                   "SNAPSHOTS", "TABLE_INFO", "LIST_FILES", "TABLE_INSERTIONS", "TABLE_DELETIONS", "TABLE_CHANGES", "CURRENT_SNAPSHOT",
+                   "LAST_COMMITTED_SNAPSHOT", "OPTIONS", "SETTINGS", "HISTOGRAM", "HISTOGRAM_VALUES", "DUCKDB_LOGS_PARSED",
+                   "DUCKDB_PROFILING_SETTINGS"}));
+  // Bound, so that a plain EXPLAIN shows their plan, and never run: a table function on neither list is not even bound.
+  EXPECT_EQ(Names(policy.explained_table_functions.begin(), policy.explained_table_functions.end()),
+            (Names{"CHECKPOINT", "FORCE_CHECKPOINT", "ENABLE_LOGGING", "DISABLE_LOGGING", "TRUNCATE_DUCKDB_LOGS", "ENABLE_PROFILING",
+                   "DISABLE_PROFILING"}));
 }
 
 // ---- Errors: which are read_only, and what they say ----

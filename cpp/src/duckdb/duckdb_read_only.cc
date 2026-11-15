@@ -102,8 +102,18 @@ ReadOnlyPolicy ReadOnlyPolicy::Default() {
       "DUCKLAKE_TABLE_INSERTIONS", "DUCKLAKE_TABLE_DELETIONS", "DUCKLAKE_TABLE_CHANGES",
       "DUCKLAKE_CURRENT_SNAPSHOT", "DUCKLAKE_LAST_COMMITTED_SNAPSHOT", "DUCKLAKE_OPTIONS", "DUCKLAKE_SETTINGS",
       "ICEBERG_SCAN", "ICEBERG_METADATA", "ICEBERG_SNAPSHOTS", "DELTA_SCAN",
+      // a lake's own functions as its catalog names them (lake.snapshots() is DuckLake's
+      // DUCKLAKE_SNAPSHOTS('lake'): the name a statement holds, the plan has the one above)
+      "SNAPSHOTS", "TABLE_INFO", "LIST_FILES", "TABLE_INSERTIONS", "TABLE_DELETIONS", "TABLE_CHANGES",
+      "CURRENT_SNAPSHOT", "LAST_COMMITTED_SNAPSHOT", "OPTIONS", "SETTINGS",
       // spatial files
       "ST_READ", "ST_READ_META", "ST_READOSM", "ST_READSHP", "SHAPEFILE_META", "ST_DRIVERS", "ST_GENERATEPOINTS",
+      // DuckDB's own table macros over functions above (a statement names them, a plan never does)
+      "HISTOGRAM", "HISTOGRAM_VALUES", "DUCKDB_LOGS_PARSED", "DUCKDB_PROFILING_SETTINGS",
+  };
+  policy.explained_table_functions = {
+      "CHECKPOINT", "FORCE_CHECKPOINT", "ENABLE_LOGGING", "DISABLE_LOGGING", "TRUNCATE_DUCKDB_LOGS",
+      "ENABLE_PROFILING", "DISABLE_PROFILING",
   };
   return policy;
 }
@@ -125,6 +135,13 @@ std::string_view StatementKindName(DUCKDB_V2_STATEMENT_TYPE kind) {
 
 chargewire::Error ReadOnlyRefusal(std::string_view what) {
   return Error(ErrorCode::kReadOnly, std::string(what) + " is not allowed in a read-only session", "25006");
+}
+
+chargewire::Error ReadOnlyNotListed(std::string_view name) {
+  return Error(ErrorCode::kReadOnly,
+               std::string(name) + " is not on this server's list of what a read-only session may run: a read-only "
+                                   "session runs only the operations and table functions the server knows to read",
+               "25006");
 }
 
 bool SqlToken::Is(std::string_view word) const {

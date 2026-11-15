@@ -135,8 +135,13 @@ class DuckDBSession : public chargewire::EngineSession {
   // of them runs something. A statement is refused if it can name one in a way the screen
   // cannot follow (in a string), and the metadata listing does not bind them.
   std::set<std::string> unreadable_views_;
+  // The user's table macros that no table function shares its name with: the only table
+  // functions on no list that a statement may call (ReadOnlyReferences::unlisted_table_functions).
+  std::set<std::string> table_macros_;
   // Reads the definitions again if a catalog changed (ScreenReadOnly).
   void LoadReadOnlyDefinitions();
+  // Throws read_only for a table function on no list that is not one of table_macros_.
+  void RefuseUnlistedTableFunctions(const ReadOnlyReferences& screened) const;
   // Screens the definitions of everything `pending` names, and of what those name. Throws read_only.
   void FollowReadOnlyDefinitions(ReadOnlyReferences pending);
   // Read-only: whether DuckDB has a transaction open now. Only the adapter starts and ends

@@ -26,19 +26,47 @@
 // someone has decided that it only reads.
 //
 // What DuckDB does before the guard sees a plan is binding: it resolves names, expands views
-// and macros, evaluates the arguments of table functions, the value of a setting and the
-// parameters of a pragma (calling any function in them), and runs the bind step of each table
+// and macros, evaluates the arguments of table functions, the value of a setting, the
+// parameters of a pragma, the file name and the options of a COPY and the version or time a
+// table is read AT (calling any function in them), and runs the bind step of each table
 // function. No hook of DuckDB's comes before that, and what a function did there is done when
 // the plan is refused (a sequence advanced or set stays so). So before DuckDB binds a
-// statement of a read-only session, the parser's tree is screened (ScreenBeforeBinding): what
-// binding would evaluate (those, and the version or time a table is read AT) may hold values only, the table functions that take SQL text or a
-// table's name are refused by name, and the same holds for the definition of every view and
-// macro the statement reaches (DuckDBSession::ScreenReadOnly). A statement that DuckDB expands
-// by running a query first (a PIVOT whose values come from the data) is refused by its kind.
-// What is left of binding is the bind step of a table function called with plain values:
+// statement of a read-only session, the parser's tree is screened (ScreenBeforeBinding), and
+// the screen is an allow-list like everything else here:
+//   - it walks the whole statement itself, every kind of statement, query, table reference
+//     and expression by name, and refuses a kind it does not know how to walk. What stands
+//     under an EXPLAIN is walked as the statement it is: a query, a COPY to a file, a CALL or
+//     a setting. Every other kind is refused there, the ones that change a catalog (INSERT,
+//     UPDATE, DELETE, MERGE, also as the body of a CTE) and the ones a read-only session has
+//     no use for (PREPARE, EXECUTE, ATTACH, ...): nothing of them is bound;
+//   - what binding would evaluate may hold values only;
+//   - a table function is bound only when it is listed (table_functions,
+//     explained_table_functions) or is a table macro of a user's that the adapter has read
+//     the definition of: the bind step of any other never runs. That is what keeps out the
+//     functions that bind or run SQL the statement does not hold (query, query_table,
+//     json_execute_serialized_sql, the pass-through functions of other systems), which are
+//     refused by name besides;
+//   - a PRAGMA is bound only when it is listed (pragmas): DuckDB replaces some pragmas by
+//     the text of a statement that it then binds;
+//   - json_serialize_plan, a scalar function that binds SQL it is given as text, is refused
+//     by name;
+//   - the definitions of the views and macros a statement names, and of those these name,
+//     are screened the same way (DuckDBSession::ScreenReadOnly).
+// What the screen does not reach is a definition that DuckDB binds and the statement does
+// not lead to by a name the adapter has read: a view or macro the session's listing of
+// definitions does not show (hidden from the user by a server's access control, made or
+// granted after the adapter last read them where the catalog has no version to tell), a view
+// that a catalog function binds when it runs (CREATE VIEW ... WITH (DEFER_BINDING), read
+// through duckdb_columns()), a view named inside a string in a way the adapter does not
+// take apart, a macro's argument that its definition passes to a table function, and a
+// macro of a user's that DuckDB's own text binds in place of a function of the same name.
+// A read-only session can still advance a sequence through those.
+// A statement that DuckDB expands by running a query first (a PIVOT whose values come from
+// the data) is refused by its kind.
+// What is left of binding is the bind step of a listed table function called with plain
+// values, of a function DuckDB itself puts in place of a file's name, and of a COPY's format:
 // those of DuckDB and of the tested extensions change nothing (the tests assert that a
-// refused function left nothing changed); one of an extension that does would have done it
-// before the guard refuses the function.
+// refused function left nothing changed).
 //
 // A read-only session's transactions are ended by a rollback, never a commit: a reader has
 // nothing to commit, and DuckDB treats the commit of a READ ONLY transaction in which
@@ -92,6 +120,12 @@ struct ReadOnlyPolicy {
   // to read (DuckDBSession::set_read_only_policy, before the session becomes read-only).
   Names table_functions;
 
+  // Table functions that change something when they run and nothing when DuckDB binds them
+  // (upper case: CHECKPOINT). A statement that names one may be bound, so that a plain
+  // EXPLAIN shows its plan; the guard still refuses every plan that would run one. A table
+  // function on neither list is refused before DuckDB binds it.
+  Names explained_table_functions;
+
   // The lists this adapter ships.
   static ReadOnlyPolicy Default();
 };
@@ -102,6 +136,9 @@ std::string_view StatementKindName(DUCKDB_V2_STATEMENT_TYPE kind);
 // The read_only error (spec §11) for something a read-only session may not run. `what` is
 // a kind or a name the server chose ("COPY", "the table function X"), never the statement.
 chargewire::Error ReadOnlyRefusal(std::string_view what);
+
+// The read_only error for an operator or a table function that is on no list, by its name.
+chargewire::Error ReadOnlyNotListed(std::string_view name);
 
 // A statement's tokens from DuckDB's tokenizer, without comments and terminators.
 struct SqlToken {
@@ -149,27 +186,51 @@ class ReadOnlyGuard {
 // before anything is bound; no text is rewritten. Other statements are left alone.
 void ScopeSettingToSession(duckdb_v2_sql_statement_handle statement);
 
-// Refuses, before DuckDB binds anything of it, a statement with something that binding
-// itself would run and that is not a plain value: DuckDB evaluates the arguments of table
-// functions, the value of a setting and the parameters of a pragma while it binds, before a
-// plan exists for the guard to refuse, and calls any function in them. Also refused there:
-// the table functions that take SQL text or a table's name as their argument, since what they
-// make DuckDB bind is not in the statement. Throws read_only. Returns the names the
-// statement refers to (lower case), because DuckDB binds the definitions of the views and
-// macros among them with the statement: the adapter screens those definitions the same way
-// (a view's CREATE VIEW statement is accepted here for that).
+// Refuses, before DuckDB binds anything of it, a statement that binding itself would do
+// something with (the rules are at the top of this file). Throws read_only. Returns the
+// names the statement refers to (lower case), because DuckDB binds the definitions of the
+// views and macros among them with the statement: the adapter screens those definitions the
+// same way.
 struct ReadOnlyReferences {
   std::set<std::string> functions;  // every function called, table functions and macros among them
   std::set<std::string> relations;  // every table or view named
   std::set<std::string> evaluated;  // the functions called where DuckDB evaluates while binding
-  // Strings in what DuckDB evaluates while binding: each can name a table or view that DuckDB
+  // Names in what DuckDB evaluates while binding: each can name a table or view that DuckDB
   // then binds (a function that describes a table by its name), as written and without its
   // qualification. `computed_names`: such a string is not spelled out in the statement (a
   // bind parameter, a concatenation, a variable), so the statement can name anything.
   std::set<std::string> named;
   bool computed_names = false;
+  // The table functions called that are on neither list of the policy. One is bound only
+  // if it is a table macro whose definition the adapter has read (it then is in `functions`
+  // too, and followed): the adapter refuses the statement otherwise, before DuckDB binds it.
+  std::set<std::string> unlisted_table_functions;
 };
-ReadOnlyReferences ScreenBeforeBinding(duckdb_v2_sql_statement_handle statement);
+
+// What the screen holds a statement to, besides its own rules.
+struct ReadOnlyScreen {
+  const ReadOnlyPolicy* policy = nullptr;
+};
+
+// What is screened: a statement of the client's, or the definition of a view (its CREATE
+// VIEW statement) or of a macro (a query), which holds nothing but a query.
+enum class ReadOnlyScreened { kStatement, kDefinition };
+
+ReadOnlyReferences ScreenBeforeBinding(duckdb_v2_sql_statement_handle statement, const ReadOnlyScreen& screen,
+                                       ReadOnlyScreened what = ReadOnlyScreened::kStatement);
+
+// Whether DuckDB knows `name` (lower case) as a table function or pragma of an extension it
+// loads on demand: a table macro of that name need not be what a statement binds.
+bool ReadOnlyExtensionFunction(std::string_view name);
+
+// What DuckDB itself holds for a connection, whatever the adapter believes: whether a
+// transaction is open, and whether it has changed anything in any database (rows, the
+// catalog, a sequence's value, temporary objects too) or been told it will.
+struct ConnectionTransaction {
+  bool active = false;
+  bool changes = false;
+};
+ConnectionTransaction TransactionOf(duckdb_v2_connection_handle connection);
 
 // What changes whenever a view or macro is created, replaced or dropped in any DuckDB catalog
 // the connection sees, as its open transaction sees it: the catalogs with their versions.
