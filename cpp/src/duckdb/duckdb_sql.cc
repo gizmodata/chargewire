@@ -35,7 +35,13 @@ using QName = Owned<duckdb_v2_qname_handle, duckdb_v2_qname_destroy>;
 std::vector<SqlStatement> Parse(duckdb_v2_connection_handle connection, std::string_view sql) {
   const std::string text(sql);
   StatementIterator iterator;
-  Call([&](auto* err) { return duckdb_v2_parse_sql(connection, text.c_str(), iterator.out(), err); });
+  // A syntax error leaves an open transaction usable, as it did before DuckDB 2.0.1 added the
+  // choice: every statement of a request is parsed before any runs, so a request with a syntax
+  // error ran nothing, and this also parses statements only to inspect them (describe, the
+  // read-only screen) and must not end the caller's transaction.
+  Call([&](auto* err) {
+    return duckdb_v2_parse_sql(connection, text.c_str(), /*apply_invalidation_policy=*/false, iterator.out(), err);
+  });
   std::vector<SqlStatement> statements;
   for (;;) {
     SqlStatement statement;
