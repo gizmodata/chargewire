@@ -27,6 +27,14 @@ if [ -n "${CHARGEWIRE_DUCKDB_EXTENSION_CONFIGS:-}" ]; then
   EXTENSION_ARGS+=(-DDUCKDB_EXTENSION_CONFIGS="$CHARGEWIRE_DUCKDB_EXTENSION_CONFIGS")
 fi
 
+# CHARGEWIRE_DUCKDB_OPTIMIZATION_PROFILE: DuckDB's DUCKDB_OPTIMIZATION_PROFILE (CLI, EXTENSION
+# or NONE). Unset keeps DuckDB's default, CLI, which on Linux x86_64 with GCC or Clang compiles
+# for x86-64-v3 (AVX2); NONE builds for the compiler's baseline, for CPUs without AVX.
+PROFILE_ARGS=()
+if [ -n "${CHARGEWIRE_DUCKDB_OPTIMIZATION_PROFILE:-}" ]; then
+  PROFILE_ARGS+=(-DDUCKDB_OPTIMIZATION_PROFILE="$CHARGEWIRE_DUCKDB_OPTIMIZATION_PROFILE")
+fi
+
 mkdir -p "$DEPS"
 if [ ! -e "$SRC/.git" ]; then
   git clone --quiet --filter=blob:none https://github.com/duckdb/duckdb.git "$SRC"
@@ -44,7 +52,8 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
   -DBUILD_UNITTESTS=OFF \
   -DENABLE_SANITIZER=OFF \
   -DENABLE_UBSAN=OFF \
-  "${EXTENSION_ARGS[@]}"
+  "${EXTENSION_ARGS[@]}" \
+  ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"}
 cmake --build "$BUILD"
 cmake --install "$BUILD"
 # The v2 C API header isn't installed by DuckDB's install rules (2.0.0).

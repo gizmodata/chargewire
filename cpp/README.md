@@ -44,6 +44,19 @@ at run time. A server that wants more built in lists them in a CMake file of
 `duckdb_extension_load()` calls and names it in `CHARGEWIRE_DUCKDB_EXTENSION_CONFIGS`
 (several: `;`-separated) when it runs `build-duckdb.sh`.
 
+On Linux x86_64 (GCC or Clang), DuckDB's default optimization profile compiles for
+x86-64-v3 (AVX2), and Arrow's default SIMD level for SSE4.2 (x86-64-v2). For CPUs without
+them (conservative virtual CPU models such as QEMU's `kvm64`), build both for the
+compiler's baseline:
+
+```bash
+CHARGEWIRE_DUCKDB_OPTIMIZATION_PROFILE=NONE ./scripts/build-duckdb.sh
+CHARGEWIRE_ARROW_SIMD_LEVEL=NONE ./scripts/build-arrow.sh
+```
+
+Use a fresh build directory (or `CHARGEWIRE_DEPS_DIR`) for each target: the settings go
+into CMake's cache, and a build without them keeps whatever the cache holds.
+
 Windows (x64 and arm64) builds with MSVC from a Developer shell's Git Bash. DuckDB always
 builds with the static C runtime (/MT) there, so everything linked with it must too:
 build Arrow with `CMAKE_TOOLCHAIN_FILE` naming a file that sets

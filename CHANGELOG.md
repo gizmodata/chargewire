@@ -7,6 +7,14 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Added
+
+- **Build scripts: a CPU target for DuckDB and Arrow.** `CHARGEWIRE_DUCKDB_OPTIMIZATION_PROFILE`
+  sets DuckDB's `DUCKDB_OPTIMIZATION_PROFILE` (`cpp/scripts/build-duckdb.sh`) and
+  `CHARGEWIRE_ARROW_SIMD_LEVEL` Arrow's `ARROW_SIMD_LEVEL` (`cpp/scripts/build-arrow.sh`). Unset,
+  each keeps its default; on Linux x86_64 that is x86-64-v3 (AVX2) for DuckDB and x86-64-v2
+  (SSE4.2) for Arrow. `NONE` for both builds for any x86-64 CPU (gizmodata/hardcharger#62).
+
 ## [2.5.4] - 2026-11-15
 
 ### Fixed

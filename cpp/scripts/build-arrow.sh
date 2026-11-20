@@ -13,6 +13,14 @@ SRC="$DEPS/arrow"
 BUILD="$DEPS/arrow-build"
 PREFIX="$DEPS/arrow-install"
 
+# CHARGEWIRE_ARROW_SIMD_LEVEL: Arrow's ARROW_SIMD_LEVEL (DEFAULT, NONE, SSE4_2, AVX2, ...).
+# Unset keeps Arrow's default, which on x86 compiles everything for SSE4.2 (x86-64-v2); NONE
+# builds for the compiler's baseline. Code Arrow picks at run time by CPU is unaffected.
+SIMD_ARGS=()
+if [ -n "${CHARGEWIRE_ARROW_SIMD_LEVEL:-}" ]; then
+  SIMD_ARGS+=(-DARROW_SIMD_LEVEL="$CHARGEWIRE_ARROW_SIMD_LEVEL")
+fi
+
 mkdir -p "$DEPS"
 if [ ! -d "$SRC/.git" ]; then
   git clone --quiet --depth 1 --branch "$ARROW_TAG" https://github.com/apache/arrow.git "$SRC"
@@ -38,7 +46,8 @@ cmake -S "$SRC/cpp" -B "$BUILD" -G Ninja \
   -DARROW_JEMALLOC=OFF \
   -DARROW_MIMALLOC=OFF \
   -DARROW_BUILD_UTILITIES=OFF \
-  -DARROW_BUILD_TESTS=OFF
+  -DARROW_BUILD_TESTS=OFF \
+  ${SIMD_ARGS[@]+"${SIMD_ARGS[@]}"}
 cmake --build "$BUILD"
 cmake --install "$BUILD"
 
