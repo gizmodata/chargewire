@@ -15,6 +15,16 @@ spec's version is the repository's version.
   each keeps its default; on Linux x86_64 that is x86-64-v3 (AVX2) for DuckDB and x86-64-v2
   (SSE4.2) for Arrow. `NONE` for both builds for any x86-64 CPU (gizmodata/hardcharger#62).
 
+### Changed
+
+- **DuckDB v2.0.1.** `cpp/scripts/build-duckdb.sh` pins DuckDB's v2.0.1 release commit
+  (`8d78114e90`, the commit DuckDB's own v2.0.1 release build was made from) and reports
+  `v2.0.1`, so the reference server installs the extensions DuckDB publishes under
+  `extensions.duckdb.org/v2.0.1`. The binding-transaction recovery patch applies unchanged.
+  DuckDB 2.0.1's `duckdb_v2_parse_sql()` takes whether a syntax error ends the open
+  transaction; the adapter passes `false`, so a syntax error still leaves a transaction usable,
+  as with 2.0.0.
+
 ## [2.5.4] - 2026-11-15
 
 ### Fixed

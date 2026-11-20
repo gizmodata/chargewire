@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Builds libduckdb from DuckDB 2.0.0's release commit: the tip of DuckDB's release branch
-# (v2.0-cyanoptera) that DuckDB's own v2.0.0 release build (its Main workflow, run 49137)
-# was made from, so the extensions DuckDB publishes for v2.0.0 load into it.
+# Builds libduckdb from DuckDB 2.0.1's release commit: the v2.0.1 tag on DuckDB's release
+# branch (v2.0-cyanoptera), which DuckDB's own v2.0.1 release build was made from, so the
+# extensions DuckDB publishes for v2.0.1 load into it.
 set -euo pipefail
 
-DUCKDB_COMMIT=d54cbbe3df17e8e5ce68312f483b4155836112aa
+DUCKDB_COMMIT=8d78114e90a53823803660bf821f6073ac87da8c
 # The version DuckDB's own builds of this commit report (PRAGMA version). Extensions are
-# fetched by this string (extensions.duckdb.org/v2.0.0/<platform>/), so INSTALL finds the
-# published ones; a source build without it would say "v2.0.0-devN" and look for them
+# fetched by this string (extensions.duckdb.org/v2.0.1/<platform>/), so INSTALL finds the
+# published ones; a source build without it would say "v2.0.1-devN" and look for them
 # under the commit's hash, where DuckDB publishes none.
-DUCKDB_VERSION_NAME=v2.0.0
+DUCKDB_VERSION_NAME=v2.0.1
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # CHARGEWIRE_DEPS_DIR lets another project build these into its own directory.
@@ -56,7 +56,7 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
   ${PROFILE_ARGS[@]+"${PROFILE_ARGS[@]}"}
 cmake --build "$BUILD"
 cmake --install "$BUILD"
-# The v2 C API header isn't installed by DuckDB's install rules (2.0.0).
+# The v2 C API header isn't installed by DuckDB's install rules (2.0.1).
 cp "$SRC/src/include/duckdb_v2.h" "$PREFIX/include/"
 # DuckDB's internal headers, for the one file that needs them (src/duckdb/duckdb_read_only_guard.cc,
 # the guard of read-only sessions): duckdb.hpp and duckdb/, and the three vendored libraries
