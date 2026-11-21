@@ -260,6 +260,22 @@ struct ServerOptions {
   // passes a client's header on lets that client choose its address.
   std::vector<IpNetwork> trusted_proxies;
 
+  // A secret a reverse proxy adds to every request it forwards, for proxies whose address
+  // can't be trusted by itself (one sharing an address range with other workloads): a
+  // request that carries it in `trusted_proxy_secret_header` is read as from a trusted proxy
+  // (its forwarding headers name the client, as above), whatever its TCP peer. Compared in
+  // constant time; any one instance of the header matching is enough. The header is always
+  // removed from the request before anything sees it (handlers, application endpoints, a
+  // relay), matching or not, and never echoed or logged. Like trusted_proxies, it only
+  // describes the client: never authentication, authorization or TLS. Empty secret: no
+  // request is trusted this way (the header is still removed). Empty header: off.
+  std::string trusted_proxy_secret;
+  std::string trusted_proxy_secret_header;
+  // Told (on an I/O thread) the connection's address:port when a request carried the header
+  // and no instance of it matched: a proxy with a stale secret, or a client trying. Keep it
+  // short; never given the header's value.
+  std::function<void(const std::string& peer)> on_proxy_secret_mismatch;
+
   // Browser sign-in (spec §4.3, capability oauth_browser); null: not offered.
   std::shared_ptr<BrowserSignInProvider> browser_sign_in;
   // A flow is forgotten this long after it was created, finished or not.

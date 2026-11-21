@@ -9,6 +9,11 @@ Principal Authenticator::AuthenticatePassword(std::string_view, std::string_view
   throw Error(ErrorCode::kInvalidCredentials, "password sign-in is not enabled on this server");
 }
 
+Principal Authenticator::AuthenticatePassword(std::string_view username, std::string_view password,
+                                              const SignInContext&) {
+  return AuthenticatePassword(username, password);
+}
+
 Principal Authenticator::ExchangeToken(std::string_view) {
   throw Error(ErrorCode::kInvalidCredentials, "token exchange is not enabled on this server");
 }

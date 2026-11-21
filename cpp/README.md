@@ -165,11 +165,12 @@ error says which name was refused. A server that embeds the adapter adds the tab
 knows to read (`DuckDBSession::set_read_only_policy`, before the session becomes read-only).
 `chargewire-duckdb` itself has no setting to add names.
 
-Before DuckDB binds a statement, the adapter screens the parser's tree
-(`ScreenBeforeBinding`): binding itself evaluates the arguments of table functions, the value
-of a setting, the parameters of a pragma, the file name and the options of a `COPY` and the
-version or time a table is read `AT`, before any plan exists to refuse, and what a function
-did there is done (a sequence advanced or set stays so). The screen is an allow-list too:
+Read-only connections use DuckDB read-only transactions and enforce the table-function policy
+when DuckDB binds the query, including views and macros. Build the pinned DuckDB dependency
+with `scripts/build-duckdb.sh` to install the required hooks.
+
+The adapter screens the parser's tree of the client's own statement
+(`ScreenBeforeBinding`):
 
 - It walks the whole statement itself and decides for every kind of statement, query, table
   reference and expression by name; a kind it has no rule for is refused. What an `EXPLAIN`
@@ -179,31 +180,17 @@ did there is done (a sequence advanced or set stays so). The screen is an allow-
   the rest. Nothing of them is bound.
 - What binding would evaluate holds values only: constants, parameters, columns, casts,
   operators, lists and structs.
-- A table function is bound only when it is listed (`table_functions`, or
-  `explained_table_functions`: the ones that change something when they run and nothing when
-  they are bound, such as `checkpoint()`, which a plain `EXPLAIN` may show and no plan may
-  run) or is a table macro of a user's that the adapter has read the definition of. The bind
-  step of any other never runs. That keeps out the functions that bind or run SQL a statement
-  does not hold (`query()`, `query_table()`, `json_execute_serialized_sql()`, the pass-through
-  functions of attached systems), which are refused by name besides; a function that does
-  not exist is answered `read_only` like one that is not listed.
+- `query()`, `query_table()`, `json_execute_serialized_sql()` and the pass-through functions
+  of attached systems are refused by name, and so is `json_serialize_plan()`, a scalar
+  function that plans SQL it is given as text. A table function that DuckDB would install an
+  extension for is refused by name before DuckDB looks it up.
 - A `PRAGMA` is bound only when it is listed: DuckDB replaces some pragmas by the text of a
   statement, which it then binds.
-- `json_serialize_plan()`, a scalar function that plans SQL it is given as text, is refused
-  by name.
-- The definitions of the views and macros a statement names, and of those these name, are
-  screened the same way, whoever defined them. The adapter's own queries call DuckDB's
-  functions by their full names (`system.main.duckdb_views()`).
 
-What the screen does not reach is a definition that DuckDB binds and the statement does not
-lead the adapter to. A read-only session can still advance a sequence through: a view or
-macro that the session's listing of definitions does not show (hidden from the user by a
-server's access control, granted after the adapter last read the definitions, or created later
-in a catalog without a version, such as a DuckLake); a view created `WITH (DEFER_BINDING)`,
-which `duckdb_columns()` binds when it runs; a view with a dot in its name, quoted inside a
-string argument; a macro's argument that its definition passes to a table function; and a
-macro of a user's named like one of DuckDB's functions, which DuckDB's own text binds in its
-place. Each needs a view or macro that someone allowed to create one has made.
+No definition of a view or macro is read in advance, so nothing one user defines changes
+what another user's read-only session is answered, and no statement pays for a listing. The
+adapter's own queries call DuckDB's functions by their full names
+(`system.main.duckdb_sequences()`).
 
 A prepared statement (spec §7) is planned, checked and run anew at each execution in a
 read-only session, so it resolves names as the session stands then, and DuckDB keeps no plan
@@ -213,8 +200,7 @@ and by what DuckDB itself holds (a transaction that has changed something), so n
 sent between the work and the switch makes the adapter lose sight of it. The cost
 of all of this is the screen, the guard's walk over the plan and the transaction around each
 statement: about 0.05 ms a statement on a laptop, for trivial and for wide queries alike (the
-first statement after a view or macro changed anywhere that names a function or a relation
-reads the definitions again, about 5 ms).
+hook before a table function's bind is one pointer test for every session).
 
 The guard is the one file that uses DuckDB's internal headers (`src/duckdb/duckdb_read_only_guard.cc`):
 the v2 C API shows nothing of a bound statement and cannot run one that was inspected.
@@ -228,10 +214,10 @@ patch or replace an existing library.
 > does not see what a *scalar* function does, except that DuckDB's planner says which catalogs
 > a statement modifies (so `nextval` is refused). DuckDB's `write_log()`, and a scalar
 > function of an extension that an administrator installed and that writes or sends something
-> on its own, are not refused. DuckDB also runs the bind step of a table function before the
-> guard sees a plan: only listed functions get that far (and the one DuckDB puts in place of
-> a file's name, and a `COPY`'s format under an `EXPLAIN`), and those of DuckDB and of the
-> extensions the tests cover change nothing there. Read-only says nothing about what a session may read or which hosts a query may
+> on its own, are not refused. DuckDB runs the bind step of a table function before the
+> guard sees a plan: only listed functions get that far (and a `COPY`'s format under an
+> `EXPLAIN`), and those of DuckDB and of the extensions the tests cover change nothing
+> there. Read-only says nothing about what a session may read or which hosts a query may
 > contact (that is access control), and an extension that DuckDB loads on demand for a query
 > is loaded for a read-only session too.
 

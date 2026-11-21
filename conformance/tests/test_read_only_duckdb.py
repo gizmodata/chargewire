@@ -79,6 +79,16 @@ def answer_of(chargewire, session_id: str, sql: str) -> tuple:
     return response.status_code, response.json()["code"]
 
 
+def kept_out_when_prepared(chargewire, session_id: str, sql: str) -> None:
+    """A statement that a read-only session may not run, prepared: refused then, or accepted
+    (DuckDB binds nothing of the definition it names to describe it) and refused when it is
+    executed, as every execution of a prepared statement is checked."""
+    response = prepare(chargewire, session_id, sql)
+    if response.status_code == 201:
+        response = execute_prepared(chargewire, session_id, response.json()["prepared_id"])
+    assert_problem(response=response, status=403, code="read_only")
+
+
 def logging_is_on(chargewire, session_id: str) -> bool:
     return bool(one(chargewire, session_id, "SELECT current_setting('enable_logging')::BOOLEAN"))
 
@@ -413,8 +423,7 @@ def test_what_duckdb_evaluates_while_it_binds_holds_plain_values_only(chargewire
 # The server now walks every kind of statement itself and refuses a kind it has no rule for,
 # binds a table function or a pragma only when it is listed, and every one of these is refused
 # before DuckDB binds anything of it.
-# (Not here, and not closed by this: what DuckDB binds through a view or macro that the
-# statement does not lead the server to. See duckdb_read_only.hpp.)
+# (What DuckDB binds through a view or macro, whoever wrote it: the tests after these.)
 
 
 def bound_under_another_statement(seq: str, t: str, pv: str, tmp: str, n: str) -> list[str]:
@@ -446,7 +455,7 @@ def bound_under_another_statement(seq: str, t: str, pv: str, tmp: str, n: str) -
         f"SELECT (SELECT json_serialize_plan('SELECT * FROM range(setval(''{seq}'', 9))'))",
         # functions and pragmas that are on no list are not bound at all: their bind step is theirs to write
         "PRAGMA tpch(1)", f"PRAGMA import_database('{tmp}')", "PRAGMA copy_database('memory', 'memory')", "PRAGMA ro_no_such_pragma",
-        "SELECT * FROM ro_no_such_function()", "SELECT * FROM arrow_scan(0, 0, 0)", "SELECT * FROM tpch_queries()",
+        "SELECT * FROM test_vector_types(NULL::INTEGER)", "SELECT * FROM tpch_queries()",
         "SELECT * FROM postgres_query('ro_no_such_database', 'SELECT 1')", "EXPLAIN SELECT * FROM sqlite_query('x', 'SELECT 1')",
         "EXPLAIN PRAGMA table_info('x')", "EXPLAIN LOAD tpch", "EXPLAIN VACUUM", "EXPLAIN BEGIN", f"EXPLAIN DROP TABLE {t}",
         f"EXPLAIN ALTER TABLE {t} ALTER COLUMN id SET DEFAULT nextval('{seq}')",
@@ -481,6 +490,9 @@ def test_what_duckdb_binds_under_another_statement_is_refused_before_it_is_bound
             # Preparing a statement describes it, and describing binds it: never executed, same refusal.
             assert_problem(response=prepare(chargewire, ro, sql), status=403, code="read_only")
             assert sequence_state(chargewire, duck, seq) == before, "prepare " + sql
+        # A table function that does not exist is DuckDB's to say (the server refuses a function
+        # that is on none of its lists when DuckDB comes to bind it, wherever the call stands).
+        assert_problem(response=chargewire.submit(session_id=ro, sql="SELECT * FROM ro_no_such_function()"), status=400, code="sql_error")
     assert sorted(os.listdir(tmp_path)) == []
     assert one(chargewire, duck, f"SELECT nextval('{seq}')") == (before or 0) + 1  # what a writer gets next: nothing moved it
 
@@ -587,6 +599,153 @@ def test_a_statement_prepared_in_sql_before_the_switch_is_not_reached_through_ex
         chargewire.http.delete(url=chargewire.session_url(sid), headers=chargewire.headers())
 
 
+# What DuckDB binds that no statement shows: the definitions of views and macros, whoever
+# wrote them and whether or not the session's own listing shows them, and views that a
+# catalog function binds only when it runs. An earlier server read the definitions it could
+# list before it bound a statement and refused what it found there; DuckDB bound more than
+# that list held, and a read-only session moved a sequence through:
+#   - a view created WITH (DEFER_BINDING), bound by duckdb_columns() when it runs
+#     (information_schema.columns, SHOW ALL TABLES, DESCRIBE, the server's table listing);
+#   - a view with a dot in its name, quoted inside a string argument;
+#   - a view or macro made in a DuckLake after the session's first statement;
+#   - a macro's argument that its definition passes to a table function;
+#   - a view named as a column (histogram(view, column)).
+# Now nothing is listed in advance. DuckDB itself refuses a sequence's use in a read-only
+# session's transaction where it happens, and asks the server before the bind step of any
+# table function, so each of these changes nothing however the definition is reached; and
+# no view or macro of anyone's changes what another statement is answered.
+
+
+@pytest.fixture
+def bound_later(chargewire, duck, table, made):
+    """Views and macros whose definitions would advance or set the sequence, or call a table
+    function a read-only session may not: each reached in a way no listing foresees."""
+    n, seq = name("ro_later"), name("ro_seq")
+    succeeded(chargewire, duck, f"CREATE SEQUENCE {seq}")
+    made("VIEW", f'"{n}.bad"', f"CREATE VIEW \"{n}.bad\" AS SELECT * FROM range(nextval('{seq}'))")  # (creating it binds it once)
+    made("VIEW", f'"{n}.good"', f'CREATE VIEW "{n}.good" AS SELECT id FROM {table} WHERE id > 1')
+    made("VIEW", f"{n}_bad", f"CREATE VIEW {n}_bad AS SELECT * FROM range(setval('{seq}', 7))")
+    made("VIEW", f"{n}_runs_sql", f"CREATE VIEW {n}_runs_sql AS SELECT * FROM query('SELECT 42 AS x')")
+    made("MACRO", f"{n}_series", f"CREATE MACRO {n}_series(k) AS (SELECT count(*) FROM range(k))")
+    made("MACRO", f"{n}_twice", f"CREATE MACRO {n}_twice(k) AS {n}_series(k) + 1")
+    made("MACRO", f"{n}_rows", f"CREATE MACRO {n}_rows(p) AS (SELECT count(*) FROM read_csv(p))")
+    return n, seq
+
+
+def test_a_view_bound_only_when_a_catalog_function_runs_changes_nothing(chargewire, duck, ro, table, bound_later, made):
+    # (Not inside the usual snapshot: taking it lists the catalog in a read-write session,
+    # which binds the deferred views itself, once and for every session. The sequence is read
+    # through DuckDB's function for sequences, which binds no view.)
+    n, seq = bound_later
+    made("VIEW", f"{n}_deferred", f"CREATE VIEW {n}_deferred WITH (DEFER_BINDING) AS SELECT * FROM range(nextval('{seq}'))")
+    made("VIEW", f"{n}_deferred_set", f"CREATE VIEW {n}_deferred_set WITH (DEFER_BINDING) AS SELECT * FROM range(setval('{seq}', 4242))")
+    before = sequence_state(chargewire, duck, seq)
+    # Each of these answers, as it does when no such view exists: DuckDB leaves a view it
+    # cannot bind for the reader without columns, and nothing has moved.
+    for sql in ("SELECT count(*) FROM information_schema.columns", "SHOW ALL TABLES", "DESCRIBE", "SELECT count(*) FROM duckdb_columns()",
+                f"SELECT count(*) FROM information_schema.columns WHERE table_name = '{n}_deferred'"):
+        assert answer_of(chargewire, ro, sql)[0] == 200, sql
+        assert sequence_state(chargewire, duck, seq) == before, sql
+        assert prepare(chargewire, ro, sql).status_code == 201, sql
+        assert sequence_state(chargewire, duck, seq) == before, "prepare " + sql
+    listed = listed_columns(chargewire, ro, table_name_filter_pattern=f"{n}%")  # the server's own table listing, with schemas
+    assert listed[f"{n}_deferred"] == [] and listed[f"{n}_deferred_set"] == [] and listed[f"{n}.good"] == ["id"], listed
+    assert sequence_state(chargewire, duck, seq) == before
+    # Read by name, the view is refused.
+    for sql in (f"SELECT * FROM {n}_deferred", f"SELECT * FROM {n}_deferred_set", f"DESCRIBE SELECT * FROM {n}_deferred"):
+        refused(chargewire, ro, sql)
+        kept_out_when_prepared(chargewire, ro, sql)
+    assert sequence_state(chargewire, duck, seq) == before
+    assert rows(chargewire, duck, f"SELECT count(*) AS n FROM {table}") == [{"n": 3}]
+    # The twin: a read-write session's listing binds the deferred views, and that moves the sequence.
+    assert answer_of(chargewire, duck, "SELECT count(*) FROM information_schema.columns")[0] == 200
+    assert sequence_state(chargewire, duck, seq) != before
+
+
+def test_a_view_named_inside_a_string_changes_nothing(chargewire, duck, ro, table, bound_later, unchanged):
+    n, seq = bound_later
+    before = sequence_state(chargewire, duck, seq)
+    with unchanged(subject=ro, tables=[table]):
+        for sql in (f"""SELECT * FROM pragma_table_info('"{n}.bad"')""", f"""PRAGMA table_info('"{n}.bad"')""",
+                    f"""SELECT count(*) FROM pragma_table_info('main."{n}.bad"')""", f"""SELECT * FROM pragma_table_info('"{n}' || '.bad"')""",
+                    f"SELECT * FROM histogram({n}_bad, range)", f"SELECT * FROM histogram_values({n}_bad, range)"):
+            refused(chargewire, ro, sql)
+            assert sequence_state(chargewire, duck, seq) == before, sql
+            kept_out_when_prepared(chargewire, ro, sql)
+            assert sequence_state(chargewire, duck, seq) == before, "prepare " + sql
+        refused(chargewire, ro, "SELECT * FROM pragma_table_info(?)", [f'"{n}.bad"'])
+        assert sequence_state(chargewire, duck, seq) == before
+        # The twins: the same functions over a view that only reads, named the same ways.
+        assert rows(chargewire, ro, f"""SELECT name FROM pragma_table_info('"{n}.good"')""") == [{"name": "id"}]
+        assert rows(chargewire, ro, "SELECT name FROM pragma_table_info(?)", [f'"{n}.good"']) == [{"name": "id"}]
+        assert rows(chargewire, ro, f"""SELECT name FROM pragma_table_info('"{n}' || '.good"')""") == [{"name": "id"}]
+        assert answer_of(chargewire, ro, f"SELECT * FROM histogram({table}, id)")[0] == 200
+    assert answer_of(chargewire, duck, f"""SELECT * FROM pragma_table_info('"{n}.bad"')""")[0] == 200  # a read-write session binds it
+    assert sequence_state(chargewire, duck, seq) != before
+
+
+def test_what_a_macro_or_view_of_someone_elses_binds_changes_nothing(chargewire, duck, ro, table, bound_later, tmp_path, unchanged,
+                                                                    logging_stays_off):
+    n, seq = bound_later
+    before = sequence_state(chargewire, duck, seq)
+    with unchanged(subject=ro, tables=[table]):
+        for sql in (f"SELECT {n}_series(nextval('{seq}'))", f"SELECT {n}_series(setval('{seq}', 500))", f"SELECT {n}_twice(nextval('{seq}'))",
+                    f"SELECT * FROM {table} WHERE id < {n}_series(nextval('{seq}'))", f"SELECT {n}_series(k := nextval('{seq}'))",
+                    f"SELECT {n}_rows('{tmp_path}/never' || nextval('{seq}') || '.csv')", f"EXPLAIN SELECT {n}_series(nextval('{seq}'))",
+                    # a table function a read-only session may not call, in a view: refused when DuckDB comes to bind it
+                    f"SELECT * FROM {n}_runs_sql", f"EXPLAIN SELECT * FROM {n}_runs_sql", f"SELECT count(*) FROM {table}, {n}_runs_sql"):
+            refused(chargewire, ro, sql)
+            assert sequence_state(chargewire, duck, seq) == before, sql
+            kept_out_when_prepared(chargewire, ro, sql)
+            assert sequence_state(chargewire, duck, seq) == before, "prepare " + sql
+        # The twins: the macros take what does not change anything, a function call included
+        # (an earlier server could not tell, and a later one refused every function there).
+        assert rows(chargewire, ro, f"SELECT {n}_series(3) AS a, {n}_series(1 + 2) AS b, {n}_twice(3) AS c, {n}_series(length('abc')) AS d") == \
+            [{"a": 3, "b": 3, "c": 4, "d": 3}]
+        assert rows(chargewire, ro, f"SELECT {n}_series(?) AS a", [4]) == [{"a": 4}]
+        assert rows(chargewire, ro, f"SELECT id, {n}_series(id) AS a FROM {table} ORDER BY id") == [{"id": 1, "a": 1}, {"id": 2, "a": 2}, {"id": 3, "a": 3}]
+        # And none of these views and macros changes what a statement that does not reach them
+        # is answered: a computed argument, a bind parameter, a lateral unnest.
+        assert rows(chargewire, ro, "SELECT count(*) AS n FROM range(?)", [3]) == [{"n": 3}]
+        assert rows(chargewire, ro, f"SELECT count(*) AS n FROM pragma_table_info('{table}' || '')") == [{"n": 2}]
+        assert rows(chargewire, ro, f"SELECT count(*) AS n FROM {table}") == [{"n": 3}]
+    assert sequence_state(chargewire, duck, seq) == before
+    assert answer_of(chargewire, duck, f"SELECT {n}_series(nextval('{seq}'))")[0] == 200  # a read-write session: the sequence moves
+    assert sequence_state(chargewire, duck, seq) != before
+
+
+def test_a_view_named_like_one_of_duckdbs_own_stops_nobody(chargewire, duck, ro, table, made, unchanged):
+    # `tables`, `columns`, `views` are views of DuckDB's own (information_schema), and names a
+    # schema of someone's metadata has too. A server that refused every statement of every
+    # read-only session while such a view had a definition its screen would not pass let
+    # anyone who may create a view stop everyone else's readers. A view is only ever what a
+    # statement that names it binds.
+    schema = name("ro_meta")
+    succeeded(chargewire, duck, f"CREATE SCHEMA {schema}")
+    reader = chargewire.new_session(options={"read_only": True})
+    try:
+        assert rows(chargewire, reader, "SELECT 1 AS one") == [{"one": 1}]
+        for view in ("tables", "columns", "views"):
+            made("VIEW", f"{schema}.{view}", f"CREATE VIEW {schema}.{view} AS SELECT * FROM unnest(string_split('a,b', ','))")
+        late = chargewire.new_session(options={"read_only": True})  # a session made while the views exist
+        with unchanged(tables=[table]):
+            for sid in (reader, ro, late):
+                for sql in ("SELECT 1", f"SELECT count(*) FROM {table}", "SHOW TABLES", "SELECT count(*) FROM information_schema.tables",
+                            "SELECT count(*) FROM information_schema.columns", f"PRAGMA table_info('{table}')", "SELECT count(*) FROM range(3)",
+                            "EXPLAIN SELECT 1"):
+                    assert answer_of(chargewire, sid, sql)[0] == 200, sql
+                assert rows(chargewire, sid, "SELECT count(*) AS n FROM range(?)", [2]) == [{"n": 2}]
+                assert prepare(chargewire, sid, f"SELECT count(*) FROM {table}").status_code == 201
+                for path in ("tables", "catalogs", "db-schemas"):
+                    response = chargewire.http.get(url=f"{chargewire.session_url(sid)}/metadata/{path}", headers=chargewire.headers())
+                    assert response.status_code == 200, (path, response.text)
+                # The view itself is read like any other (its definition changes nothing).
+                assert rows(chargewire, sid, f"SELECT count(*) AS n FROM {schema}.tables") == [{"n": 2}]
+        chargewire.http.delete(url=chargewire.session_url(late), headers=chargewire.headers())
+    finally:
+        chargewire.http.delete(url=chargewire.session_url(reader), headers=chargewire.headers())
+
+
 def test_a_time_travel_clause_holds_plain_values_only(chargewire, duck, ro, table, unchanged):
     seq = name("ro_seq")
     succeeded(chargewire, duck, f"CREATE SEQUENCE {seq}")
@@ -636,7 +795,7 @@ def test_views_and_macros_are_screened_with_the_statement_that_reaches_them(char
                 f"SELECT * FROM {n}_bad_view", f"SELECT * FROM memory.main.{n}_bad_view", f'SELECT * FROM "{n.upper()}_BAD_VIEW"', f"FROM {n}_bad_view",
                 f"TABLE {n}_bad_view", f"SELECT * FROM {n}_bad_over", f"SELECT * FROM {n}_bad_over_over", f"SELECT * FROM {n}_bad_join",
                 f"SELECT * FROM {n}_bad_set", f"SELECT count(*) FROM {table} WHERE id IN (SELECT * FROM {n}_bad_view)",
-                f"SELECT (SELECT count(*) FROM {n}_bad_view)", f"WITH c AS (SELECT * FROM {n}_bad_view) SELECT 1",
+                f"SELECT (SELECT count(*) FROM {n}_bad_view)", f"WITH c AS (SELECT * FROM {n}_bad_view) SELECT count(*) FROM c",
                 f"SELECT * FROM {table} a LEFT JOIN {n}_bad_view b ON true", f"EXPLAIN SELECT * FROM {n}_bad_view", f"DESCRIBE {n}_bad_view",
                 f"DESCRIBE TABLE {n}_bad_view", f"DESCRIBE SELECT * FROM {n}_bad_view", f"SUMMARIZE {n}_bad_view",
                 f"SET VARIABLE ro_x = (SELECT count(*) FROM {n}_bad_view)",
@@ -748,12 +907,17 @@ def test_a_view_that_does_not_pass_the_screen_is_caught_however_it_is_named(char
                     f"PRAGMA table_info('{n}_bad')", f"PRAGMA table_info('main.{n}_bad')", f"SELECT count(*) FROM pragma_table_info('{n}_bad')",
                     f"SELECT count(*) FROM pragma_table_info('main.{n}_bad')", f"SELECT count(*) FROM pragma_table_info('memory.main.{n}_bad')",
                     f"SELECT (SELECT count(*) FROM pragma_table_info('{n}_bad'))", f"SELECT count(*) FROM pragma_table_info('{n.upper()}_BAD')",
-                    f"SELECT count(*) FROM pragma_table_info('{n}' || '_bad')", f"DESCRIBE {n}_bad", f"SUMMARIZE {n}_bad", *computed):
+                    f"SELECT count(*) FROM pragma_table_info('{n}' || '_bad')", f"DESCRIBE {n}_bad", f"SUMMARIZE {n}_bad"):
             refused(chargewire, ro, sql)
         refused(chargewire, ro, with_parameter, [f"{n}_bad"])
-        refused(chargewire, ro, with_parameter, [f"{n}_good"])  # a name the server cannot see, while a view is unreadable
+        # A computed name is a name like another, whatever views there are: one that names
+        # the good view is answered (an earlier server refused every computed name while a
+        # view existed that it would not bind, anyone's view).
+        for sql in computed:
+            assert rows(chargewire, ro, sql) == [{"n": 1}]
+        assert rows(chargewire, ro, with_parameter, [f"{n}_good"]) == [{"n": 1}]
         for sql in (f"SHOW {n}_bad", f"SELECT * FROM pragma_table_info('{n}_bad')"):
-            assert_problem(response=prepare(chargewire, ro, sql), status=403, code="read_only")
+            kept_out_when_prepared(chargewire, ro, sql)
         # The schema listing binds every view to describe it: an unreadable one is listed without
         # columns. (The test's own views: the server has every other test's too.)
         for params in ({"table_name_filter_pattern": f"{n}%"}, {"include_schema": "true", "table_name_filter_pattern": f"{n}%"},
@@ -816,10 +980,13 @@ def test_the_schema_listing_is_answered_whatever_views_there_are(chargewire, duc
     assert listed_columns(chargewire, duck, table_name_filter_pattern=f"{n}%")[f"{n}_unreadable"] == ["range"]
 
 
-def test_a_macro_named_like_a_function_evaluated_while_binding_is_refused(chargewire, duck, ro, made, unchanged):
+def test_a_macro_named_like_a_function_changes_nothing_through_a_read_only_session(chargewire, duck, ro, made, unchanged):
     # A function called where DuckDB evaluates while binding is on the server's short list of
-    # ones that only compute. A macro of the same name, in any schema, could be what DuckDB
-    # calls there instead: while one exists, such a statement is refused.
+    # ones that only compute, and a macro of the same name could be what DuckDB calls there
+    # instead. Whatever DuckDB binds, a sequence does not move in a read-only session: a macro
+    # of that name in a schema the statement does not reach changes nothing for anyone (an
+    # earlier server refused such statements for every reader while the macro existed), and
+    # one DuckDB does bind is refused where it would advance the sequence.
     schema, seq = name("ro_shadows"), name("ro_seq")
     succeeded(chargewire, duck, f"CREATE SEQUENCE {seq}")
     succeeded(chargewire, duck, f"CREATE SCHEMA {schema}")
@@ -831,9 +998,13 @@ def test_a_macro_named_like_a_function_evaluated_while_binding_is_refused(charge
     for signature in ("to_days(x)", "list_value(x, y)", "abs(x)"):
         made("MACRO", f"{schema}.{signature.split('(')[0]}", f"CREATE MACRO {schema}.{signature} AS nextval('{seq}')")
     with unchanged(subject=ro):
-        for sql in statements:
-            refused(chargewire, ro, sql)
-        assert rows(chargewire, ro, "SELECT abs(-3) AS a, [1, 2] AS l") == [{"a": 3, "l": [1, 2]}]  # where the plan decides, no name is refused
+        for sql in statements:  # in a schema of its own, the macro is not what these bind
+            assert chargewire.submit(session_id=ro, sql=sql).status_code in (200, 201), sql
+        assert rows(chargewire, ro, "SELECT abs(-3) AS a, [1, 2] AS l") == [{"a": 3, "l": [1, 2]}]
+        # Named so that DuckDB binds it: refused where it would advance the sequence.
+        refused(chargewire, ro, f"SELECT * FROM range({schema}.abs(-3))")
+        refused(chargewire, ro, f"SELECT {schema}.abs(-3)")
+        kept_out_when_prepared(chargewire, ro, f"SELECT {schema}.abs(-3)")
     for function in ("to_days", "list_value", "abs"):
         succeeded(chargewire, duck, f"DROP MACRO {schema}.{function}")
     for sql in statements:
@@ -1953,9 +2124,10 @@ def test_preparing_a_statement_neither_changes_anything_nor_takes_the_server_dow
         with Unchanged(chargewire=chargewire, observer=watcher, subject=reader, tables=["t"], home=server.home):
             for _ in range(3):
                 for sql in ("SELECT * FROM range(nextval('ro_seq'))", "SELECT * FROM ro_bad_view", "SELECT * FROM t AT (VERSION => nextval('ro_seq'))",
-                            "SELECT * FROM range(nextval('ro_seq')) WHERE ? = 1", "SET progress_bar_time = nextval('ro_seq')", "SHOW ro_bad_view",
-                            "SELECT * FROM pragma_table_info('ro_bad_view')"):
+                            "SELECT * FROM range(nextval('ro_seq')) WHERE ? = 1", "SET progress_bar_time = nextval('ro_seq')"):
                     assert_problem(response=prepare(chargewire, reader, sql), status=403, code="read_only")
+                for sql in ("SHOW ro_bad_view", "SELECT * FROM pragma_table_info('ro_bad_view')"):
+                    kept_out_when_prepared(chargewire, reader, sql)
                 refused(chargewire, reader, "SELECT * FROM range(nextval('ro_seq'))")
                 succeeded(chargewire, reader, "BEGIN")
                 refused(chargewire, reader, "SELECT * FROM ro_bad_view")
@@ -2045,6 +2217,49 @@ def test_an_attached_sqlite_database_is_read_and_not_written(chargewire, duck, r
     assert connection.execute("SELECT id, v FROM st ORDER BY id ASC").fetchall() == [(1, "a"), (3, "twin")]
     assert [r[0] for r in connection.execute("SELECT name FROM sqlite_master")] == ["st"]
     connection.close()
+
+
+@pytest.mark.duckdb_extensions
+def test_a_view_or_macro_made_in_a_lake_after_the_sessions_first_statement_changes_nothing(chargewire, duck, tmp_path, load):
+    # A lake's catalog has no version the server could watch, so an earlier server, which read
+    # the definitions of views and macros in advance, did not see what a writer made in a lake
+    # after a reader's first statement: the reader's SELECT of a new lake view over
+    # range(nextval(...)) moved the sequence. Nothing is read in advance now.
+    lake, seq = name("ro_lake"), name("ro_seq")
+    load("ducklake")
+    succeeded(chargewire, duck, f"CREATE SEQUENCE {seq}")
+    succeeded(chargewire, duck, f"ATTACH 'ducklake:{tmp_path}/lake.ducklake' AS {lake} (DATA_PATH '{tmp_path}/lake_data')")
+    reader = chargewire.new_session(options={"read_only": True})
+    try:
+        succeeded(chargewire, duck, f"CREATE TABLE {lake}.lt AS SELECT 1 AS id")
+        assert rows(chargewire, reader, f"SELECT count(*) AS n FROM {lake}.lt") == [{"n": 1}]  # the reader's first statements
+        # Made now, by the writer. A view over the sequence of another database: DuckDB binds
+        # the view to create it, and the sequence's use is a write of a second database, which
+        # DuckDB refuses (so such a view cannot be made any more); if a later DuckDB lets it be
+        # made, the reader is refused all the same.
+        made_views = []
+        for view, definition in (("lv_seq", f"SELECT * FROM range(nextval('memory.main.{seq}'))"), ("lv_sql", "SELECT * FROM query('SELECT 42 AS x')"),
+                                 ("lv_good", f"SELECT id FROM {lake}.lt")):
+            if chargewire.submit(session_id=duck, sql=f"CREATE VIEW {lake}.{view} AS {definition}").status_code in (200, 201):
+                made_views.append(view)
+        assert "lv_sql" in made_views and "lv_good" in made_views, made_views
+        made_macro = chargewire.submit(session_id=duck, sql=f"CREATE MACRO {lake}.lm() AS TABLE SELECT * FROM query('SELECT 42 AS x')").status_code in (200, 201)
+        before = sequence_state(chargewire, duck, seq)
+        for sql in [f"SELECT * FROM {lake}.{view}" for view in made_views if view != "lv_good"] + ([f"SELECT * FROM {lake}.lm()"] if made_macro else []):
+            for _ in range(2):  # the first read of it, and one after the server has seen it
+                refused(chargewire, reader, sql)
+                kept_out_when_prepared(chargewire, reader, sql)
+            assert sequence_state(chargewire, duck, seq) == before, sql
+        late = chargewire.new_session(options={"read_only": True})
+        refused(chargewire, late, f"SELECT * FROM {lake}.lv_sql")
+        chargewire.http.delete(url=chargewire.session_url(late), headers=chargewire.headers())
+        # The twins: a lake view that only reads, made just as late, is read; and the writer reads the refused one.
+        assert rows(chargewire, reader, f"SELECT id FROM {lake}.lv_good") == [{"id": 1}]
+        assert rows(chargewire, duck, f"SELECT x FROM {lake}.lv_sql") == [{"x": 42}]
+        assert sequence_state(chargewire, duck, seq) == before
+    finally:
+        chargewire.http.delete(url=chargewire.session_url(reader), headers=chargewire.headers())
+        succeeded(chargewire, duck, f"DETACH {lake}")
 
 
 @pytest.mark.duckdb_extensions

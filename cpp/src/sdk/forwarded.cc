@@ -1,5 +1,7 @@
 #include "forwarded.hpp"
 
+#include <openssl/crypto.h>
+
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -7,6 +9,8 @@
 #include <functional>
 #include <map>
 #include <stdexcept>
+
+#include "ids.hpp"
 
 namespace chargewire::detail {
 
@@ -292,6 +296,24 @@ std::optional<std::string> ForwardedClient(const http::fields& headers, const st
   const auto forwarded = Values(headers, "Forwarded");
   if (!forwarded.empty()) return FromForwarded(forwarded, trusted);
   return std::nullopt;
+}
+
+bool TakeProxySecret(http::fields& headers, const ProxySecret& secret, const std::string& peer) {
+  if (secret.header.empty()) return false;
+  bool present = false;
+  bool matched = false;
+  for (auto it = headers.find(secret.header); it != headers.end(); it = headers.find(secret.header)) {
+    present = true;
+    // Compared as SHA-256 digests with CRYPTO_memcmp: the time taken says nothing about the
+    // secret's length or where a guess differs.
+    const std::string given = Sha256Hex(it->value());
+    const bool equal = secret.secret_sha256.size() == given.size() &&
+                       CRYPTO_memcmp(given.data(), secret.secret_sha256.data(), given.size()) == 0;
+    matched = matched || equal;
+    headers.erase(it);
+  }
+  if (present && !matched && secret.on_mismatch) secret.on_mismatch(peer);
+  return matched;
 }
 
 std::string PeerHost(std::string_view peer) {

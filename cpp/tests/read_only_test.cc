@@ -36,6 +36,8 @@ struct Seen {
   bool option_passed = false;   // `read_only` reached OpenSession() or SetOptions()
   json::object last_options;    // what SetOptions() last got
   std::atomic<bool> refuse{false};  // SetReadOnly() throws, as with a transaction open
+  std::atomic<bool> refuse_ingest{false};  // OpeningIngest() throws
+  int ingests_opened = 0;                  // OpeningIngest() calls
   std::vector<std::string> calls;   // Execute(), SetReadOnly() and SetOptions(), in the order the engine got them
   bool hold = false;                // Execute() does not return while this is set
   std::condition_variable changed;  // a call was recorded, or `hold` was cleared
@@ -82,6 +84,13 @@ class RecordingSession : public chargewire::EngineSession {
   int64_t Ingest(const chargewire::IngestTarget&, std::shared_ptr<arrow::RecordBatchReader>) override {
     std::lock_guard lock(seen_->mutex);
     return seen_->ingests++;
+  }
+  void OpeningIngest(const chargewire::IngestTarget& target) override {
+    std::lock_guard lock(seen_->mutex);
+    seen_->ingests_opened++;
+    if (seen_->refuse_ingest) {
+      throw Error(ErrorCode::kPermissionDenied, "this session may not ingest into " + target.table, "42501");
+    }
   }
 
  private:
@@ -348,6 +357,25 @@ TEST_F(ReadOnlyOption, BulkIngestIsRefusedBeforeTheEngineIsCalled) {
   EXPECT_EQ(partitioned.status, 403) << partitioned.body;
   EXPECT_EQ(CodeOf(partitioned), "read_only");
   std::lock_guard lock(seen_->mutex);
+  EXPECT_EQ(seen_->ingests, 0);
+}
+
+TEST_F(ReadOnlyOption, TheEngineMayRefuseToOpenAPartitionedIngest) {
+  Start(true);
+  const Answer created = Create("{}");
+  ASSERT_EQ(created.status, 201) << created.body;
+  const std::string session = SessionOf(created);
+  seen_->refuse_ingest = true;
+  const Answer refused = wire_.Post(session + "/ingests", R"({"table": "t"})", {{"Idempotency-Key", "k1"}});
+  EXPECT_EQ(refused.status, 403) << refused.body;
+  EXPECT_EQ(CodeOf(refused), "permission_denied");
+  EXPECT_EQ(refused.Json().at("detail").as_string(), "this session may not ingest into t");
+  // Accepted once the engine accepts it, under the same idempotency key (none was kept).
+  seen_->refuse_ingest = false;
+  const Answer opened = wire_.Post(session + "/ingests", R"({"table": "t"})", {{"Idempotency-Key", "k1"}});
+  EXPECT_EQ(opened.status, 201) << opened.body;
+  std::lock_guard lock(seen_->mutex);
+  EXPECT_EQ(seen_->ingests_opened, 2);
   EXPECT_EQ(seen_->ingests, 0);
 }
 

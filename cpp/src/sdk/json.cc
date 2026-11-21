@@ -179,7 +179,9 @@ Response ProblemResponse(const Error& error, std::string_view request_id) {
       error.code() == ErrorCode::kCertificateMismatch) {
     response.headers.emplace_back("WWW-Authenticate", "Bearer");
   }
-  if (error.code() == ErrorCode::kServerDraining) {
+  if (error.retry_after()) {
+    response.headers.emplace_back("Retry-After", std::to_string(error.retry_after()->count()));
+  } else if (error.code() == ErrorCode::kServerDraining) {
     response.headers.emplace_back("Retry-After", "5");
   }
   return response;

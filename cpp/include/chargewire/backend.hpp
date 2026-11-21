@@ -216,6 +216,12 @@ class EngineSession {
   virtual int64_t Ingest(const IngestTarget& target,
                          std::shared_ptr<arrow::RecordBatchReader> rows);
 
+  // A partitioned ingest into `target` is about to be opened in this session (spec §8.2):
+  // throw to refuse it, and the error is the request's answer (no ingest is opened, no
+  // idempotency key is kept). Called on the session's engine thread, before any part can
+  // arrive; each part still reaches Ingest() and is checked there. The default accepts.
+  virtual void OpeningIngest(const IngestTarget& target) { (void)target; }
+
   // Metadata as `MetadataSchema(kind)` describes it, only what the principal may see.
   virtual std::shared_ptr<arrow::RecordBatchReader> Metadata(MetadataKind kind,
                                                              const MetadataFilter& filter);
@@ -443,6 +449,19 @@ class BrowserSignInProvider {
   virtual std::string PublicOrigin() { return {}; }
 };
 
+// Where a sign-in came from, for an authenticator's own limits on guessing (failed-sign-in
+// counts per client address, say).
+struct SignInContext {
+  // The client's address without a port ("203.0.113.9", "2001:db8::7"): the connection's
+  // peer, or, from a trusted proxy (ServerOptions::trusted_proxies), the address its
+  // forwarding header gives. Empty when unknown.
+  std::string client_address;
+  // The request carried X-Forwarded-For or Forwarded that was not believed (its peer is not
+  // a trusted proxy): behind a proxy missing from trusted_proxies, every client has the
+  // proxy's address.
+  bool forwarding_ignored = false;
+};
+
 // Turns credentials into a principal (spec §4.1).
 class Authenticator {
  public:
@@ -450,6 +469,12 @@ class Authenticator {
 
   // grant_type "password". Throws Error(kInvalidCredentials) on any mismatch.
   virtual Principal AuthenticatePassword(std::string_view username, std::string_view password);
+  // The same, with where the request came from; what the SDK calls. An authenticator that
+  // limits guessing overrides it and may refuse with Error::RetryAfter(kRateLimited, ...),
+  // which the client receives as 429 rate_limited with Retry-After. The default calls the
+  // two-argument form.
+  virtual Principal AuthenticatePassword(std::string_view username, std::string_view password,
+                                         const SignInContext& context);
 
   // grant_type "token_exchange". Throws Error(kInvalidCredentials) if the token is not
   // one the server trusts.

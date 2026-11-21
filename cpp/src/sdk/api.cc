@@ -678,10 +678,14 @@ Task<Response> Api::IssueToken(Request& request) {
     request.attempted_identity = username;
     // Before the password is checked, so the refusal says nothing about it.
     if (must_be && !SameIdentityName(*must_be, username)) throw mismatch(username);
+    SignInContext context;
+    context.client_address = PeerHost(request.peer);
+    context.forwarding_ignored = request.proxy.empty() && (!request.Header("X-Forwarded-For").empty() ||
+                                                           !request.Header("Forwarded").empty());
     principal = co_await net::co_spawn(
         state_.engine_pool,
         [=]() -> Task<Principal> {
-          co_return authenticator->AuthenticatePassword(username, password);
+          co_return authenticator->AuthenticatePassword(username, password, context);
         },
         net::use_awaitable);
   } else if (grant_type == "token_exchange") {
@@ -1681,6 +1685,8 @@ Task<Response> Api::OpenIngest(Request& request, const std::string& session_id) 
     if (value->is_bool()) return std::string(value->as_bool() ? "true" : "false");
     throw Error(ErrorCode::kBadRequest, std::format("'{}' must be a string", name));
   });
+  // The engine may refuse it before it exists (its own checks of the session: a held one).
+  co_await OnEngine(*session, [session, target] { session->engine().OpeningIngest(target); });
   auto tag = QueryTag(request);
   const std::string id = NewId("i");
   if (auto existing = ReserveIdempotencyKey(request, *session, id, request.path + "\n" + request.body)) {

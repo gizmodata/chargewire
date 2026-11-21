@@ -2,6 +2,8 @@
 // code that describes it; the SDK turns it into a problem document.
 #pragma once
 
+#include <chrono>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -90,7 +92,7 @@ class Error : public std::runtime_error {
   // outlives its thread must not depend on it).
   Error(const Error& other)
       : std::runtime_error(std::string(other.what())), code_(other.code_), sqlstate_(other.sqlstate_),
-        reason_(other.reason_), cancel_reason_(other.cancel_reason_) {}
+        reason_(other.reason_), cancel_reason_(other.cancel_reason_), retry_after_(other.retry_after_) {}
   Error& operator=(const Error& other) {
     if (this != &other) {
       static_cast<std::runtime_error&>(*this) = std::runtime_error(std::string(other.what()));
@@ -98,6 +100,7 @@ class Error : public std::runtime_error {
       sqlstate_ = other.sqlstate_;
       reason_ = other.reason_;
       cancel_reason_ = other.cancel_reason_;
+      retry_after_ = other.retry_after_;
     }
     return *this;
   }
@@ -128,6 +131,14 @@ class Error : public std::runtime_error {
     return error;
   }
 
+  // A refusal the client may try again after `seconds` (a rate_limited sign-in, say): its
+  // answer carries Retry-After with that many seconds (at least 1).
+  static Error RetryAfter(ErrorCode code, std::chrono::seconds seconds, std::string detail) {
+    Error error(code, std::move(detail));
+    error.retry_after_ = seconds < std::chrono::seconds(1) ? std::chrono::seconds(1) : seconds;
+    return error;
+  }
+
   ErrorCode code() const { return code_; }
   // The SQL standard's five-character class and subclass, or empty.
   const std::string& sqlstate() const { return sqlstate_; }
@@ -136,12 +147,15 @@ class Error : public std::runtime_error {
   const std::string& reason() const { return reason_; }
   // A cancelled statement's cancel_reason (spec §6.2), or empty.
   const std::string& cancel_reason() const { return cancel_reason_; }
+  // When the client may try again (Error::RetryAfter), or nullopt.
+  const std::optional<std::chrono::seconds>& retry_after() const { return retry_after_; }
 
  private:
   ErrorCode code_;
   std::string sqlstate_;
   std::string reason_;
   std::string cancel_reason_;
+  std::optional<std::chrono::seconds> retry_after_;
 };
 
 }  // namespace chargewire

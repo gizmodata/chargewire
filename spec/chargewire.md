@@ -1,6 +1,6 @@
 # Chargewire Protocol, version 1
 
-**Status:** 2.5.4 (2026-11-15), the specification's version, which is Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
+**Status:** 2.6.0 (2026-11-21), the specification's version, which is Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
 addition (§12).
 
 Chargewire is an open protocol for running SQL against a database server over plain
@@ -261,6 +261,12 @@ that is server policy.
 
 Failures return `401` with code `invalid_credentials`. The error MUST NOT say which
 part of the credential was wrong.
+
+A server MAY limit failed sign-ins (per user, per client address, or both). Beyond a
+limit it answers `429` with code `rate_limited` and `Retry-After` (seconds), before
+checking the credential, whether or not it is right. That answer MUST be the same for a
+user that exists and one that does not. A client SHOULD show it and MUST NOT retry it
+sooner than `Retry-After`.
 
 ### 4.2 Using the token
 

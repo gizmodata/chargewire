@@ -5,7 +5,9 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/beast/core/tcp_stream.hpp>
 
+#include <cstddef>
 #include <ctime>
+#include <functional>
 
 namespace chargewire::detail {
 
@@ -30,5 +32,27 @@ boost::asio::awaitable<void> EndConnection(boost::beast::tcp_stream& stream);
 
 // `seconds` as UTC calendar time (gmtime_r; gmtime_s on Windows).
 std::tm UtcTime(std::time_t seconds);
+
+// A thread that runs `body` on a stack of `stack_bytes`, whatever stack the platform gives a
+// thread by default (macOS 512 KB, Windows 1 MB, Linux the soft RLIMIT_STACK, 8 MB as a rule).
+// std::thread cannot say: POSIX threads get the size in their attributes, Windows threads as
+// the stack's reserve. An exception that leaves `body` ends the process, as one leaving a
+// std::thread's does. Joined by join() or, if not yet, by the destructor.
+class StackThread {
+ public:
+  StackThread(std::size_t stack_bytes, std::function<void()> body);
+  ~StackThread();
+  StackThread(const StackThread&) = delete;
+  StackThread& operator=(const StackThread&) = delete;
+  void join();
+
+ private:
+  struct Native;
+  Native* native_;
+};
+
+// The size of the calling thread's stack in bytes (the reserve on Windows), or 0 where the
+// platform cannot say.
+std::size_t CurrentThreadStackBytes();
 
 }  // namespace chargewire::detail
