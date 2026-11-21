@@ -230,6 +230,13 @@ void BeforeTableFunctionBind(dd::ClientContext& context, const dd::Identifier& f
   if (guard) guard->BeforeTableFunctionBind(Str(function_name));
 }
 
+// DuckDB reads the raw hook pointer from every binder. Publish it during process
+// startup, before any connection can bind, and keep the policy in session state.
+[[maybe_unused]] const bool kTableFunctionBindHookInstalled = [] {
+  dd::chargewire_bind_table_function_hook = &BeforeTableFunctionBind;
+  return true;
+}();
+
 // The screen of a read-only session's statement, before DuckDB binds anything of it
 // (duckdb_read_only.hpp). DuckDB evaluates while it binds, before any plan exists that the
 // guard could refuse: the arguments of table functions, the value of a setting, the
@@ -821,7 +828,6 @@ std::shared_ptr<ReadOnlyGuard> InstallReadOnlyGuard(duckdb_v2_connection_handle 
   auto& context = *dd::capiv2::Convert(connection)->context;
   auto guard = dd::make_shared_ptr<Guard>(std::move(policy));
   context.registered_state->Insert(kStateName, guard);
-  dd::chargewire_bind_table_function_hook = &BeforeTableFunctionBind;  // (the same value, whoever sets it)
   // The adapter's handle keeps DuckDB's own alive (DuckDB's shared_ptr is its own type).
   return std::shared_ptr<ReadOnlyGuard>(static_cast<ReadOnlyGuard*>(guard.get()), [guard](ReadOnlyGuard*) {});
 }
