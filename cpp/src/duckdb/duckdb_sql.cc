@@ -19,7 +19,15 @@ class KeptReader : public arrow::RecordBatchReader {
 
   std::shared_ptr<arrow::Schema> schema() const override { return rows_->schema(); }
   arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch>* batch) override {
-    return rows_->ReadNext(batch);
+    arrow::Status status = rows_->ReadNext(batch);
+    // DuckDB's refusal of a write in a READ ONLY transaction, raised while the statement
+    // runs (a view that a function binds only then, and that would advance a sequence): the
+    // read_only it is, as Translate() makes of the same refusal when it comes from a call.
+    // A status carries no code, so the words its message begins with decide, as there.
+    if (!status.ok() && status.message().starts_with("TransactionContext Error: Cannot write to database")) {
+      throw Error(ErrorCode::kReadOnly, "the statement would change data, and its transaction is read-only", "25006");
+    }
+    return status;
   }
   arrow::Status Close() override { return rows_->Close(); }
 

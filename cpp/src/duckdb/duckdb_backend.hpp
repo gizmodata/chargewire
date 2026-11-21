@@ -70,6 +70,7 @@ class StaticPasswordAuthenticator : public chargewire::Authenticator {
         password_(std::move(password)),
         certificate_identities_(std::move(certificate_identities)) {}
 
+  using chargewire::Authenticator::AuthenticatePassword;  // the form with a SignInContext
   chargewire::Principal AuthenticatePassword(std::string_view username,
                                           std::string_view password) override;
   // An identity on the list (ignoring ASCII case) signs in as itself.

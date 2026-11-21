@@ -599,7 +599,7 @@ TEST_F(DuckDBReadOnly, ViewsAndMacrosAreScreenedWithTheStatementThatReachesThem)
            // views: read directly, qualified, quoted, described, through a view over them, anywhere in a statement
            "SELECT * FROM bad_view", "SELECT * FROM memory.main.bad_view", "SELECT * FROM \"BAD_VIEW\"", "FROM bad_view", "TABLE bad_view",
            "SELECT * FROM bad_over", "SELECT * FROM bad_over_over", "SELECT * FROM bad_join", "SELECT * FROM bad_set",
-           "SELECT count(*) FROM t WHERE id IN (SELECT * FROM bad_view)", "SELECT (SELECT count(*) FROM bad_view)", "WITH c AS (SELECT * FROM bad_view) SELECT 1",
+           "SELECT count(*) FROM t WHERE id IN (SELECT * FROM bad_view)", "SELECT (SELECT count(*) FROM bad_view)", "WITH c AS (SELECT * FROM bad_view) SELECT count(*) FROM c",
            "SELECT * FROM t a LEFT JOIN bad_view b ON true", "EXPLAIN SELECT * FROM bad_view", "DESCRIBE bad_view", "DESCRIBE TABLE bad_view",
            "DESCRIBE SELECT * FROM bad_view", "SUMMARIZE bad_view", "SET VARIABLE x = (SELECT count(*) FROM bad_view)",
            // table macros
@@ -722,15 +722,25 @@ TEST_F(DuckDBReadOnly, AViewThatDoesNotPassTheScreenIsCaughtHoweverItIsNamed) {
                           "PRAGMA table_info('bad_view')", "PRAGMA table_info('main.bad_view')", "SELECT count(*) FROM pragma_table_info('bad_view')",
                           "SELECT count(*) FROM pragma_table_info('main.bad_view')", "SELECT count(*) FROM pragma_table_info('memory.main.bad_view')",
                           "SELECT (SELECT count(*) FROM pragma_table_info('bad_view'))", "SELECT count(*) FROM pragma_table_info('BAD_VIEW')",
-                          "SELECT count(*) FROM pragma_table_info('bad' || '_view')", "SELECT count(*) FROM pragma_table_info(getvariable('which'))",
-                          "DESCRIBE bad_view", "SUMMARIZE bad_view"}) {
+                          "SELECT count(*) FROM pragma_table_info('bad' || '_view')", "DESCRIBE bad_view", "SUMMARIZE bad_view"}) {
     Refused(sql);
   }
-  for (const std::string& sql : computed) Refused(sql);
   ExpectReadOnly(Submit(reader_, with_parameter, json::array{"bad_view"}), "the view's name as a parameter");
-  ExpectReadOnly(Submit(reader_, with_parameter, json::array{"good_view"}), "a name as a parameter, while a view is unreadable");
-  ExpectReadOnly(Prepare(reader_, "SHOW bad_view"), "preparing SHOW bad_view");
-  ExpectReadOnly(Prepare(reader_, "SELECT * FROM pragma_table_info('bad_view')"), "preparing pragma_table_info('bad_view')");
+  // A computed name is a name like another, whatever views there are (an earlier adapter
+  // refused every computed name while a view existed that it would not bind, anyone's view).
+  for (const std::string& sql : computed) Reads(sql);
+  Reads(with_parameter, json::array{"good_view"});
+  // Prepared: refused then, or accepted (DuckDB binds nothing of the view to describe the
+  // statement) and refused at every execution.
+  for (const char* sql : {"SHOW bad_view", "SELECT * FROM pragma_table_info('bad_view')"}) {
+    const Answer prepared = Prepare(reader_, sql);
+    if (prepared.status == 201) {
+      ExpectReadOnly(reader_.Post(reader_.session + "/prepared/" + std::string(prepared.Json().at("prepared_id").as_string()) + "/execute", "{}"),
+                     std::string("executing the prepared ") + sql);
+    } else {
+      ExpectReadOnly(prepared, std::string("preparing ") + sql);
+    }
+  }
   ExpectUnchanged("naming the view in a parameter, and preparing");
   // The schema listing binds every view to describe it: an unreadable one is listed without columns.
   for (const char* listing : {"/metadata/tables", "/metadata/tables?include_schema=true"}) {
@@ -793,7 +803,11 @@ TEST_F(DuckDBReadOnly, TheSchemaListingIsAnsweredWhateverViewsThereAre) {
 // A function called where DuckDB evaluates while binding is on the adapter's short list of
 // ones that only compute. A macro of the same name, in any schema, could be what DuckDB
 // calls there instead: while one exists, such a statement is refused.
-TEST_F(DuckDBReadOnly, AMacroNamedLikeAFunctionEvaluatedWhileBindingIsRefused) {
+// A macro named like a function that is evaluated while DuckDB binds: in a schema the
+// statement does not reach it changes nothing for anyone, and where DuckDB does bind it, it
+// is refused where it would advance the sequence (an earlier adapter refused every such
+// statement of every reader while the macro existed).
+TEST_F(DuckDBReadOnly, AMacroNamedLikeAFunctionChangesNothingThroughAReadOnlySession) {
   writer_.Run("CREATE SEQUENCE seq");
   writer_.Run("CREATE SCHEMA shadows");
   const std::vector<std::string> statements = {
@@ -805,9 +819,12 @@ TEST_F(DuckDBReadOnly, AMacroNamedLikeAFunctionEvaluatedWhileBindingIsRefused) {
   for (const char* macro : {"shadows.to_days(x)", "shadows.list_value(x, y)", "shadows.abs(x)"}) {
     writer_.Run(std::string("CREATE MACRO ") + macro + " AS nextval('seq')");
   }
+  for (const std::string& sql : statements) Reads(sql);
+  Reads("RESET progress_bar_time");
   Remember();
-  for (const std::string& sql : statements) Refused(sql);
-  Reads("SELECT abs(-3), [1, 2]");  // where the plan decides, nothing is refused for a name
+  Reads("SELECT abs(-3), [1, 2]");
+  Refused("SELECT * FROM range(shadows.abs(-3))");
+  Refused("SELECT shadows.abs(-3)");
   for (const char* macro : {"shadows.to_days", "shadows.list_value", "shadows.abs"}) writer_.Run(std::string("DROP MACRO ") + macro);
   for (const std::string& sql : statements) Reads(sql);
   EXPECT_EQ(Value("SELECT nextval('seq')"), "1");
@@ -1719,7 +1736,7 @@ TEST(DuckDBReadOnlyPolicy, TheListsAreTheseAndNoOther) {
   // Bound, so that a plain EXPLAIN shows their plan, and never run: a table function on neither list is not even bound.
   EXPECT_EQ(Names(policy.explained_table_functions.begin(), policy.explained_table_functions.end()),
             (Names{"CHECKPOINT", "FORCE_CHECKPOINT", "ENABLE_LOGGING", "DISABLE_LOGGING", "TRUNCATE_DUCKDB_LOGS", "ENABLE_PROFILING",
-                   "DISABLE_PROFILING"}));
+                   "DISABLE_PROFILING", "QUERY_TABLE"}));
 }
 
 // ---- Errors: which are read_only, and what they say ----

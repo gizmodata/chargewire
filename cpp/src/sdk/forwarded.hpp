@@ -2,6 +2,7 @@
 // X-Forwarded-For and RFC 7239 Forwarded.
 #pragma once
 
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -29,6 +30,18 @@ std::string FormatPeer(const net::ip::address& address, std::optional<uint16_t> 
 // give none (no header, a malformed one, an unknown or obfuscated hop): the TCP peer
 // then stands.
 std::optional<std::string> ForwardedClient(const http::fields& headers, const std::vector<IpNetwork>& trusted);
+
+// The proxy secret of ServerOptions (trusted_proxy_secret), as a request reads it.
+struct ProxySecret {
+  std::string header;         // empty: off
+  std::string secret_sha256;  // hex; empty: no value matches
+  std::function<void(const std::string& peer)> on_mismatch;
+};
+
+// Removes every instance of `secret.header` from `headers` and says whether one of them
+// carried the secret (constant time). Calls on_mismatch with `peer` when the header was there
+// and none matched.
+bool TakeProxySecret(http::fields& headers, const ProxySecret& secret, const std::string& peer);
 
 // The address of a peer as FormatPeer writes it, without port or brackets
 // ("127.0.0.1:5000" -> "127.0.0.1", "[::1]:5" -> "::1", "[::1]" -> "::1", "10.0.0.1" ->

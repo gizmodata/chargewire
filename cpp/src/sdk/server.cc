@@ -6,6 +6,7 @@
 #include <thread>
 
 #include "api.hpp"
+#include "engine_pool.hpp"
 #include "http.hpp"
 #include "json.hpp"
 #include "legacy_dialect.hpp"
@@ -47,7 +48,7 @@ class Server::Impl {
                std::move(backend),
                std::move(authenticator),
                io_,
-               engine_pool_,
+               engine_pool_.context(),
                encode_pool_,
                tokens,
                tokens ? nullptr : std::make_shared<TokenStore>(options.token_lifetime),
@@ -309,7 +310,8 @@ class Server::Impl {
   // The engine pool outlives the io_context: destroying the io_context destroys the
   // coroutines of requests still in flight, and their sessions' strands belong to the
   // engine pool, so tearing the pool down first crashed a server stopped mid-request.
-  net::thread_pool engine_pool_;
+  // Its threads run statements, each with an 8 MB stack (engine_pool.hpp).
+  EnginePool engine_pool_;
   net::thread_pool encode_pool_;
   net::io_context io_;
   ServerState state_;

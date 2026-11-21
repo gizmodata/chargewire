@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(chargewire VERSION 2.5.4 LANGUAGES C CXX)
+project(chargewire VERSION 2.6.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -242,7 +242,7 @@ if(CHARGEWIRE_BUILD_TESTS)
                  tests/statement_ids_test.cc tests/openapi_test.cc
                  tests/forwarded_test.cc tests/session_authority_test.cc tests/upload_limits_test.cc
                  tests/legacy_dialect_test.cc tests/app_endpoint_test.cc tests/update_outcome_test.cc
-                 tests/read_only_test.cc)
+                 tests/read_only_test.cc tests/statement_stack_test.cc)
   target_include_directories(chargewire-sdk-tests PRIVATE src/sdk)
   target_link_libraries(chargewire-sdk-tests PRIVATE chargewire chargewire_client GTest::gtest_main)
   # The DuckDB backend's tests, against a server started in the test process on an in-memory

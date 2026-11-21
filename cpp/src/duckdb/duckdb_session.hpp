@@ -75,6 +75,9 @@ class DuckDBSession : public chargewire::EngineSession {
   // itself would run (ScreenBeforeBinding), for the statement and for the definition of every
   // view and macro it reaches, whoever defined them. Throws read_only.
   void ScreenReadOnly(duckdb_v2_sql_statement_handle statement);
+  // An error of a read-only session's statement as the refusal it is, if it is one: the
+  // guard's, or DuckDB's own of a write in the READ ONLY transaction.
+  chargewire::Error AsReadOnlyRefusal(const chargewire::Error& error);
   // The kind alone, from DuckDB's parser: before anything of the statement is bound.
   void CheckReadOnlyKind(duckdb_v2_sql_statement_handle statement) const;
   void RunReadOnlyTransactionStatement(duckdb_v2_sql_statement_handle statement);
@@ -126,24 +129,6 @@ class DuckDBSession : public chargewire::EngineSession {
   bool read_only_ = false;
   std::shared_ptr<const ReadOnlyPolicy> read_only_policy_;
   std::shared_ptr<ReadOnlyGuard> read_only_guard_;  // installed by SetReadOnly, for the connection's life
-  // The definitions of the views and macros of every DuckDB catalog, by lower-case name, as of
-  // the catalog versions in the stamp (ScreenReadOnly).
-  std::string definitions_stamp_;
-  std::multimap<std::string, std::string> view_definitions_;
-  std::multimap<std::string, std::string> macro_definitions_;
-  // The views whose own definition, or one it reaches, does not pass the screen: binding one
-  // of them runs something. A statement is refused if it can name one in a way the screen
-  // cannot follow (in a string), and the metadata listing does not bind them.
-  std::set<std::string> unreadable_views_;
-  // The user's table macros that no table function shares its name with: the only table
-  // functions on no list that a statement may call (ReadOnlyReferences::unlisted_table_functions).
-  std::set<std::string> table_macros_;
-  // Reads the definitions again if a catalog changed (ScreenReadOnly).
-  void LoadReadOnlyDefinitions();
-  // Throws read_only for a table function on no list that is not one of table_macros_.
-  void RefuseUnlistedTableFunctions(const ReadOnlyReferences& screened) const;
-  // Screens the definitions of everything `pending` names, and of what those name. Throws read_only.
-  void FollowReadOnlyDefinitions(ReadOnlyReferences pending);
   // Read-only: whether DuckDB has a transaction open now. Only the adapter starts and ends
   // DuckDB's transactions then, always READ ONLY, so this is exact.
   bool read_only_transaction_open_ = false;

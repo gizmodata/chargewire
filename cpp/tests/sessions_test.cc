@@ -8,7 +8,6 @@
 
 #include <boost/asio/strand.hpp>
 #include <boost/asio/post.hpp>
-#include <boost/asio/thread_pool.hpp>
 #include <chrono>
 #include <format>
 #include <future>
@@ -20,6 +19,7 @@
 
 #include <arrow/api.h>
 
+#include "engine_pool.hpp"
 #include "sessions.hpp"
 #include "chargewire/errors.hpp"
 
@@ -40,7 +40,7 @@ using chargewire::detail::StatementState;
 class SessionLifetime : public ::testing::Test {
  protected:
   std::shared_ptr<Session> NewSession() {
-    return std::make_shared<Session>("s_test", Principal{.name = "alice"}, boost::asio::make_strand(pool_.get_executor()));
+    return std::make_shared<Session>("s_test", Principal{.name = "alice"}, boost::asio::make_strand(pool_.context().get_executor()));
   }
   static std::shared_ptr<Statement> NewStatement(const std::string& id) {
     return std::make_shared<Statement>(id, Statement::Config{});
@@ -70,7 +70,7 @@ class SessionLifetime : public ::testing::Test {
     }
   }
 
-  boost::asio::thread_pool pool_{1};
+  chargewire::detail::EnginePool pool_{1};
 };
 
 // The interleaving the Windows run hit, in the order that must win: the request touches
@@ -395,7 +395,7 @@ TEST_F(SessionLifetime, ARetiredSessionAnswersItsOwnerWithItsError) {
 TEST_F(SessionLifetime, ASessionBelongsToItsOwnersAuthorityToo) {
   SessionRegistry registry;
   auto session = std::make_shared<Session>("s_auth", Principal{.name = "alice", .authority_key = "full"},
-                                           boost::asio::make_strand(pool_.get_executor()));
+                                           boost::asio::make_strand(pool_.context().get_executor()));
   registry.Add(session);
   const Principal weaker{.name = "alice", .authority_key = "readonly"};
   const Principal unset{.name = "alice"};

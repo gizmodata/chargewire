@@ -42,6 +42,7 @@ fi
 git -C "$SRC" fetch --quiet --tags origin
 git -C "$SRC" checkout --quiet "$DUCKDB_COMMIT"
 cmake -DDUCKDB_SOURCE_DIR="$SRC" -P "$HERE/scripts/patch-duckdb-binding-commit.cmake"
+cmake -DDUCKDB_SOURCE_DIR="$SRC" -P "$HERE/scripts/patch-duckdb-read-only.cmake"
 
 cmake -S "$SRC" -B "$BUILD" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \

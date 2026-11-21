@@ -1,6 +1,6 @@
 ---
 title: Specification
-description: "The Chargewire protocol, version 1 (specification 2.5.4): SQL over HTTP with Arrow IPC streams."
+description: "The Chargewire protocol, version 1 (specification 2.6.0): SQL over HTTP with Arrow IPC streams."
 editUrl: https://github.com/gizmodata/chargewire/edit/main/spec/chargewire.md
 tableOfContents:
   maxHeadingLevel: 3
@@ -12,7 +12,7 @@ tableOfContents:
 This page is [`spec/chargewire.md`](https://github.com/gizmodata/chargewire/blob/main/spec/chargewire.md), rendered as it is. Its endpoints are also described for tools in the [OpenAPI document](/reference/openapi/).
 :::
 
-**Status:** 2.5.4 (2026-11-15), the specification's version, which is Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
+**Status:** 2.6.0 (2026-11-21), the specification's version, which is Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
 addition ([§12](#12-versioning)).
 
 Chargewire is an open protocol for running SQL against a database server over plain
@@ -273,6 +273,12 @@ that is server policy.
 
 Failures return `401` with code `invalid_credentials`. The error MUST NOT say which
 part of the credential was wrong.
+
+A server MAY limit failed sign-ins (per user, per client address, or both). Beyond a
+limit it answers `429` with code `rate_limited` and `Retry-After` (seconds), before
+checking the credential, whether or not it is right. That answer MUST be the same for a
+user that exists and one that does not. A client SHOULD show it and MUST NOT retry it
+sooner than `Retry-After`.
 
 ### 4.2 Using the token
 

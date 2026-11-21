@@ -55,12 +55,19 @@
 
 #include <algorithm>
 #include <cctype>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_set>
 #include <vector>
 
 #include "duckdb_read_only.hpp"
+
+// Added to DuckDB by scripts/patch-duckdb-read-only.cmake: called before the bind step of
+// every table function. A DuckDB without the patch does not link with this file.
+namespace duckdb {
+extern void (*chargewire_bind_table_function_hook)(ClientContext& context, const Identifier& function_name);
+}
 
 namespace chargewire_duckdb {
 
@@ -104,17 +111,42 @@ class Guard final : public dd::ClientContextState, public ReadOnlyGuard {
     return dd::RebindQueryInfo::DO_NOT_REBIND;
   }
 
-  std::optional<std::string> TakeRefusal() override { return std::exchange(refusal_, std::nullopt); }
+  std::optional<std::string> TakeRefusal() override {
+    const std::lock_guard lock(refusal_mutex_);
+    return std::exchange(refusal_, std::nullopt);
+  }
+
+  // Before DuckDB runs the bind step of a table function, wherever its call was written (the
+  // client's statement, a view or macro of anyone's, a view that a catalog function binds
+  // when it runs): one that is on none of the lists is refused there, its bind step unrun.
+  void BeforeTableFunctionBind(const std::string& function_name) {
+    if (own_statements_ != 0) return;
+    const std::string name = Upper(function_name);
+    if (policy_->table_functions.contains(name) || policy_->explained_table_functions.contains(name) ||
+        policy_->plan_operators.contains(name)) {
+      return;
+    }
+    // The adapter's own, with which it reads the Arrow schema of a statement it describes
+    // (it runs nothing, and no plan with it passes the guard).
+    if (name == "CHARGEWIRE_RESULT_SCHEMA") return;
+    NotListed(name);
+  }
 
  private:
   [[noreturn]] void Refuse(std::string detail) {
-    refusal_ = std::move(detail);
-    throw dd::PermissionException(*refusal_);
+    {
+      const std::lock_guard lock(refusal_mutex_);
+      refusal_ = detail;
+    }
+    throw dd::PermissionException(detail);
   }
   [[noreturn]] void NotListed(const std::string& what) { Refuse(ReadOnlyNotListed(Shown(what)).what()); }
 
   void Check(dd::PreparedStatementData& prepared) {
-    refusal_.reset();
+    {
+      const std::lock_guard lock(refusal_mutex_);
+      refusal_.reset();
+    }
     // What DuckDB's own planner says the statement modifies: any catalog, the session's
     // temporary one too (a temporary table, a temporary sequence advanced by a query).
     for (const auto& modified : prepared.properties.modified_databases) {
@@ -187,8 +219,16 @@ class Guard final : public dd::ClientContextState, public ReadOnlyGuard {
   }
 
   const std::shared_ptr<const ReadOnlyPolicy> policy_;
+  std::mutex refusal_mutex_;
   std::optional<std::string> refusal_;
 };
+
+// The hook DuckDB calls before any table function's bind step: for a connection that carries
+// a read-only guard, the guard decides; any other connection is not this file's business.
+void BeforeTableFunctionBind(dd::ClientContext& context, const dd::Identifier& function_name) {
+  auto guard = context.registered_state->Get<Guard>(kStateName);
+  if (guard) guard->BeforeTableFunctionBind(Str(function_name));
+}
 
 // The screen of a read-only session's statement, before DuckDB binds anything of it
 // (duckdb_read_only.hpp). DuckDB evaluates while it binds, before any plan exists that the
@@ -206,6 +246,19 @@ class Guard final : public dd::ClientContextState, public ReadOnlyGuard {
 // and CTEs, not into subqueries in expressions, AT clauses, PIVOT entries or a table
 // function's subquery): a part DuckDB finds there that the walk did not reach refuses the
 // statement too.
+// Whether DuckDB knows `name` (lower case) as a table function or pragma of an extension it
+// installs and loads on demand, when a statement names it.
+bool ExtensionTableFunction(std::string_view name) {
+  for (const auto& entry : dd::EXTENSION_FUNCTIONS) {
+    if (name != entry.name) continue;
+    if (entry.type == dd::CatalogType::TABLE_FUNCTION_ENTRY || entry.type == dd::CatalogType::TABLE_MACRO_ENTRY ||
+        entry.type == dd::CatalogType::PRAGMA_FUNCTION_ENTRY) {
+      return true;
+    }
+  }
+  return false;
+}
+
 class BindScreen {
  public:
   BindScreen(ReadOnlyReferences& references, const ReadOnlyScreen& screen) : references_(references), screen_(screen) {}
@@ -548,8 +601,8 @@ class BindScreen {
     }
   }
 
-  // A table function by its name, in a FROM clause or a CALL: bound only when it is listed,
-  // or is a table macro the adapter has read the definition of. The bind step of any other never runs
+  // A table function by its name, in a FROM clause or a CALL. (Whether it is bound at all is
+  // decided where DuckDB binds it: BeforeTableFunctionBind. The bind step of one on no list never runs
   // (a function that binds or runs SQL the statement does not hold, one that hands SQL to
   // another system, one an extension added that nobody has looked at).
   void TableFunctionCall(dd::FunctionExpression& call) {
@@ -564,9 +617,12 @@ class BindScreen {
     const std::string listed = Upper(name);
     const bool known = screen_.policy != nullptr && (screen_.policy->table_functions.contains(listed) ||
                                                      screen_.policy->explained_table_functions.contains(listed));
-    // On no list: bound only if it is a table macro of a user's (the adapter knows those once
-    // it has read the definitions, and refuses the statement before DuckDB binds it otherwise).
-    if (!known) references_.unlisted_table_functions.insert(name);
+    // On no list: a table macro of someone's, which DuckDB expands, or a function that the
+    // guard refuses when DuckDB comes to bind it (BeforeTableFunctionBind), as it does for a
+    // call that no statement shows: in a view, in a macro, in a view bound later. One that
+    // DuckDB would install and load an extension for when it looks the name up is refused
+    // here, before it does.
+    if (!known && ExtensionTableFunction(name)) throw ReadOnlyNotListed(Upper(Shown(name)));
     for (auto& argument : call.ChildrenMutable()) {
       if (argument) ValuesOnly(*argument, "an argument of a table function");
     }
@@ -733,17 +789,6 @@ ReadOnlyReferences ScreenBeforeBinding(duckdb_v2_sql_statement_handle statement,
   return references;
 }
 
-bool ReadOnlyExtensionFunction(std::string_view name) {
-  for (const auto& entry : dd::EXTENSION_FUNCTIONS) {
-    if (name != entry.name) continue;
-    if (entry.type == dd::CatalogType::TABLE_FUNCTION_ENTRY || entry.type == dd::CatalogType::TABLE_MACRO_ENTRY ||
-        entry.type == dd::CatalogType::PRAGMA_FUNCTION_ENTRY) {
-      return true;
-    }
-  }
-  return false;
-}
-
 ConnectionTransaction TransactionOf(duckdb_v2_connection_handle connection) {
   auto& context = *dd::capiv2::Convert(connection)->context;
   ConnectionTransaction now;
@@ -764,19 +809,6 @@ ConnectionTransaction TransactionOf(duckdb_v2_connection_handle connection) {
   return now;
 }
 
-std::string ReadOnlyCatalogStamp(duckdb_v2_connection_handle connection) {
-  auto& context = *dd::capiv2::Convert(connection)->context;
-  std::string stamp;
-  for (const auto& database : dd::DatabaseManager::Get(context).GetDatabases(context)) {
-    auto& catalog = database->GetCatalog();
-    if (!catalog.IsDuckCatalog()) continue;  // another system's catalog holds no DuckDB views or macros
-    const auto version = catalog.GetCatalogVersion(context);
-    if (!version.IsValid()) return {};
-    stamp += std::to_string(catalog.GetOid()) + ":" + std::to_string(version.GetIndex()) + ";";
-  }
-  return stamp;
-}
-
 void ScopeSettingToSession(duckdb_v2_sql_statement_handle statement) {
   dd::SQLStatement* parsed = dd::capiv2::Convert(statement);
   if (parsed == nullptr || parsed->type != dd::StatementType::SET_STATEMENT) return;
@@ -789,6 +821,7 @@ std::shared_ptr<ReadOnlyGuard> InstallReadOnlyGuard(duckdb_v2_connection_handle 
   auto& context = *dd::capiv2::Convert(connection)->context;
   auto guard = dd::make_shared_ptr<Guard>(std::move(policy));
   context.registered_state->Insert(kStateName, guard);
+  dd::chargewire_bind_table_function_hook = &BeforeTableFunctionBind;  // (the same value, whoever sets it)
   // The adapter's handle keeps DuckDB's own alive (DuckDB's shared_ptr is its own type).
   return std::shared_ptr<ReadOnlyGuard>(static_cast<ReadOnlyGuard*>(guard.get()), [guard](ReadOnlyGuard*) {});
 }

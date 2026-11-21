@@ -347,7 +347,8 @@ ConnectionPeer PeerOf(Socket& socket, const std::vector<IpNetwork>& trusted_prox
 // the one its forwarding headers give (a proxy's connection carries many clients' requests).
 template <class Stream>
 Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler& handler,
-                         const std::vector<IpNetwork>& trusted_proxies, TlsContext* tls = nullptr,
+                         const std::vector<IpNetwork>& trusted_proxies, const ProxySecret& proxy_secret,
+                         TlsContext* tls = nullptr,
                          PeerCertificate* peer = nullptr, std::string_view tls_version = {}) {
   beast::flat_buffer buffer;
   int auth_failures = 0;
@@ -388,7 +389,9 @@ Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler
       request.headers = static_cast<const http::fields&>(message.base());
       request.request_id = NewId("r");
       request.peer = connection.address;
-      if (connection.trusted_proxy) {
+      // Taken out of the request whatever it says: nothing after this sees the secret.
+      const bool secret_trusted = TakeProxySecret(request.headers, proxy_secret, connection.address);
+      if (connection.trusted_proxy || secret_trusted) {
         if (auto forwarded = ForwardedClient(request.headers, trusted_proxies)) {
           request.peer = std::move(*forwarded);
           request.proxy = connection.address;
@@ -472,6 +475,9 @@ class HttpServer::Impl {
     if (options.tls) {
       tls_ = std::make_unique<TlsContext>(*options.tls);
     }
+    proxy_secret_.header = options.trusted_proxy_secret_header;
+    if (!options.trusted_proxy_secret.empty()) proxy_secret_.secret_sha256 = Sha256Hex(options.trusted_proxy_secret);
+    proxy_secret_.on_mismatch = options.on_proxy_secret_mismatch;
   }
 
   uint16_t Bind() {
@@ -524,7 +530,7 @@ class HttpServer::Impl {
     try {
       beast::tcp_stream stream(std::move(socket));
       if (!tls_) {
-        co_await ServeRequests(stream, limits_, handler_, options_.trusted_proxies);
+        co_await ServeRequests(stream, limits_, handler_, options_.trusted_proxies, proxy_secret_);
         co_await EndConnection(stream);
         co_return;
       }
@@ -549,7 +555,8 @@ class HttpServer::Impl {
         }
         SSL_set_ex_data(tls_stream.native_handle(), TlsContext::RefusalIndex(), nullptr);
         auto peer = tls_->PeerOf(tls_stream.native_handle(), context.generation);
-        co_await ServeRequests(tls_stream, limits_, handler_, options_.trusted_proxies, tls_.get(), peer.get(),
+        co_await ServeRequests(tls_stream, limits_, handler_, options_.trusted_proxies, proxy_secret_, tls_.get(),
+                               peer.get(),
                                SSL_get_version(tls_stream.native_handle()));
       } catch (const std::exception&) {
         // the connection failed; it still ends below
@@ -567,6 +574,7 @@ class HttpServer::Impl {
   net::io_context& io_;
   ServerOptions options_;
   HttpLimits limits_;
+  ProxySecret proxy_secret_;
   Handler handler_;
   tcp::acceptor acceptor_;
   std::unique_ptr<TlsContext> tls_;

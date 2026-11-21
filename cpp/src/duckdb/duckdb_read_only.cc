@@ -10,13 +10,6 @@ using chargewire::ErrorCode;
 
 namespace {
 
-std::string Upper(std::string_view text) {
-  std::string out(text);
-  std::transform(out.begin(), out.end(), out.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-  return out;
-}
-
 using TokenIterator = Owned<duckdb_v2_token_iterator_handle, duckdb_v2_token_iterator_destroy>;
 
 }  // namespace
@@ -114,6 +107,10 @@ ReadOnlyPolicy ReadOnlyPolicy::Default() {
   policy.explained_table_functions = {
       "CHECKPOINT", "FORCE_CHECKPOINT", "ENABLE_LOGGING", "DISABLE_LOGGING", "TRUNCATE_DUCKDB_LOGS",
       "ENABLE_PROFILING", "DISABLE_PROFILING",
+      // DuckDB puts the table or view of that name in its place while it binds, and what that
+      // is is bound like any other (DuckDB's own histogram() is written with it). A statement
+      // of the client's that calls it is refused by name all the same (the screen).
+      "QUERY_TABLE",
   };
   return policy;
 }
