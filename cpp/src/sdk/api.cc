@@ -644,7 +644,10 @@ Task<Response> Api::Health(Request&) {
       std::lock_guard lock(outcome->mutex);
       if (outcome->done) {
         if (!outcome->ok) co_return not_serving("check_failed");
-        co_return JsonResponse(http::status::ok, json::object{{"status", "serving"}});
+        // Clang 18 with TSan can corrupt an initializer-list temporary here.
+        json::object body;
+        body["status"] = "serving";
+        co_return JsonResponse(http::status::ok, body);
       }
     }
     if (Clock::now() >= deadline) {

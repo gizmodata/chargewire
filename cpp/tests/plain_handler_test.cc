@@ -226,7 +226,9 @@ TEST(PlainHandler, ProtocolPathsNeverReachIt) {
     EXPECT_NE(answer.body.find("\"chargewire\""), std::string::npos) << path;
   }
   for (const char* path : {"/chargewire/v1/health", "/%63hargewire/v1/health", "//chargewire//v1/health", "/chargewire%2Fv1%2Fhealth"}) {
-    EXPECT_EQ(Send(running->port, http::verb::get, path).status, 200) << path;
+    const Answer answer = Send(running->port, http::verb::get, path);
+    EXPECT_EQ(answer.status, 200) << path;
+    EXPECT_EQ(boost::json::parse(answer.body), (boost::json::object{{"status", "serving"}})) << path;
   }
   for (const char* path : {"/chargewire/v1/no-such-thing", "/%63hargewire/ui/page", "//chargewire/ui/page"}) {
     const Answer answer = Send(running->port, http::verb::get, path);

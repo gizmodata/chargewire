@@ -7,6 +7,10 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+### Fixed
+
+- The health endpoint returns its serving response under Clang 18 with ThreadSanitizer.
+
 ## [2.6.0] - 2026-11-21
 
 ### Added
