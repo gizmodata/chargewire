@@ -87,8 +87,8 @@ TEST(StatementStack, AJoinedPoolAcceptsWorkItNeverRunsAndAStoppedOneEnds) {
       while (!release.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
       ran += 1;
     });
-    boost::asio::post(pool.context(), [&] { ran += 10; });
     while (!started.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    boost::asio::post(pool.context(), [&] { ran += 10; });
     pool.stop();
     release = true;
   }

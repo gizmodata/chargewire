@@ -15,7 +15,7 @@
 
 namespace chargewire::detail {
 
-using EngineStrand = net::strand<net::io_context::executor_type>;  // on EnginePool's threads
+using EngineStrand = net::strand<net::thread_pool::executor_type>;  // on EnginePool's threads
 
 class Session {
  public:

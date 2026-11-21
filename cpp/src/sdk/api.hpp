@@ -37,7 +37,7 @@ struct ServerState {
   std::shared_ptr<Backend> backend;
   std::shared_ptr<Authenticator> authenticator;
   net::io_context& io;
-  net::io_context& engine_pool;  // EnginePool's: threads with 8 MB stacks
+  net::thread_pool& engine_pool;  // EnginePool's: threads with 8 MB stacks
   // Encodes (and compresses) result batches for the streams that send them.
   net::thread_pool& encode_pool;
 

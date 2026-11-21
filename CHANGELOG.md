@@ -10,6 +10,7 @@ spec's version is the repository's version.
 ### Fixed
 
 - The health endpoint returns its serving response under Clang 18 with ThreadSanitizer.
+- On Windows, stopping the statement worker pool discards queued work and lets running work finish.
 
 ## [2.6.0] - 2026-11-21
 
