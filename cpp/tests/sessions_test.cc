@@ -14,6 +14,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <utility>
 
@@ -138,8 +139,9 @@ TEST_F(SessionLifetime, ACompletedLongPollStartsANewIdleWindowBeforeTheNextPoll)
   session->StartRequest();
   const auto cutoff = Clock::now();  // the poll is still in flight but began before this cutoff
   EXPECT_FALSE(session->CloseIfIdle(cutoff, CancelReason::kSessionClosed));
+  std::this_thread::sleep_until(cutoff + std::chrono::milliseconds(1));
   session->FinishRequest(true);
-  EXPECT_FALSE(session->CloseIfIdle(cutoff, CancelReason::kSessionClosed));
+  ASSERT_FALSE(session->CloseIfIdle(cutoff, CancelReason::kSessionClosed));
   session->StartRequest();
   EXPECT_FALSE(statement->CancelRequested());
   session->FinishRequest(true);
@@ -340,8 +342,9 @@ TEST_F(SessionLifetime, AReadInProgressKeepsTheSessionOpen) {
   statement->EndRead(0);
   const auto cutoff = Clock::now();
   EXPECT_FALSE(session->CloseIfIdle(cutoff, CancelReason::kSessionClosed)) << "response is still in flight";
+  std::this_thread::sleep_until(cutoff + std::chrono::milliseconds(1));
   session->FinishRequest(true);
-  EXPECT_FALSE(session->CloseIfIdle(cutoff, CancelReason::kSessionClosed)) << "response finished within the window";
+  ASSERT_FALSE(session->CloseIfIdle(cutoff, CancelReason::kSessionClosed)) << "response finished within the window";
   EXPECT_TRUE(session->CloseIfIdle(Clock::now() + std::chrono::seconds(1), CancelReason::kSessionClosed));
 }
 
