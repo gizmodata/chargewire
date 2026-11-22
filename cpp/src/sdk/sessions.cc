@@ -369,6 +369,16 @@ void Session::FinishRequest(bool sent) {
   --active_requests_;
 }
 
+void Session::EnterEngineQueue() {
+  std::lock_guard lock(mutex_);
+  ++queued_for_engine_;
+}
+
+void Session::LeaveEngineQueue() {
+  std::lock_guard lock(mutex_);
+  --queued_for_engine_;
+}
+
 void Session::TouchLocked(const Client& client) {
   ThrowIfClosedLocked();
   last_activity_ = Clock::now();
@@ -388,7 +398,9 @@ Session::LastRequest Session::last_request() const {
 }
 
 bool Session::IdleLocked(Clock::time_point cutoff) const {
-  if (active_requests_ != 0 || last_activity_ > cutoff) {
+  // Requests queued for the engine are not activity (EnterEngineQueue). A request that
+  // opens a session queues without having started one, so compare rather than subtract.
+  if (active_requests_ > queued_for_engine_ || last_activity_ > cutoff) {
     return false;
   }
   for (const auto& [id, ingest] : ingests_) {
@@ -405,7 +417,8 @@ bool Session::IdleLocked(Clock::time_point cutoff) const {
 }
 
 bool Session::IdleInTransactionLocked(Clock::time_point cutoff) const {
-  if (transaction_ == TransactionState::kNone || active_requests_ != 0 || last_activity_ > cutoff) {
+  if (transaction_ == TransactionState::kNone || active_requests_ > queued_for_engine_ ||
+      last_activity_ > cutoff) {
     return false;
   }
   for (const auto& [id, ingest] : ingests_) {

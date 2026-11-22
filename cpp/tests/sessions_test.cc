@@ -148,6 +148,29 @@ TEST_F(SessionLifetime, ACompletedLongPollStartsANewIdleWindowBeforeTheNextPoll)
   EXPECT_TRUE(session->CloseIfIdle(Clock::now(), CancelReason::kSessionClosed));
 }
 
+// A request queued for the session's engine strand, behind a statement that is running
+// (metadata, commit, PATCH options, prepare), is not activity until its turn comes: if its
+// client went away while it waited, the session must not stay open for as long as the
+// statement runs. Once its work starts on the strand it counts again.
+TEST_F(SessionLifetime, ARequestQueuedForTheEngineDoesNotKeepTheSessionOpen) {
+  auto session = NewSession();
+  auto statement = NewStatement("q_running");
+  session->AddStatement(statement);
+  ASSERT_TRUE(statement->BeginRunning());
+  session->StartRequest();
+  session->EnterEngineQueue();
+  const auto cutoff = Clock::now() + std::chrono::seconds(1);
+  EXPECT_FALSE(session->CloseIfIdle(Clock::now() - std::chrono::hours(1), CancelReason::kSessionClosed))
+      << "the request itself was made within the window";
+  session->LeaveEngineQueue();  // its turn came: the work runs
+  EXPECT_FALSE(session->CloseIfIdle(cutoff, CancelReason::kSessionClosed)) << "a request at work is activity";
+  session->EnterEngineQueue();  // a second wait, the client gone
+  EXPECT_TRUE(session->CloseIfIdle(cutoff, CancelReason::kSessionClosed));
+  EXPECT_TRUE(statement->CancelRequested());
+  session->LeaveEngineQueue();
+  session->FinishRequest(false);
+}
+
 // An engine whose session holds a transaction, for the idle-in-transaction rule.
 class FakeEngine : public chargewire::EngineSession {
  public:

@@ -98,6 +98,7 @@ void ApplyHeaders(http::response<Body>& message, const Response& response, bool 
 struct ResponseWrite {
   bool complete;
   bool keep_alive;
+  bool started = false;  // a streamed body began (its headers went out), complete or not
 };
 
 template <class Stream>
@@ -135,7 +136,7 @@ Task<ResponseWrite> WriteResponse(Stream& stream, Response& response, unsigned v
     complete = false;
   }
   if (!complete) {
-    co_return ResponseWrite{false, false};  // without a final chunk the body is incomplete
+    co_return ResponseWrite{false, false, true};  // without a final chunk the body is incomplete
   }
   beast::get_lowest_layer(stream).expires_after(kWriteTimeout);
   co_await net::async_write(stream, http::make_chunk_last(), net::use_awaitable);
@@ -461,7 +462,9 @@ Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler
       response.close = true;
     }
     const auto written = co_await WriteResponse(stream, response, version, keep_alive);
-    if (request.completion) request.completion->response_sent = written.complete;
+    // A stream that began counts as an answer the client was there for, even when it
+    // stopped reading early or the statement failed mid-stream (spec §5.7).
+    if (request.completion) request.completion->response_sent = written.complete || written.started;
     if (!written.keep_alive) {
       co_return;
     }
