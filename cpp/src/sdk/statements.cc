@@ -568,26 +568,6 @@ bool Statement::WaitingForReader() const {
   return waiting_for_reader_ && !AnyReaderActive();
 }
 
-bool Statement::ReadInProgress() const {
-  std::lock_guard lock(mutex_);
-  return AnyReaderActive();
-}
-
-void Statement::BeginWait() {
-  std::lock_guard lock(mutex_);
-  waiters_ += 1;
-}
-
-void Statement::EndWait() {
-  std::lock_guard lock(mutex_);
-  if (waiters_ > 0) waiters_ -= 1;
-}
-
-bool Statement::WaitInProgress() const {
-  std::lock_guard lock(mutex_);
-  return waiters_ > 0;
-}
-
 bool Statement::Forgettable(WallClock::time_point now, std::chrono::seconds keep) const {
   std::lock_guard lock(mutex_);
   if (!IsTerminalLocked() || AnyReaderActive() || !finished_at_ || now < *finished_at_ + keep) {

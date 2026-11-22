@@ -117,6 +117,10 @@ class Session {
   // session's own error once it was ended): a request that found the session just before
   // an idle sweep (or a KILL) closed it must not go on to run in it.
   void Touch(const Client& client = {});
+  // Keep an authenticated request active through its response (spec §5.7).
+  // Only a response that was sent starts a new idle window.
+  void StartRequest(const Client& client = {});
+  void FinishRequest(bool sent);
   // The latest request's client, and when it came.
   struct LastRequest {
     std::string address;
@@ -138,9 +142,9 @@ class Session {
   bool End(const Error& why);
   // The error End() ended it with.
   std::optional<Error> ended() const;
-  // Closes the session if it has been idle since `cutoff`: no request since then, nothing
-  // running, and no retained result kept. The check and the close are one step under the
-  // session's lock, as Touch() is, so a request either touches it first (and it stays) or
+  // Closes the session if it has been idle since `cutoff`: no request since then or still
+  // in flight, no ingest running, and no retained result kept. The check and close hold
+  // the same lock as StartRequest(), so a request either starts first (and the session stays) or
   // finds it closed (session_not_found); it never gets a session closed under it, its
   // result stream cut mid-body. Returns whether it closed it. When the session held a
   // transaction open (a SQL BEGIN its client may not know about) and `ended_if_in_transaction`
@@ -151,8 +155,8 @@ class Session {
   bool CloseIfIdle(Clock::time_point cutoff, CancelReason reason,
                    const Error* ended_if_in_transaction = nullptr);
   // Ends the session with `why` (session_ended, spec §5.6) if it has held a transaction
-  // open with no request since `cutoff` and nothing under way: no statement queued or
-  // running, no request waiting on one, no result being read, no ingest in progress.
+  // open with no request since `cutoff` and nothing under way: no request in flight,
+  // no statement queued or running, no ingest in progress.
   // One step under the session's lock, as CloseIfIdle() is. Its transaction is rolled
   // back when the engine session goes (DestroyEngine). Returns whether it ended it.
   bool EndIfIdleInTransaction(Clock::time_point cutoff, const Error& why);
@@ -178,11 +182,13 @@ class Session {
   std::map<std::string, std::shared_ptr<IngestOperation>> ingests_;
   std::vector<std::shared_ptr<ByteQueue>> uploads_;
   Clock::time_point last_activity_;
+  std::size_t active_requests_ = 0;
   LastRequest last_request_;
   bool closed_ = false;      // takes nothing new
   bool torn_down_ = false;   // its statements were cancelled and their results freed
   std::optional<Error> ended_;  // End()'s error
 
+  void TouchLocked(const Client& client);  // mutex_ held
   bool IdleLocked(Clock::time_point cutoff) const;  // mutex_ held
   bool IdleInTransactionLocked(Clock::time_point cutoff) const;  // mutex_ held
   void Teardown(CancelReason reason);              // after closed_ and torn_down_ were set

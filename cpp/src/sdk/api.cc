@@ -123,18 +123,6 @@ std::string_view Trim(std::string_view text) {
   return text;
 }
 
-// A request waiting on a statement, for as long as it waits: while one is in flight the
-// session is not idle (Statement::WaitInProgress, spec §5.7).
-struct WaitScope {
-  explicit WaitScope(std::shared_ptr<Statement> statement) : statement(std::move(statement)) {
-    this->statement->BeginWait();
-  }
-  ~WaitScope() { statement->EndWait(); }
-  WaitScope(const WaitScope&) = delete;
-  WaitScope& operator=(const WaitScope&) = delete;
-  std::shared_ptr<Statement> statement;
-};
-
 // RFC 7240 Prefer: "wait=N" and "respond-async", comma-separated.
 struct Preferences {
   std::optional<std::chrono::seconds> wait;
@@ -1038,11 +1026,21 @@ Principal Api::Authenticate(const Request& request, bool announce) const {
   return principal;
 }
 
-std::shared_ptr<Session> Api::OwnSession(const Request& request, const std::string& session_id) {
+std::shared_ptr<Session> Api::OwnSession(Request& request, const std::string& session_id) {
   const Principal principal = Authenticate(request, false);
   auto session = state_.sessions.Find(session_id, principal);
   state_.tokens->Accepted(BearerToken(request.Header("Authorization")), principal);
-  session->Touch(ClientOf(request));
+  struct Activity final : RequestCompletion {
+    Activity(const std::shared_ptr<Session>& session, const Session::Client& client)
+        : session_(session) {
+      session->StartRequest(client);
+    }
+    ~Activity() override {
+      if (auto session = session_.lock()) session->FinishRequest(response_sent);
+    }
+    std::weak_ptr<Session> session_;
+  };
+  request.completion = std::make_unique<Activity>(session, ClientOf(request));
   return session;
 }
 
@@ -1501,13 +1499,10 @@ Task<Response> Api::Launch(Request& request, std::shared_ptr<Session> session, S
     return statement->HasOutcome() && (!statement->HasRows() || statement->PartitionCount());
   };
   const auto waiting_since = Clock::now();
-  {
-    const WaitScope waiting(statement);  // the client is here while this request waits (§5.7)
-    while (Clock::now() < deadline && !ready()) {
-      const auto look_again = streamed ? SettleSplitIfDue(*statement, waiting_since) : Clock::time_point::max();
-      if (ready()) break;
-      seen = co_await statement->changed().WaitChange(seen, std::min(deadline, look_again));
-    }
+  while (Clock::now() < deadline && !ready()) {
+    const auto look_again = streamed ? SettleSplitIfDue(*statement, waiting_since) : Clock::time_point::max();
+    if (ready()) break;
+    seen = co_await statement->changed().WaitChange(seen, std::min(deadline, look_again));
   }
 
   // A statement that failed or was cancelled before its answer started is an error
@@ -2020,7 +2015,6 @@ Task<Response> Api::GetStatement(Request& request, const std::string& session_id
     const auto initial = statement->state();
     const auto deadline = Clock::now() + std::min(*prefs.wait, state_.options.max_wait);
     uint64_t seen = statement->changed().version();
-    const WaitScope waiting(statement);  // the client is here while this request waits (§5.7)
     while (!statement->IsTerminal() && statement->state() == initial && Clock::now() < deadline) {
       seen = co_await statement->changed().WaitChange(seen, deadline);
     }
@@ -2055,13 +2049,10 @@ Task<Response> Api::GetResult(Request& request, const std::string& session_id,
   const auto deadline = Clock::now() + state_.options.max_wait;
   const auto waiting_since = Clock::now();
   uint64_t seen = statement->changed().version();
-  {
-    const WaitScope waiting(statement);  // the client is here while this request waits (§5.7)
-    while (!ready() && Clock::now() < deadline) {
-      const auto look_again = SettleSplitIfDue(*statement, waiting_since);
-      if (ready()) break;
-      seen = co_await statement->changed().WaitChange(seen, std::min(deadline, look_again));
-    }
+  while (!ready() && Clock::now() < deadline) {
+    const auto look_again = SettleSplitIfDue(*statement, waiting_since);
+    if (ready()) break;
+    seen = co_await statement->changed().WaitChange(seen, std::min(deadline, look_again));
   }
   if (!ready()) {
     throw Error(ErrorCode::kResultNotReady, "the statement has not produced a result yet");

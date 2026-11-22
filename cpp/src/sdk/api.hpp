@@ -137,7 +137,7 @@ class Api {
   void Emit(const SecurityEvent& event) const;
   // Whether the client_certificate grant is offered (spec §4.4).
   bool OffersCertificateSignIn() const;
-  std::shared_ptr<Session> OwnSession(const Request& request, const std::string& session_id);
+  std::shared_ptr<Session> OwnSession(Request& request, const std::string& session_id);
   static Session::Client ClientOf(const Request& request);
   void RejectIfDraining() const;
   void RefuseInReadOnlySession(const Session& session, std::string_view what) const;
