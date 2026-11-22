@@ -7,6 +7,12 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [2.6.2] - 2026-11-22
+
+### Fixed
+
+- The OpenAPI document, the site and the conformance suite's version carry the release version again: 2.6.1 left them at 2.6.0, so servers built on it named specification 2.6.0 at startup.
+
 ## [2.6.1] - 2026-11-22
 
 ### Fixed
