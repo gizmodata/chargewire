@@ -37,6 +37,13 @@ from chargewire import Chargewire
 
 pytestmark = pytest.mark.duckdb
 
+EXPRESSION_DEPTH_CAPPED = os.environ.get("CHARGEWIRE_TEST_DUCKDB_EXPRESSION_DEPTH_CAPPED") == "1"
+AUTOCOMPLETE_DISABLED = os.environ.get("CHARGEWIRE_TEST_DUCKDB_AUTOCOMPLETE_DISABLED") == "1"
+AUTOCOMPLETE_READS = [
+    "SELECT count(*) FROM sql_tokenize('SELECT 1')",
+    "SELECT count(*) FROM sql_auto_complete('SEL')",
+]
+
 
 @pytest.fixture
 def duck(chargewire):
@@ -1402,7 +1409,7 @@ REFUSED_SETTINGS = [
     "SET enable_external_access = false", "SET allow_persistent_secrets = false",
     "SET SESSION log_query_path = '/tmp/x.log'", "RESET explain_output", "SELECT 1; SET GLOBAL threads = 1",
     # The limits that keep one statement from exhausting the stack or the memory of the process:
-    "SET max_expression_depth = 20000", "RESET max_expression_depth", "SET SESSION max_expression_depth = 20000",
+    "SET max_expression_depth = 999", "RESET max_expression_depth", "SET SESSION max_expression_depth = 999",
     "SET perfect_ht_threshold = 20", "SET nested_loop_join_threshold = 1", "SET merge_join_threshold = 1",
     "SET ordered_aggregate_threshold = 1", "SET preserve_insertion_order = false", "SET partitioned_write_flush_threshold = 1",
     "SET pivot_limit = 5", "SET pivot_filter_threshold = 1",
@@ -1447,7 +1454,13 @@ def test_the_expression_depth_limit_cannot_be_lifted(chargewire, duck, ro, uncha
     # the statement is still an error DuckDB reports.
     deep = "SELECT " + "abs(" * 2000 + "1" + ")" * 2000
     with unchanged(subject=ro):
-        refused(chargewire, ro, "SET max_expression_depth = 20000")
+        sql = "SET max_expression_depth = 20000"
+        if EXPRESSION_DEPTH_CAPPED:
+            # This value is invalid even in a writable session on a server with a cap.
+            problem = assert_problem(response=chargewire.submit(session_id=ro, sql=sql), status=400, code="sql_error")
+            assert "max_expression_depth can be set to a number up to 1000" in problem["detail"], problem
+        else:
+            refused(chargewire, ro, sql)
         assert one(chargewire, ro, "SELECT current_setting('max_expression_depth')") == 1000
         response = chargewire.submit(session_id=ro, sql=deep)
         assert_problem(response=response, status=400, code="sql_error")
@@ -1703,7 +1716,7 @@ def reads(table: str, tmp: str) -> list[str]:
         "SELECT count(*) FROM duckdb_extension_repositories()", "SELECT count(*) FROM duckdb_connection_count()",
         "SELECT count(*) FROM duckdb_external_file_cache()", "SELECT count(*) FROM duckdb_available_metrics()",
         "SELECT count(*) FROM duckdb_grammar_extensions()", f"SELECT count(*) FROM duckdb_table_sample('{table}')",
-        "SELECT count(*) FROM which_secret('s3://bucket/key', 's3')", "SELECT count(*) FROM sql_tokenize('SELECT 1')",
+        "SELECT count(*) FROM which_secret('s3://bucket/key', 's3')",
         "SELECT count(*) FROM duckdb_approx_database_count()", "SELECT count(*) FROM duckdb_eviction_queues()",
         "SELECT count(*) FROM duckdb_external_resources()", "SELECT count(*) FROM duckdb_external_resource_types()",
         "SELECT count(*) FROM test_all_types()", "SELECT count(*) FROM duckdb_prepared_statements()", "SELECT count(*) FROM duckdb_temporary_files()",
@@ -1713,7 +1726,7 @@ def reads(table: str, tmp: str) -> list[str]:
         "SELECT count(*) FROM pragma_collations()", "SELECT count(*) FROM pragma_metadata_info()", "SELECT * FROM pragma_platform()",
         "SELECT * FROM pragma_user_agent()", f"SELECT count(*) FROM pragma_storage_info('{table}')", f"PRAGMA storage_info('{table}')",
         "PRAGMA metadata_info", "PRAGMA platform", "PRAGMA functions", "PRAGMA collations", "PRAGMA user_agent", "PRAGMA extension_versions",
-        "PRAGMA show_databases", "PRAGMA show_tables_expanded", "SELECT count(*) FROM sql_auto_complete('SEL')",
+        "PRAGMA show_databases", "PRAGMA show_tables_expanded",
         "SELECT count(*) FROM icu_calendar_names()", "SELECT count(*) FROM pg_timezone_names()", "SELECT count(*) FROM summary((SELECT 1))",
         # files
         f"SELECT * FROM read_csv('{tmp}/data.csv')", f"SELECT * FROM '{tmp}/data.csv'", f"SELECT * FROM read_csv_auto('{tmp}/*.csv')",
@@ -1751,16 +1764,33 @@ def test_what_a_reader_uses_still_works(chargewire, duck, ro, table, files, unch
     # Run writable twins before the snapshot: their first call can install/load a
     # known extension (e.g. autocomplete on Windows). The reader's whole run must
     # still leave the database, settings, extensions and files unchanged.
-    for sql in reads(table, files):
+    statements = reads(table, files)
+    if not AUTOCOMPLETE_DISABLED:
+        statements.extend(AUTOCOMPLETE_READS)
+    for sql in statements:
         twin = chargewire.submit(session_id=duck, sql=sql, arrow=True)
         assert twin.status_code == 200, (sql, twin.text)
     failures = []
     with unchanged(tables=[table]):
-        for sql in reads(table, files):
+        for sql in statements:
             response = chargewire.submit(session_id=ro, sql=sql, arrow=True)
             if response.status_code != 200:
                 failures.append(f"{sql}\n    -> {response.status_code} {response.text}")
     assert not failures, "refused or failed in a read-only session:\n" + "\n".join(failures)
+
+
+@pytest.mark.skipif(not AUTOCOMPLETE_DISABLED, reason="the read suite tests enabled autocomplete")
+@pytest.mark.parametrize("sql", AUTOCOMPLETE_READS)
+def test_disabled_autocomplete_is_refused_in_both_session_modes(chargewire, duck, ro, unchanged, sql):
+    def refused_as_disabled(session_id):
+        response = chargewire.submit(session_id=session_id, sql=sql, arrow=True)
+        problem = assert_problem(response=response, status=422, code="execution_error")
+        assert "the autocomplete extension is turned off on this server" in problem["detail"], problem
+
+    # A writable session can install the extension even if startup policy prevents loading it.
+    refused_as_disabled(session_id=duck)
+    with unchanged(subject=ro):
+        refused_as_disabled(session_id=ro)
 
 
 # Plans as deep as a BI tool's or a generated query's: an earlier server could not read a
