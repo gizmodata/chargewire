@@ -1782,15 +1782,11 @@ def test_what_a_reader_uses_still_works(chargewire, duck, ro, table, files, unch
 @pytest.mark.skipif(not AUTOCOMPLETE_DISABLED, reason="the read suite tests enabled autocomplete")
 @pytest.mark.parametrize("sql", AUTOCOMPLETE_READS)
 def test_disabled_autocomplete_is_refused_in_both_session_modes(chargewire, duck, ro, unchanged, sql):
-    def refused_as_disabled(session_id):
-        response = chargewire.submit(session_id=session_id, sql=sql, arrow=True)
-        problem = assert_problem(response=response, status=422, code="execution_error")
-        assert "the autocomplete extension is turned off on this server" in problem["detail"], problem
-
-    # A writable session can install the extension even if startup policy prevents loading it.
-    refused_as_disabled(session_id=duck)
     with unchanged(subject=ro):
-        refused_as_disabled(session_id=ro)
+        for session_id in (duck, ro):
+            response = chargewire.submit(session_id=session_id, sql=sql, arrow=True)
+            problem = assert_problem(response=response, status=403, code="permission_denied")
+            assert "the autocomplete extension is turned off on this server" in problem["detail"], problem
 
 
 # Plans as deep as a BI tool's or a generated query's: an earlier server could not read a
