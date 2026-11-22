@@ -23,6 +23,13 @@ class BodySource {
   virtual Task<std::optional<std::string>> Next() = 0;
 };
 
+// Optional work owned by the request through the response write. It is destroyed
+// on successful completion, on a write failure, or when the request is shut down.
+struct RequestCompletion {
+  virtual ~RequestCompletion() = default;
+  bool response_sent = false;
+};
+
 struct Request {
   http::verb method = http::verb::unknown;
   std::string path;                          // decoded, without the query
@@ -51,6 +58,8 @@ struct Request {
   // Authentication failures so far on this connection (null: not counted). After a few
   // the server closes the connection.
   int* connection_auth_failures = nullptr;
+
+  std::unique_ptr<RequestCompletion> completion;
 
   std::string_view Header(std::string_view name) const;
 };

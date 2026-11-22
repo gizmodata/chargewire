@@ -1,6 +1,6 @@
 // Session lifetime against requests (spec §5.6, §5.7): a request that found a session
 // either runs in it or gets session_not_found; it never runs in a session that was closed
-// under it. The idle sweep's check and close are one step, ordered against Touch(): a
+// under it. The idle sweep's check and close are one step, ordered against StartRequest(): a
 // conformance run on Windows saw a SELECT 1 whose result stream was cut mid-body
 // ("incomplete chunked read") because the sweep found the session idle, the request then
 // found and touched it, and the sweep closed it with the statement running.
@@ -73,15 +73,16 @@ class SessionLifetime : public ::testing::Test {
   chargewire::detail::EnginePool pool_{1};
 };
 
-// The interleaving the Windows run hit, in the order that must win: the request touches
-// the session first, so the sweep that follows finds it busy and leaves it open.
-TEST_F(SessionLifetime, ASweepAfterATouchLeavesTheSessionOpen) {
+// The interleaving the Windows run hit: the request starts first, so the sweep
+// that follows finds it busy and leaves it open.
+TEST_F(SessionLifetime, ASweepAfterARequestStartsLeavesTheSessionOpen) {
   auto session = NewSession();
   const auto cutoff = Clock::now();  // the sweep's cutoff, computed before the request arrived
-  session->Touch();
+  session->StartRequest();
   EXPECT_FALSE(session->CloseIfIdle(cutoff, CancelReason::kSessionClosed));
   EXPECT_FALSE(session->closed());
   session->AddStatement(NewStatement("q_1"));
+  session->FinishRequest(true);
 }
 
 // The other order: the sweep closes the idle session first, so the request finds it gone.
@@ -89,7 +90,7 @@ TEST_F(SessionLifetime, ARequestAfterAnIdleCloseGetsSessionNotFound) {
   auto session = NewSession();
   EXPECT_TRUE(session->CloseIfIdle(Clock::now() + std::chrono::seconds(1), CancelReason::kSessionClosed));
   EXPECT_TRUE(session->closed());
-  ExpectNotFound([&] { session->Touch(); });
+  ExpectNotFound([&] { session->StartRequest(); });
 }
 
 // Whatever closed it (a sweep, KILL SESSION, DELETE), a session closed after the request
@@ -117,15 +118,32 @@ TEST_F(SessionLifetime, ARunningStatementKeepsTheSessionOpenOnlyWhileARequestWai
   auto statement = NewStatement("q_running");
   session->AddStatement(statement);
   EXPECT_TRUE(statement->BeginRunning());
-  statement->BeginWait();
+  session->StartRequest();
   EXPECT_FALSE(session->CloseIfIdle(Clock::now() + std::chrono::seconds(1), CancelReason::kSessionClosed));
   EXPECT_FALSE(session->closed());
-  statement->EndWait();
+  const auto cutoff = Clock::now();  // the wait began before the idle cutoff
+  session->FinishRequest(false);  // the client's response could not be sent
   EXPECT_FALSE(session->CloseIfIdle(Clock::now() - std::chrono::hours(1), CancelReason::kSessionClosed))
       << "a request was made within the window";
-  EXPECT_TRUE(session->CloseIfIdle(Clock::now() + std::chrono::seconds(1), CancelReason::kSessionClosed));
+  EXPECT_TRUE(session->CloseIfIdle(cutoff, CancelReason::kSessionClosed));
   EXPECT_TRUE(session->closed());
   EXPECT_TRUE(statement->CancelRequested()) << "the abandoned statement is cancelled with its session";
+}
+
+TEST_F(SessionLifetime, ACompletedLongPollStartsANewIdleWindowBeforeTheNextPoll) {
+  auto session = NewSession();
+  auto statement = NewStatement("q_running");
+  session->AddStatement(statement);
+  ASSERT_TRUE(statement->BeginRunning());
+  session->StartRequest();
+  const auto cutoff = Clock::now();  // the poll is still in flight but began before this cutoff
+  EXPECT_FALSE(session->CloseIfIdle(cutoff, CancelReason::kSessionClosed));
+  session->FinishRequest(true);
+  EXPECT_FALSE(session->CloseIfIdle(cutoff, CancelReason::kSessionClosed));
+  session->StartRequest();
+  EXPECT_FALSE(statement->CancelRequested());
+  session->FinishRequest(true);
+  EXPECT_TRUE(session->CloseIfIdle(Clock::now(), CancelReason::kSessionClosed));
 }
 
 // An engine whose session holds a transaction, for the idle-in-transaction rule.
@@ -223,9 +241,9 @@ TEST_F(SessionLifetime, IdleInATransactionEndsTheSessionWithItsReason) {
   EXPECT_TRUE(statement->BeginRunning());
   EXPECT_FALSE(session->EndIfIdleInTransaction(past, why)) << "a statement is running";
   statement->Finish();
-  statement->BeginWait();
+  session->StartRequest();
   EXPECT_FALSE(session->EndIfIdleInTransaction(past, why)) << "a request waits on a statement";
-  statement->EndWait();
+  session->FinishRequest(true);
   EXPECT_FALSE(session->CloseIfIdle(Clock::now() - std::chrono::hours(1), CancelReason::kSessionClosed));
   EXPECT_TRUE(session->EndIfIdleInTransaction(past, why));
   EXPECT_TRUE(session->closed());
@@ -315,10 +333,15 @@ TEST_F(SessionLifetime, AReadInProgressKeepsTheSessionOpen) {
   auto session = NewSession();
   auto statement = FinishedWithRows("q_read", /*retain=*/false);
   session->AddStatement(statement);
+  session->StartRequest();
   statement->ClaimRead(0, 0);
   EXPECT_FALSE(session->CloseIfIdle(Clock::now() + std::chrono::seconds(1), CancelReason::kSessionClosed));
   EXPECT_FALSE(session->closed());
   statement->EndRead(0);
+  const auto cutoff = Clock::now();
+  EXPECT_FALSE(session->CloseIfIdle(cutoff, CancelReason::kSessionClosed)) << "response is still in flight";
+  session->FinishRequest(true);
+  EXPECT_FALSE(session->CloseIfIdle(cutoff, CancelReason::kSessionClosed)) << "response finished within the window";
   EXPECT_TRUE(session->CloseIfIdle(Clock::now() + std::chrono::seconds(1), CancelReason::kSessionClosed));
 }
 

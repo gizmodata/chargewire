@@ -353,8 +353,23 @@ void Session::ForgetFinished(WallClock::time_point now, std::chrono::seconds kee
 }
 
 void Session::Touch(const Client& client) {
-  const auto now = WallClock::now();
   std::lock_guard lock(mutex_);
+  TouchLocked(client);
+}
+
+void Session::StartRequest(const Client& client) {
+  std::lock_guard lock(mutex_);
+  TouchLocked(client);
+  ++active_requests_;
+}
+
+void Session::FinishRequest(bool sent) {
+  std::lock_guard lock(mutex_);
+  if (sent) last_activity_ = Clock::now();
+  --active_requests_;
+}
+
+void Session::TouchLocked(const Client& client) {
   ThrowIfClosedLocked();
   last_activity_ = Clock::now();
   // Assigned only when they change: a session's requests mostly come over one connection.
@@ -364,7 +379,7 @@ void Session::Touch(const Client& client) {
   if (last.user_agent != client.user_agent) last.user_agent.assign(client.user_agent);
   if (last.tls_version != client.tls_version) last.tls_version.assign(client.tls_version);
   if (last.certificate != client.certificate) last.certificate = client.certificate;
-  last.at = now;
+  last.at = WallClock::now();
 }
 
 Session::LastRequest Session::last_request() const {
@@ -373,24 +388,16 @@ Session::LastRequest Session::last_request() const {
 }
 
 bool Session::IdleLocked(Clock::time_point cutoff) const {
-  if (last_activity_ > cutoff) {
+  if (active_requests_ != 0 || last_activity_ > cutoff) {
     return false;
   }
   for (const auto& [id, ingest] : ingests_) {
     if (!ingest->Finished()) return false;  // an ingest in progress (it expires on its own)
   }
   for (const auto& [id, statement] : statements_) {
-    // A request about a statement that is under way counts as a request until its
-    // response ends (spec §5.7): a wait on its outcome or its status, or a read of its
-    // result, however slow (a finished unretained result still has up to
-    // unretained_buffer_bytes to send, and evicting the session would cut the stream).
-    // A retained result keeps the session until it expires. A statement that runs with
-    // nobody waiting on it or reading it does not: a client that is there polls it, and
-    // is heard from within the window; one that is gone (its connection dropped
-    // mid-wait, its process killed) must not keep the session, and a write's open
-    // transaction with it, alive for as long as the statement runs. Once the session
-    // closes, the statement is cancelled and the transaction rolled back.
-    if (statement->HoldsRetainedResult() || statement->ReadInProgress() || statement->WaitInProgress()) {
+    // A retained result keeps the session until it expires. An unattended statement
+    // can be cancelled by idle eviction, which also rolls back its transaction (§5.7).
+    if (statement->HoldsRetainedResult()) {
       return false;
     }
   }
@@ -398,16 +405,15 @@ bool Session::IdleLocked(Clock::time_point cutoff) const {
 }
 
 bool Session::IdleInTransactionLocked(Clock::time_point cutoff) const {
-  if (transaction_ == TransactionState::kNone || last_activity_ > cutoff) {
+  if (transaction_ == TransactionState::kNone || active_requests_ != 0 || last_activity_ > cutoff) {
     return false;
   }
   for (const auto& [id, ingest] : ingests_) {
     if (!ingest->Finished()) return false;
   }
   for (const auto& [id, statement] : statements_) {
-    // Work under way, or a request about it in flight, is activity. A retained result is
-    // not: the transaction's locks are what the timeout is for.
-    if (!statement->IsTerminal() || statement->ReadInProgress() || statement->WaitInProgress()) {
+    // Work under way keeps the session. Retained results can expire independently.
+    if (!statement->IsTerminal()) {
       return false;
     }
   }

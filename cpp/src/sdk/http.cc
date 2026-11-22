@@ -95,9 +95,13 @@ void ApplyHeaders(http::response<Body>& message, const Response& response, bool 
   message.keep_alive(keep_alive);
 }
 
-// Writes `response`; returns whether the connection can carry another request.
+struct ResponseWrite {
+  bool complete;
+  bool keep_alive;
+};
+
 template <class Stream>
-Task<bool> WriteResponse(Stream& stream, Response& response, unsigned version, bool keep_alive) {
+Task<ResponseWrite> WriteResponse(Stream& stream, Response& response, unsigned version, bool keep_alive) {
   keep_alive = keep_alive && !response.close;
   beast::get_lowest_layer(stream).expires_after(kWriteTimeout);
   if (response.head_length) {
@@ -106,7 +110,7 @@ Task<bool> WriteResponse(Stream& stream, Response& response, unsigned version, b
     message.content_length(*response.head_length);
     http::response_serializer<http::empty_body> serializer{message};
     co_await http::async_write_header(stream, serializer, net::use_awaitable);
-    co_return keep_alive;
+    co_return ResponseWrite{true, keep_alive};
   }
   if (!response.stream) {
     http::response<http::string_body> message{response.status, version};
@@ -114,7 +118,7 @@ Task<bool> WriteResponse(Stream& stream, Response& response, unsigned version, b
     message.body() = std::move(response.body);
     message.prepare_payload();
     co_await http::async_write(stream, message, net::use_awaitable);
-    co_return keep_alive;
+    co_return ResponseWrite{true, keep_alive};
   }
 
   http::response<http::empty_body> message{response.status, version};
@@ -131,11 +135,11 @@ Task<bool> WriteResponse(Stream& stream, Response& response, unsigned version, b
     complete = false;
   }
   if (!complete) {
-    co_return false;  // no final chunk: the client sees an incomplete body
+    co_return ResponseWrite{false, false};  // without a final chunk the body is incomplete
   }
   beast::get_lowest_layer(stream).expires_after(kWriteTimeout);
   co_await net::async_write(stream, http::make_chunk_last(), net::use_awaitable);
-  co_return keep_alive;
+  co_return ResponseWrite{true, keep_alive};
 }
 
 // A streamed request body (an upload) is handed on in pieces of up to this size: few
@@ -364,6 +368,7 @@ Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler
     co_await http::async_read_header(stream, buffer, parser,
                                      net::redirect_error(net::use_awaitable, ec));
 
+    Request request;
     Response response;
     unsigned version = 11;
     bool keep_alive = false;
@@ -384,7 +389,6 @@ Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler
       auto& message = parser.get();
       version = message.version();
       keep_alive = message.keep_alive();
-      Request request;
       request.method = message.method();
       request.headers = static_cast<const http::fields&>(message.base());
       request.request_id = NewId("r");
@@ -456,7 +460,9 @@ Task<void> ServeRequests(Stream& stream, const HttpLimits& limits, const Handler
     if (body_unread) {
       response.close = true;
     }
-    if (!co_await WriteResponse(stream, response, version, keep_alive)) {
+    const auto written = co_await WriteResponse(stream, response, version, keep_alive);
+    if (request.completion) request.completion->response_sent = written.complete;
+    if (!written.keep_alive) {
       co_return;
     }
   }
