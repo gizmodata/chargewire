@@ -236,13 +236,34 @@ bool RetainedQuota::Change(const std::string& principal, int64_t bytes) {
 // the engine thread copies it (OwnedError) and this coroutine throws a copy of its own,
 // never the exception object the engine thread caught (as co_spawn's own propagation
 // would), which that thread could free while this one still builds the response from it.
+namespace {
+// A request's time in the queue for the session's strand (Session::EnterEngineQueue): over
+// when its work starts on the strand, or when the request ends without getting there.
+struct EngineQueue {
+  explicit EngineQueue(Session& session) : session(session) { session.EnterEngineQueue(); }
+  ~EngineQueue() { Leave(); }
+  EngineQueue(const EngineQueue&) = delete;
+  EngineQueue& operator=(const EngineQueue&) = delete;
+  void Leave() {
+    if (queued) {
+      queued = false;
+      session.LeaveEngineQueue();
+    }
+  }
+  Session& session;
+  bool queued = true;  // touched by the strand only while this coroutine waits for it
+};
+}  // namespace
+
 template <typename Fn>
 Task<std::invoke_result_t<Fn>> Api::OnEngine(Session& session, Fn work) {
   using Result = std::invoke_result_t<Fn>;
   std::optional<Error> failure;
+  EngineQueue queue(session);
   if constexpr (std::is_void_v<Result>) {
     co_await net::co_spawn(
-        session.strand(), [work = std::move(work), &failure, &session]() mutable -> Task<void> {
+        session.strand(), [work = std::move(work), &failure, &session, &queue]() mutable -> Task<void> {
+          queue.Leave();
           try {
             work();
           } catch (...) {
@@ -256,7 +277,8 @@ Task<std::invoke_result_t<Fn>> Api::OnEngine(Session& session, Fn work) {
   } else {
     std::optional<Result> result = co_await net::co_spawn(
         session.strand(),
-        [work = std::move(work), &failure, &session]() mutable -> Task<std::optional<Result>> {
+        [work = std::move(work), &failure, &session, &queue]() mutable -> Task<std::optional<Result>> {
+          queue.Leave();
           std::optional<Result> result;
           try {
             result.emplace(work());

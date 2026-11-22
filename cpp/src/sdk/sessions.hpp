@@ -118,9 +118,14 @@ class Session {
   // an idle sweep (or a KILL) closed it must not go on to run in it.
   void Touch(const Client& client = {});
   // Keep an authenticated request active through its response (spec §5.7).
-  // Only a response that was sent starts a new idle window.
+  // Only a response that was sent, or a streamed one that began, starts a new idle window.
   void StartRequest(const Client& client = {});
   void FinishRequest(bool sent);
+  // A request queued for the session's engine strand, behind a statement that is running,
+  // is not activity until its turn comes: a client that went away while it waited must not
+  // keep the session (and a write's transaction) for as long as that statement runs.
+  void EnterEngineQueue();
+  void LeaveEngineQueue();
   // The latest request's client, and when it came.
   struct LastRequest {
     std::string address;
@@ -183,6 +188,7 @@ class Session {
   std::vector<std::shared_ptr<ByteQueue>> uploads_;
   Clock::time_point last_activity_;
   std::size_t active_requests_ = 0;
+  std::size_t queued_for_engine_ = 0;  // requests waiting for the strand (EnterEngineQueue)
   LastRequest last_request_;
   bool closed_ = false;      // takes nothing new
   bool torn_down_ = false;   // its statements were cancelled and their results freed
