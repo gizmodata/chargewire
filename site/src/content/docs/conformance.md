@@ -66,6 +66,13 @@ an attached PostgreSQL (`CHARGEWIRE_TEST_POSTGRES`: a throwaway server's connect
 without it that one test skips). Not covered for want of test data here: Iceberg and Delta
 tables, MySQL, full-text search.
 
+The reference server must allow DuckDB's autocomplete queries and report read-only refusals
+for attempts to change expression depth. For a server with a global expression depth cap,
+set `CHARGEWIRE_TEST_DUCKDB_EXPRESSION_DEPTH_CAPPED=1` to check its SQL error for values
+above the cap. In-range changes still require a read-only refusal. Set
+`CHARGEWIRE_TEST_DUCKDB_AUTOCOMPLETE_DISABLED=1` when the server disables DuckDB's autocomplete
+functions so the suite checks that both read-write and read-only sessions receive that refusal.
+
 Every refusal in both files is checked for its code and for having changed nothing: the rows,
 the catalog, the attached databases, the files of a scratch directory, the settings as a second
 session sees them, sequences and secrets are compared before and after.
@@ -76,7 +83,7 @@ reaches the user's `~/.duckdb`, and nothing is left over from an earlier run.
 
 ## What each file covers
 
-356 test functions (some run several cases), in the suite's [`tests/`](https://github.com/gizmodata/chargewire/tree/main/conformance/tests):
+357 test functions (some run several cases), in the suite's [`tests/`](https://github.com/gizmodata/chargewire/tree/main/conformance/tests):
 
 | File | Tests | Covers |
 |---|---|---|
@@ -98,7 +105,7 @@ reaches the user's `~/.duckdb`, and nothing is left over from an earlier run.
 | [`test_prepared.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_prepared.py) | 16 | [§7](/specification/#7-prepared-statements): prepared statements, with JSON and Arrow bind parameters. |
 | [`test_principals.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_principals.py) | 2 | [§9.2](/specification/#92-handles-are-bound-to-their-principal) and [§9.3](/specification/#93-results-are-governed-data): every handle is bound to its principal, and [§4.4](/specification/#44-client-certificate-sign-in-optional-capability-mtls_identity): a forwarded certificate header is no certificate. |
 | [`test_read_only.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_read_only.py) | 34 | [§5.8](/specification/#58-read-only-sessions): read-only sessions (capability `read_only_sessions`). |
-| [`test_read_only_duckdb.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_read_only_duckdb.py) | 61 | [§5.8](/specification/#58-read-only-sessions) on a DuckDB server (`chargewire-duckdb`, Hardcharger): the ways DuckDB lets a session change something that are not in the portable tests, each refused with `403 read_only` in a read-only session, and what a reader uses, each still working there. |
+| [`test_read_only_duckdb.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_read_only_duckdb.py) | 62 | [§5.8](/specification/#58-read-only-sessions) on a DuckDB server (`chargewire-duckdb`, Hardcharger): the ways DuckDB lets a session change something that are not in the portable tests, each refused with `403 read_only` in a read-only session, and what a reader uses, each still working there. |
 | [`test_results.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_results.py) | 18 | [§6.3](/specification/#63-status-get-chargewirev1sessionssession_idstatementsstatement_id)–[§6.6](/specification/#66-errors-during-a-result-stream) and [§8.2](/specification/#82-compression): async results, retention, resumption, incomplete streams, compression. |
 | [`test_sessions.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_sessions.py) | 26 | [§5](/specification/#5-sessions): sessions, options, transactions, and handles bound to their principal. |
 | [`test_statements.py`](https://github.com/gizmodata/chargewire/blob/main/conformance/tests/test_statements.py) | 19 | [§6](/specification/#6-statements): statements, the two response paths, and bind parameters. |

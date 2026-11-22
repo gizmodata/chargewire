@@ -60,6 +60,13 @@ an attached PostgreSQL (`CHARGEWIRE_TEST_POSTGRES`: a throwaway server's connect
 without it that one test skips). Not covered for want of test data here: Iceberg and Delta
 tables, MySQL, full-text search.
 
+The reference server must allow DuckDB's autocomplete queries and report read-only refusals
+for attempts to change expression depth. For a server with a global expression depth cap,
+set `CHARGEWIRE_TEST_DUCKDB_EXPRESSION_DEPTH_CAPPED=1` to check its SQL error for values
+above the cap. In-range changes still require a read-only refusal. Set
+`CHARGEWIRE_TEST_DUCKDB_AUTOCOMPLETE_DISABLED=1` when the server disables DuckDB's autocomplete
+functions so the suite checks that both read-write and read-only sessions receive that refusal.
+
 Every refusal in both files is checked for its code and for having changed nothing: the rows,
 the catalog, the attached databases, the files of a scratch directory, the settings as a second
 session sees them, sequences and secrets are compared before and after.
