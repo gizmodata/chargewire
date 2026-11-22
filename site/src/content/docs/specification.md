@@ -1,6 +1,6 @@
 ---
 title: Specification
-description: "The Chargewire protocol, version 1 (specification 2.6.0): SQL over HTTP with Arrow IPC streams."
+description: "The Chargewire protocol, version 1 (specification 2.6.1): SQL over HTTP with Arrow IPC streams."
 editUrl: https://github.com/gizmodata/chargewire/edit/main/spec/chargewire.md
 tableOfContents:
   maxHeadingLevel: 3
@@ -12,7 +12,7 @@ tableOfContents:
 This page is [`spec/chargewire.md`](https://github.com/gizmodata/chargewire/blob/main/spec/chargewire.md), rendered as it is. Its endpoints are also described for tools in the [OpenAPI document](/reference/openapi/).
 :::
 
-**Status:** 2.6.0 (2026-11-21), the specification's version, which is Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
+**Status:** 2.6.1 (2026-11-22), the specification's version, which is Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
 addition ([§12](#12-versioning)).
 
 Chargewire is an open protocol for running SQL against a database server over plain
@@ -734,8 +734,15 @@ A session with no request for `idle_timeout_s` MAY be evicted. A request still i
 progress counts as a request until its response ends: a submit or status request waiting
 on a statement (`Prefer: wait`, [§6.1](#61-submit-post-chargewirev1sessionssession_idstatements), [§6.3](#63-status-get-chargewirev1sessionssession_idstatementsstatement_id)), or a read of one of the session's results
 that is under way, however slowly the client reads, keeps the session alive (an unretained
-result's last batches go out after its statement has finished). So does a retained result
-not yet expired ([§6.5](#65-retention-and-resumption)), and a bulk ingest in progress ([§8](#8-bulk-ingest)).
+result's last batches go out after its statement has finished). A streamed response that
+began restarts the window when it ends, even when the client stopped reading early. So does
+a retained result not yet expired ([§6.5](#65-retention-and-resumption)), and a bulk ingest in progress ([§8](#8-bulk-ingest)).
+
+A request that must wait for a statement still running in the session before it can start
+(metadata, a commit, a prepare, a change of the session's options) does not count while it
+waits: the server does not watch its connection meanwhile, and a client that went away in
+that time must not keep the session for as long as the statement runs. Once its work starts
+it counts again.
 
 A running statement that no request is waiting on or reading does not by itself keep the
 session alive: a client that is there polls the statement, and is heard from within

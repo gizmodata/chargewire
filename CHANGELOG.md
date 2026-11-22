@@ -7,9 +7,13 @@ spec's version is the repository's version.
 
 ## [Unreleased]
 
+## [2.6.1] - 2026-11-22
+
 ### Fixed
 
 - A session's idle timeout starts after an in-flight response finishes, so idle eviction cannot cancel a statement between consecutive long polls.
+- A request queued behind a running statement (metadata, commit, prepare, session options) no longer keeps the session alive while it waits, so a client that went away meanwhile doesn't hold the session and its transaction for as long as the statement runs (§5.7).
+- A streamed response that began restarts the idle window when it ends, so a client that stops reading a long result early keeps its session.
 - The health endpoint returns its serving response under Clang 18 with ThreadSanitizer.
 - On Windows, stopping the statement worker pool discards queued work and lets running work finish.
 - Conformance tests can verify an embedding server’s expression depth cap and disabled autocomplete policy.

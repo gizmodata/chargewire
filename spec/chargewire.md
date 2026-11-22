@@ -1,6 +1,6 @@
 # Chargewire Protocol, version 1
 
-**Status:** 2.6.0 (2026-11-21), the specification's version, which is Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
+**Status:** 2.6.1 (2026-11-22), the specification's version, which is Chargewire's release version. Protocol version 1 is stable: from here on it changes only by
 addition (§12).
 
 Chargewire is an open protocol for running SQL against a database server over plain
@@ -722,8 +722,15 @@ A session with no request for `idle_timeout_s` MAY be evicted. A request still i
 progress counts as a request until its response ends: a submit or status request waiting
 on a statement (`Prefer: wait`, §6.1, §6.3), or a read of one of the session's results
 that is under way, however slowly the client reads, keeps the session alive (an unretained
-result's last batches go out after its statement has finished). So does a retained result
-not yet expired (§6.5), and a bulk ingest in progress (§8).
+result's last batches go out after its statement has finished). A streamed response that
+began restarts the window when it ends, even when the client stopped reading early. So does
+a retained result not yet expired (§6.5), and a bulk ingest in progress (§8).
+
+A request that must wait for a statement still running in the session before it can start
+(metadata, a commit, a prepare, a change of the session's options) does not count while it
+waits: the server does not watch its connection meanwhile, and a client that went away in
+that time must not keep the session for as long as the statement runs. Once its work starts
+it counts again.
 
 A running statement that no request is waiting on or reading does not by itself keep the
 session alive: a client that is there polls the statement, and is heard from within
